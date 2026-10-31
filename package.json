@@ -1,0 +1,29 @@
+{
+  "name": "mbgn-voting",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Most Beautiful Girl Online Nigeria - competition voting platform",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env server/dev.js",
+    "build": "vite build",
+    "start": "node --env-file-if-exists=.env server/index.js",
+    "seed": "node --env-file-if-exists=.env server/seed.js",
+    "test": "node --test --test-concurrency=1 test/platform.test.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "multer": "^2.0.2",
+    "nodemailer": "^7.0.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.7.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.1",
+    "vite": "^6.3.5"
+  }
+}
