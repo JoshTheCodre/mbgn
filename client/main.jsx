@@ -1,16 +1,26 @@
-import { Component, useEffect, useRef, useState } from 'react';
-import { createRoot } from 'react-dom/client';
+import {
+  Component, Suspense, lazy, useEffect, useRef, useState,
+} from 'react';
 import { BrowserRouter, Link, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { AppProvider, api, useApp } from './lib.jsx';
-import { CountUp, HeaderPulse, LivePopups, Loading, ThemePicker } from './ui.jsx';
+import {
+  HeaderPulse, LivePopups, Loading, PageSkeleton, ThemePicker,
+} from './ui.jsx';
 import { applyTheme, currentTheme } from './themes.js';
 import { Contestants, Home, Leaderboard, NotFound, Profile, Results } from './pages/public.jsx';
-import {
-  AdminLogin, Forgot, PayReturn, PaySim, Receipt, Register, Reset, Wallet,
-} from './pages/account.jsx';
-import { Dashboard } from './pages/dashboard.jsx';
-import { Admin } from './pages/admin.jsx';
-import './styles.css';
+
+// Voters only download the public pages up front. Everything else comes when it's needed.
+const loadAccount = () => import('./pages/account.jsx');
+const fromAccount = (name) => lazy(() => loadAccount().then((m) => ({ default: m[name] })));
+const AdminLogin = fromAccount('AdminLogin');
+const Forgot = fromAccount('Forgot');
+const PayReturn = fromAccount('PayReturn');
+const PaySim = fromAccount('PaySim');
+const Receipt = fromAccount('Receipt');
+const Register = fromAccount('Register');
+const Reset = fromAccount('Reset');
+const Dashboard = lazy(() => import('./pages/dashboard.jsx').then((m) => ({ default: m.Dashboard })));
+const Admin = lazy(() => import('./pages/admin.jsx').then((m) => ({ default: m.Admin })));
 
 function Header() {
   const { user, setUser } = useApp();
@@ -96,14 +106,9 @@ function Header() {
               <button type="button" className="nav-link-btn" onClick={logout}>Log out</button>
             </>
           ) : (
-            <>
-              {user?.role === 'supporter' || user?.credits > 0
-                ? <NavLink to="/wallet" className="credits-chip"><CountUp value={user.credits} /> credits</NavLink>
-                : null}
-              {user?.contestant
-                ? <NavLink to="/dashboard">My dashboard</NavLink>
-                : <NavLink to="/register" className="btn btn-primary btn-small">Join the contest</NavLink>}
-            </>
+            user?.contestant
+              ? <NavLink to="/dashboard">My dashboard</NavLink>
+              : <NavLink to="/register" className="btn btn-primary btn-small">Join the contest</NavLink>
           )}
         </nav>
       </div>
@@ -168,7 +173,7 @@ class ErrorBoundary extends Component {
     return (
       <div className="wrap page narrow">
         <h1>Something went wrong</h1>
-        <p className="muted">Your votes and credits are safe. Please reload the page.</p>
+        <p className="muted">Your votes are safe. Please reload the page.</p>
         <button type="button" className="btn btn-primary" onClick={() => window.location.reload()}>Reload</button>
       </div>
     );
@@ -176,11 +181,18 @@ class ErrorBoundary extends Component {
 }
 
 function App() {
+  // A voter is likely to need this next, for the page after paying. Fetched once the page is idle.
+  useEffect(() => {
+    const id = setTimeout(() => { loadAccount().catch(() => {}); }, 2500);
+    return () => clearTimeout(id);
+  }, []);
+
   return (
     <>
       <ScrollToTop />
       <Header />
       <main>
+        <Suspense fallback={<PageSkeleton />}>
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/contestants" element={<Contestants />} />
@@ -189,7 +201,6 @@ function App() {
           <Route path="/results" element={<Results />} />
           <Route path="/register" element={<Register />} />
           <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/wallet" element={<Wallet />} />
           <Route path="/pay/return/:reference" element={<PayReturn />} />
           <Route path="/pay/sim/:reference" element={<PaySim />} />
           <Route path="/receipt/:kind/:number" element={<Receipt />} />
@@ -198,6 +209,7 @@ function App() {
           <Route path="/reset/:token" element={<Reset />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
+        </Suspense>
       </main>
       <Footer />
       <LivePopups />
@@ -206,14 +218,15 @@ function App() {
   );
 }
 
-applyTheme(currentTheme());
-
-createRoot(document.getElementById('root')).render(
-  <BrowserRouter>
-    <AppProvider>
-      <ErrorBoundary>
-        <App />
-      </ErrorBoundary>
-    </AppProvider>
-  </BrowserRouter>,
-);
+export default function Site() {
+  useEffect(() => { applyTheme(currentTheme()); }, []);
+  return (
+    <BrowserRouter>
+      <AppProvider>
+        <ErrorBoundary>
+          <App />
+        </ErrorBoundary>
+      </AppProvider>
+    </BrowserRouter>
+  );
+}

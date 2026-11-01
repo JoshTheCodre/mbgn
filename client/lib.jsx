@@ -8,7 +8,7 @@ export class ApiError extends Error {
   }
 }
 
-export async function api(path, { method, body, form } = {}) {
+async function send(path, { method, body, form } = {}) {
   let res;
   try {
     res = await fetch(`/api${path}`, {
@@ -23,6 +23,45 @@ export async function api(path, { method, body, form } = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, data.error ?? 'Something went wrong. Please try again.', data);
   return data;
+}
+
+// Reads are tried twice: a dropped connection or a database waking from sleep shouldn't show as an error.
+export async function api(path, options = {}) {
+  const isRead = !options.method && !options.body && !options.form;
+  try {
+    return await send(path, options);
+  } catch (err) {
+    if (!isRead || (err.status && err.status < 500)) throw err;
+    await new Promise((resolve) => { setTimeout(resolve, 1200); });
+    return send(path, options);
+  }
+}
+
+// ---- Showing the last known answer straight away, while the fresh one loads ----
+const remembered = new Map();
+// Only public data, so nothing private is left on a shared phone. These few also survive a return visit.
+const isPublic = (path) => /^\/(competition|leaderboard|activity|results|contestants\/)/.test(path);
+const KEPT_BETWEEN_VISITS = new Set(['/competition', '/leaderboard?limit=5', '/activity?limit=5', '/leaderboard?']);
+const STORE_PREFIX = 'mbgn-cache:';
+
+export function recall(path) {
+  if (remembered.has(path)) return remembered.get(path);
+  if (!KEPT_BETWEEN_VISITS.has(path)) return null;
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE_PREFIX + path));
+    return saved && Date.now() - saved.at < 864e5 ? saved.data : null;
+  } catch {
+    return null;
+  }
+}
+
+export function remember(path, data) {
+  if (!isPublic(path)) return;
+  remembered.set(path, data);
+  if (!KEPT_BETWEEN_VISITS.has(path)) return;
+  try {
+    localStorage.setItem(STORE_PREFIX + path, JSON.stringify({ at: Date.now(), data }));
+  } catch { /* a convenience only */ }
 }
 
 // ---- Formatting ----
@@ -59,15 +98,29 @@ export function agoShort(iso) {
 // ---- Live events: one EventSource, reopened when the logged-in user changes ----
 const listeners = new Map();
 let source = null;
-const EVENTS = ['activity', 'activity_refresh', 'leaderboard', 'competition', 'notification', 'wallet', 'admin'];
+const EVENTS = ['activity', 'activity_refresh', 'leaderboard', 'competition', 'notification', 'admin'];
+
+function notify(name, data) {
+  for (const fn of listeners.get(name) ?? []) fn(data);
+}
+
+// On serverless hosting, a vote can reach a different instance from this page's live stream.
+const REFRESH_MS = 20000;
+let refreshTimer = null;
 
 function openStream() {
+  clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => {
+    if (document.hidden) return;
+    notify('leaderboard', {});
+    notify('activity_refresh', {});
+  }, REFRESH_MS);
   source?.close();
   source = new EventSource('/api/stream');
   for (const name of EVENTS) {
     source.addEventListener(name, (e) => {
       const data = JSON.parse(e.data);
-      for (const fn of listeners.get(name) ?? []) fn(data);
+      notify(name, data);
     });
   }
 }
@@ -89,7 +142,7 @@ export const useApp = () => useContext(AppContext);
 
 export function AppProvider({ children }) {
   const [user, setUser] = useState(undefined);
-  const [competition, setCompetition] = useState(null);
+  const [competition, setCompetition] = useState(() => recall('/competition'));
 
   const refreshUser = useCallback(async () => {
     const { user: next } = await api('/auth/me');
@@ -97,7 +150,9 @@ export function AppProvider({ children }) {
     return next;
   }, []);
   const refreshCompetition = useCallback(async () => {
-    setCompetition(await api('/competition'));
+    const next = await api('/competition');
+    remember('/competition', next);
+    setCompetition(next);
   }, []);
 
   useEffect(() => {
@@ -114,7 +169,6 @@ export function AppProvider({ children }) {
   }, [userId]);
 
   useLive('competition', () => refreshCompetition().catch(() => {}));
-  useLive('wallet', () => refreshUser().catch(() => {}));
 
   return (
     <AppContext.Provider value={{ user, setUser, refreshUser, competition, refreshCompetition }}>
@@ -124,25 +178,34 @@ export function AppProvider({ children }) {
 }
 
 export function useFetch(path, deps = []) {
-  const [state, setState] = useState({ data: null, error: null, loading: true });
+  const [state, setState] = useState(() => ({ path, data: path ? recall(path) : null, error: null, loading: true }));
+  const latest = useRef(path);
+  latest.current = path;
+
   const load = useCallback(async () => {
     if (!path) return;
     try {
       const data = await api(path);
-      setState({ data, error: null, loading: false });
+      remember(path, data);
+      // An answer for a page we've since left must not replace what's showing.
+      if (latest.current === path) setState({ path, data, error: null, loading: false });
     } catch (error) {
-      setState((prev) => ({ data: prev.data, error, loading: false }));
+      if (latest.current === path) setState((prev) => ({ ...prev, path, error, loading: false }));
     }
   }, [path]);
+
+  // New filters keep the old list up until the new one arrives. A different page,
+  // such as another contestant, must never briefly show the last one's details.
+  const samePage = state.path?.split('?')[0] === path?.split('?')[0];
+  const view = state.path === path ? state : { path, data: (path && recall(path)) ?? (samePage ? state.data : null), error: null, loading: true };
+
   useEffect(() => {
-    setState((prev) => ({ ...prev, loading: true }));
+    setState((prev) => (prev.path === path ? { ...prev, loading: true } : view));
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load, ...deps]);
-  return { ...state, reload: load };
+  return { data: view.data, error: view.error, loading: view.loading, reload: load };
 }
-
-export const newVoteKey = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
 export function shareTargets(url, text) {
   const message = encodeURIComponent(`${text} ${url}`);

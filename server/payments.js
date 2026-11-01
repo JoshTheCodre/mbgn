@@ -1,75 +1,66 @@
 import crypto from 'node:crypto';
 import { HttpError, hashIp } from './auth.js';
-import { notifyUser, raiseFlag, votingState } from './competition.js';
+import { raiseFlag, votingState } from './competition.js';
 import { getSetting, nowIso, tx } from './db.js';
-import { castVote, recordDirectVotes } from './votes.js';
+import { recordPaidVotes } from './votes.js';
 
-export const MAX_CREDITS_PER_PURCHASE = 100000;
+export const MAX_VOTES_PER_PAYMENT = 100000;
 
-// ---- Providers. Each exposes init() and query(); query() is the only thing that can credit a wallet. ----
+// ---- Providers. Each exposes init() and query(); query() is the only thing that can get votes counted. ----
 
-export function createMonnify(config) {
-  const { apiKey, secretKey, contractCode, baseUrl, live } = config.monnify;
-  let token = null;
-  let tokenExpiry = 0;
+export function createPaystack(config) {
+  const { secretKey, baseUrl } = config.paystack;
+  const STATUSES = { success: 'PAID', failed: 'FAILED', reversed: 'REVERSED' };
 
   async function call(pathname, init) {
-    const res = await fetch(`${baseUrl}${pathname}`, { ...init, signal: AbortSignal.timeout(15000) });
+    const res = await fetch(`${baseUrl}${pathname}`, {
+      ...init,
+      headers: { Authorization: `Bearer ${secretKey}`, 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(20000),
+    });
     const body = await res.json().catch(() => null);
-    if (!res.ok || !body?.requestSuccessful) {
-      throw new Error(`Monnify ${pathname} failed: ${body?.responseMessage ?? res.status}`);
+    if (!res.ok || !body?.status) {
+      throw new Error(`Paystack ${pathname} failed: ${body?.message ?? res.status}`);
     }
-    return body.responseBody;
-  }
-
-  async function bearer() {
-    if (token && Date.now() < tokenExpiry) return token;
-    const basic = Buffer.from(`${apiKey}:${secretKey}`).toString('base64');
-    const auth = await call('/api/v1/auth/login', { method: 'POST', headers: { Authorization: `Basic ${basic}` } });
-    token = auth.accessToken;
-    // Monnify tokens last an hour; renew a minute early.
-    tokenExpiry = Date.now() + Math.max((auth.expiresIn ?? 3600) - 60, 30) * 1000;
-    return token;
+    return body.data;
   }
 
   return {
-    name: 'monnify',
-    async init({ reference, amount, description, customerName, customerEmail, redirectUrl }) {
-      const body = await call('/api/v1/merchant/transactions/init-transaction', {
+    name: 'paystack',
+    async init({ reference, amount, description, customerEmail, redirectUrl }) {
+      const data = await call('/transaction/initialize', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${await bearer()}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          amount,
-          customerName,
-          customerEmail,
-          paymentReference: reference,
-          paymentDescription: description,
-          currencyCode: 'NGN',
-          contractCode,
-          redirectUrl,
-          paymentMethods: ['CARD', 'ACCOUNT_TRANSFER', 'USSD', 'PHONE_NUMBER'],
+          email: customerEmail,
+          amount: amount * 100,
+          currency: 'NGN',
+          reference,
+          callback_url: redirectUrl,
+          metadata: {
+            // Paystack's cancel link on checkout goes here.
+            cancel_action: `${redirectUrl}?cancelled=1`,
+            custom_fields: [{ display_name: 'Order', variable_name: 'order', value: description }],
+          },
         }),
       });
-      if (body.paymentReference !== reference) throw new Error('Monnify returned a different payment reference.');
-      return { checkoutUrl: body.checkoutUrl, providerRef: body.transactionReference };
+      if (data.reference !== reference) throw new Error('Paystack returned a different payment reference.');
+      return { checkoutUrl: data.authorization_url, providerRef: data.access_code };
     },
     async query(reference) {
-      const body = await call(`/api/v2/merchant/transactions/query?paymentReference=${encodeURIComponent(reference)}`, {
-        headers: { Authorization: `Bearer ${await bearer()}` },
-      });
+      const data = await call(`/transaction/verify/${encodeURIComponent(reference)}`);
       return {
-        reference: body.paymentReference,
-        status: body.paymentStatus,
-        amountPaid: Number(body.amountPaid),
-        currency: body.currency ?? body.currencyCode ?? 'NGN',
-        method: body.paymentMethod ?? null,
-        providerRef: body.transactionReference ?? null,
+        reference: data.reference,
+        // "abandoned" only means nobody has finished this checkout yet, so it can still be paid.
+        status: STATUSES[data.status] ?? 'PENDING',
+        amountPaid: Number(data.amount) / 100,
+        currency: data.currency,
+        method: data.channel ?? null,
+        providerRef: data.id == null ? null : String(data.id),
       };
     },
-    // Monnify signs live webhooks only, so sandbox notifications arrive unsigned. That is safe
-    // because a webhook is only ever a prompt to query() Monnify directly.
+    // A webhook is only ever a prompt to query() Paystack directly.
     signatureValid(rawBody, signature) {
-      if (!signature) return !live;
+      if (!signature) return false;
       const expected = crypto.createHmac('sha512', secretKey).update(rawBody).digest('hex');
       const a = Buffer.from(expected);
       const b = Buffer.from(String(signature));
@@ -78,16 +69,16 @@ export function createMonnify(config) {
   };
 }
 
-// Stand-in used until Monnify keys are configured. Refuses to run in production (see config.js).
+// Stand-in used until a Paystack key is configured. Refuses to run in production (see config.js).
 export function createSimulator(db) {
   return {
     name: 'simulator',
     async init({ reference, amount }) {
-      db.prepare('INSERT INTO simulated_provider (reference, amount) VALUES (?, ?)').run(reference, amount);
+      await db.prepare('INSERT INTO simulated_provider (reference, amount) VALUES (?, ?)').run(reference, amount);
       return { checkoutUrl: `/pay/sim/${reference}`, providerRef: `SIM-${reference}` };
     },
     async query(reference) {
-      const row = db.prepare('SELECT * FROM simulated_provider WHERE reference = ?').get(reference);
+      const row = await db.prepare('SELECT * FROM simulated_provider WHERE reference = ?').get(reference);
       if (!row) throw new Error('Unknown simulated payment.');
       return {
         reference,
@@ -105,134 +96,67 @@ export function createSimulator(db) {
 // ---- Starting a payment ----
 
 // A package's price if one matches exactly, otherwise the price per vote.
-export function priceFor(db, votes) {
-  if (!Number.isInteger(votes) || votes < 1 || votes > MAX_CREDITS_PER_PURCHASE) {
-    throw new HttpError(400, `Enter between 1 and ${MAX_CREDITS_PER_PURCHASE.toLocaleString('en-NG')} votes.`);
+export async function priceFor(db, votes) {
+  if (!Number.isInteger(votes) || votes < 1 || votes > MAX_VOTES_PER_PAYMENT) {
+    throw new HttpError(400, `Enter between 1 and ${MAX_VOTES_PER_PAYMENT.toLocaleString('en-NG')} votes.`);
   }
-  const pack = db.prepare('SELECT price FROM packages WHERE votes = ? AND active = 1').get(votes);
-  return pack ? pack.price : votes * Number(getSetting(db, 'vote_price'));
+  const pack = await db.prepare('SELECT price FROM packages WHERE votes = ? AND active = 1').get(votes);
+  return pack ? pack.price : votes * Number(await getSetting(db, 'vote_price'));
 }
 
-export function quotePurchase(db, { packageId, votes }) {
-  if (packageId != null) {
-    const pack = db.prepare('SELECT * FROM packages WHERE id = ? AND active = 1').get(packageId);
-    if (!pack) throw new HttpError(404, 'That package is no longer available.');
-    return { credits: pack.votes, amount: pack.price };
-  }
-  return { credits: votes, amount: priceFor(db, votes) };
+// Paystack requires a customer email, and supporters aren't asked for one.
+function checkoutEmail(config, reference) {
+  const [name, domain] = config.paymentEmail.split('@');
+  return `${name}+${reference.toLowerCase()}@${domain}`;
 }
 
-const safeReturnPath = (value) => (typeof value === 'string' && /^\/[A-Za-z0-9/_-]*$/.test(value) ? value : null);
-
-async function beginCheckout(ctx, {
-  user = null, email, mode, credits, amount, returnTo = null, contestantId = null, voteQuantity = null, viaLink = false, ip = null, description,
-}) {
+// The votes count as soon as the provider confirms the payment.
+export async function startPayment(ctx, { code, quantity, email = null, viaLink, ip }) {
   const { db, config, provider } = ctx;
+  const state = await votingState(db);
+  if (!state.open) throw new HttpError(409, state.message);
+  const contestant = await db.prepare("SELECT id, code FROM contestants WHERE code = ? AND status = 'approved'").get(code);
+  if (!contestant) throw new HttpError(404, 'No active contestant has that code.');
+  const amount = await priceFor(db, quantity);
+
   // Long and random: holding this reference is what lets someone see the payment and its receipt.
   const reference = `MBG-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(12).toString('hex').toUpperCase()}`;
 
-  const { lastInsertRowid: paymentId } = db.prepare(`
-    INSERT INTO payments (reference, user_id, email, mode, vote_contestant_id, vote_quantity, via_link, ip_hash, credits, amount, provider, return_to, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(reference, user?.id ?? null, email, mode, contestantId, voteQuantity, viaLink ? 1 : 0, hashIp(config, ip), credits, amount, provider.name, safeReturnPath(returnTo), nowIso());
+  const ipHash = hashIp(config, ip);
+  const { lastInsertRowid: paymentId } = await db.prepare(`
+    INSERT INTO payments (reference, email, vote_contestant_id, vote_quantity, via_link, ip_hash, amount, provider, return_to, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
+    .run(reference, email, contestant.id, quantity, viaLink ? 1 : 0, ipHash, amount, provider.name, `/c/${contestant.code}`, nowIso());
 
   const tenMinutesAgo = new Date(Date.now() - 600000).toISOString();
-  const attempts = db.prepare(`SELECT COUNT(*) AS n FROM payments
-    WHERE email = ? AND status = 'pending' AND created_at >= ?`).get(email, tenMinutesAgo).n;
-  if (attempts >= 8) {
-    raiseFlag(ctx, { kind: 'repeated_checkouts', severity: 'low', details: `${attempts} unfinished checkouts in 10 minutes from ${email}.`, userId: user?.id ?? null });
+  const attempts = (await db.prepare(`SELECT COUNT(*) AS n FROM payments
+    WHERE ip_hash = ? AND status = 'pending' AND created_at >= ?`).get(ipHash, tenMinutesAgo)).n;
+  if (attempts >= 20) {
+    await raiseFlag(ctx, { kind: 'repeated_checkouts', severity: 'low', details: `${attempts} unfinished checkouts in 10 minutes from one network.` });
   }
 
   try {
     const { checkoutUrl, providerRef } = await provider.init({
       reference,
       amount,
-      description,
-      customerName: user?.name ?? 'MBGN supporter',
-      customerEmail: email,
+      description: `${quantity} MBGN vote${quantity === 1 ? '' : 's'} for ${contestant.code}`,
+      customerEmail: checkoutEmail(config, reference),
       redirectUrl: `${config.publicUrl}/pay/return/${reference}`,
     });
-    db.prepare('UPDATE payments SET provider_ref = ? WHERE id = ?').run(providerRef ?? null, paymentId);
-    return { reference, checkoutUrl, credits, amount };
+    await db.prepare('UPDATE payments SET provider_ref = ? WHERE id = ?').run(providerRef ?? null, paymentId);
+    return { reference, checkoutUrl, votes: quantity, amount };
   } catch (err) {
     console.error('Could not start payment:', err.message);
-    db.prepare("UPDATE payments SET status = 'failed' WHERE id = ?").run(paymentId);
+    await db.prepare("UPDATE payments SET status = 'failed' WHERE id = ?").run(paymentId);
     throw new HttpError(502, 'The payment provider could not start this payment. Please try again.');
   }
 }
 
-function votableContestant(db, code) {
-  const state = votingState(db);
-  if (!state.open) throw new HttpError(409, state.message);
-  const contestant = db.prepare("SELECT id, code FROM contestants WHERE code = ? AND status = 'approved'").get(code);
-  if (!contestant) throw new HttpError(404, 'No active contestant has that code.');
-  return contestant;
-}
-
-// A plain wallet top-up.
-export async function startPurchase(ctx, { user, packageId, votes, returnTo, ip }) {
-  if (user.frozen) throw new HttpError(403, 'This wallet is under review and cannot buy credits right now.');
-  const { credits, amount } = quotePurchase(ctx.db, { packageId, votes });
-  return beginCheckout(ctx, {
-    user, email: user.email, mode: 'wallet', credits, amount, returnTo, ip, description: `${credits} MBGN voting credit${credits === 1 ? '' : 's'}`,
-  });
-}
-
-// Pay directly: no wallet, and the votes count as soon as the provider confirms.
-export async function startDirectPayment(ctx, { code, quantity, email, viaLink, ip }) {
-  const { db } = ctx;
-  const address = typeof email === 'string' ? email.trim().toLowerCase().slice(0, 200) : '';
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) throw new HttpError(400, 'Please enter a valid email address for your receipt.');
-  const contestant = votableContestant(db, code);
-  const amount = priceFor(db, quantity);
-  return beginCheckout(ctx, {
-    email: address,
-    mode: 'direct',
-    credits: quantity,
-    amount,
-    returnTo: `/c/${contestant.code}`,
-    contestantId: contestant.id,
-    voteQuantity: quantity,
-    viaLink,
-    ip,
-    description: `${quantity} MBGN vote${quantity === 1 ? '' : 's'} for ${contestant.code}`,
-  });
-}
-
-// Fund a wallet and vote: credits go in, these votes come straight out, and the rest stay.
-export async function startFundAndVote(ctx, { user, code, quantity, fund, viaLink, ip }) {
-  const { db } = ctx;
-  if (user.frozen) throw new HttpError(403, 'This wallet is under review and cannot buy credits right now.');
-  const contestant = votableContestant(db, code);
-  priceFor(db, quantity);
-  const amount = priceFor(db, fund);
-  const { credits: balance } = db.prepare('SELECT credits FROM users WHERE id = ?').get(user.id);
-  if (fund + balance < quantity) throw new HttpError(400, `Add at least ${quantity - balance} credits to cast ${quantity} votes.`);
-  return beginCheckout(ctx, {
-    user,
-    email: user.email,
-    mode: 'wallet',
-    credits: fund,
-    amount,
-    returnTo: `/c/${contestant.code}`,
-    contestantId: contestant.id,
-    voteQuantity: quantity,
-    viaLink,
-    ip,
-    description: `${fund} MBGN voting credit${fund === 1 ? '' : 's'}`,
-  });
-}
-
-// What anyone holding the reference may see. The balance is only ever shown to its owner.
-export function paymentView(db, payment, viewer = null) {
-  const contestant = payment.vote_contestant_id
-    ? db.prepare('SELECT code, stage_name, status, total_votes, position FROM contestants WHERE id = ?').get(payment.vote_contestant_id)
-    : null;
-  const own = viewer && viewer.id === payment.user_id;
+// What anyone holding the reference may see.
+export async function paymentView(db, payment) {
+  const contestant = await db.prepare('SELECT code, stage_name, status, total_votes, position FROM contestants WHERE id = ?').get(payment.vote_contestant_id);
   return {
     reference: payment.reference,
-    mode: payment.mode,
-    credits: payment.credits,
     amount: payment.amount,
     status: payment.status,
     votes: payment.vote_quantity,
@@ -242,142 +166,98 @@ export function paymentView(db, payment, viewer = null) {
     createdAt: payment.created_at,
     paidAt: payment.paid_at,
     returnTo: payment.return_to,
-    contestant: contestant ? {
+    emailed: Boolean(payment.email),
+    contestant: {
       code: contestant.code,
       name: contestant.stage_name,
       totalVotes: contestant.status === 'approved' ? contestant.total_votes : null,
       position: contestant.position,
-    } : null,
-    balance: own ? db.prepare('SELECT credits FROM users WHERE id = ?').get(payment.user_id).credits : undefined,
+    },
   };
 }
 
-// The single path that turns money into credits or votes. It always asks the provider directly;
+// The single path that turns money into votes. It always asks the provider directly;
 // browser redirects and webhook bodies only decide *when* it runs, never the outcome.
 export async function settlePayment(ctx, reference) {
   const { db, provider } = ctx;
-  const payment = db.prepare('SELECT * FROM payments WHERE reference = ?').get(reference);
+  const payment = await db.prepare('SELECT * FROM payments WHERE reference = ?').get(reference);
   if (!payment) throw new HttpError(404, 'Payment not found.');
   if (payment.status === 'paid' || payment.status === 'review') return payment;
 
   const result = await provider.query(reference);
   if (result.reference && result.reference !== reference) {
-    raiseFlag(ctx, { kind: 'payment_mismatch', severity: 'high', details: `Provider answered ${reference} with ${result.reference}.`, userId: payment.user_id, paymentId: payment.id });
+    await raiseFlag(ctx, { kind: 'payment_mismatch', severity: 'high', details: `Provider answered ${reference} with ${result.reference}.`, paymentId: payment.id });
     return payment;
   }
 
-  if (result.status === 'PAID' || result.status === 'OVERPAID') {
+  if (result.status === 'PAID') {
     if (result.currency !== 'NGN' || !(result.amountPaid >= payment.amount)) {
-      tx(db, () => {
-        db.prepare("UPDATE payments SET status = 'review', paid_amount = ? WHERE id = ?").run(result.amountPaid, payment.id);
-        raiseFlag(ctx, {
+      await tx(db, async () => {
+        await db.prepare("UPDATE payments SET status = 'review', paid_amount = ? WHERE id = ?").run(result.amountPaid, payment.id);
+        await raiseFlag(ctx, {
           kind: 'payment_mismatch',
           severity: 'high',
-          details: `${reference}: expected NGN ${payment.amount}, provider reports ${result.currency} ${result.amountPaid}. No credits given.`,
-          userId: payment.user_id,
+          details: `${reference}: expected NGN ${payment.amount}, provider reports ${result.currency} ${result.amountPaid}. No votes counted.`,
           paymentId: payment.id,
         });
       });
       return db.prepare('SELECT * FROM payments WHERE id = ?').get(payment.id);
     }
-    if (!payment.user_id) {
-      const outcome = recordDirectVotes(ctx, payment, result);
-      if (outcome) sendPaymentEmail(ctx, payment, outcome);
-      return db.prepare('SELECT * FROM payments WHERE id = ?').get(payment.id);
-    }
-    return creditWallet(ctx, payment, result);
+    const outcome = await recordPaidVotes(ctx, payment, result);
+    if (outcome && payment.email) await sendPaymentEmail(ctx, payment, outcome);
+    return db.prepare('SELECT * FROM payments WHERE id = ?').get(payment.id);
   }
 
-  if (result.status === 'PARTIALLY_PAID') {
-    tx(db, () => {
-      db.prepare("UPDATE payments SET status = 'review', paid_amount = ? WHERE id = ?").run(result.amountPaid, payment.id);
-      raiseFlag(ctx, { kind: 'partial_payment', details: `${reference}: paid ${result.amountPaid} of ${payment.amount}. No credits given.`, userId: payment.user_id, paymentId: payment.id });
-    });
-  } else if (['FAILED', 'EXPIRED', 'REVERSED', 'CANCELLED'].includes(result.status)) {
-    db.prepare("UPDATE payments SET status = 'failed' WHERE id = ? AND status = 'pending'").run(payment.id);
+  if (['FAILED', 'REVERSED'].includes(result.status)) {
+    await db.prepare("UPDATE payments SET status = 'failed' WHERE id = ? AND status = 'pending'").run(payment.id);
   }
   return db.prepare('SELECT * FROM payments WHERE id = ?').get(payment.id);
 }
 
-function creditWallet(ctx, payment, result) {
-  const { db } = ctx;
-  const credited = tx(db, () => {
-    // Exactly one caller can flip this row, however many webhooks and verifies race.
-    const flip = db.prepare(`UPDATE payments SET status = 'paid', paid_amount = ?, paid_at = ?, payment_method = ?,
-      provider_ref = COALESCE(?, provider_ref) WHERE id = ? AND status IN ('pending', 'failed')`)
-      .run(result.amountPaid, nowIso(), result.method, result.providerRef, payment.id);
-    if (flip.changes !== 1) return false;
-    db.prepare('UPDATE users SET credits = credits + ? WHERE id = ?').run(payment.credits, payment.user_id);
-    const { credits } = db.prepare('SELECT credits FROM users WHERE id = ?').get(payment.user_id);
-    db.prepare(`INSERT INTO wallet_ledger (user_id, delta, balance_after, kind, payment_id, created_at)
-      VALUES (?, ?, ?, 'purchase', ?, ?)`).run(payment.user_id, payment.credits, credits, payment.id, nowIso());
-    return true;
-  });
-  if (credited) {
-    notifyUser(ctx, payment.user_id, 'wallet', `${payment.credits} voting credit${payment.credits === 1 ? '' : 's'} added to your wallet.`);
-    const outcome = payment.vote_contestant_id ? voteFromPayment(ctx, payment) : {};
-    ctx.bus.sendToUser(payment.user_id, 'wallet', { reference: payment.reference });
-    sendPaymentEmail(ctx, payment, outcome);
-  }
-  return db.prepare('SELECT * FROM payments WHERE id = ?').get(payment.id);
-}
-
-// The votes a "fund wallet and vote" payment was made for. If they can no longer be cast,
-// nothing is lost: the credits simply stay in the wallet.
-function voteFromPayment(ctx, payment) {
-  const { db } = ctx;
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(payment.user_id);
-  const contestant = db.prepare('SELECT code, stage_name FROM contestants WHERE id = ?').get(payment.vote_contestant_id);
-  try {
-    castVote(ctx, {
-      user,
-      code: contestant.code,
-      quantity: payment.vote_quantity,
-      idempotencyKey: `payment-${payment.id}`,
-      viaLink: Boolean(payment.via_link),
-      ipHash: payment.ip_hash ?? 'unknown',
-      payment,
-    });
-    db.prepare("UPDATE payments SET votes_status = 'counted' WHERE id = ?").run(payment.id);
-    return { contestant };
-  } catch (err) {
-    if (!(err instanceof HttpError)) throw err;
-    db.prepare("UPDATE payments SET votes_status = 'kept' WHERE id = ?").run(payment.id);
-    notifyUser(ctx, payment.user_id, 'wallet', `Your vote for ${contestant.stage_name} could not be cast, so your credits are safe in your wallet.`);
-    return { kept: true, contestant };
-  }
-}
-
-function sendPaymentEmail(ctx, payment, { held, kept, contestant }) {
+function sendPaymentEmail(ctx, payment, { held, contestant }) {
   const link = `${ctx.config.publicUrl}/receipt/payment/${payment.reference}`;
   const naira = `NGN ${payment.amount.toLocaleString('en-NG')}`;
   const votes = payment.vote_quantity;
-  let subject = 'Your MBGN credits';
-  let text = `Your payment of ${naira} added ${payment.credits} voting credits to your wallet.`;
-  if (held) {
-    subject = 'We received your payment';
-    text = `Your payment of ${naira} arrived, but those votes could not be counted because ${contestant.stage_name} is no longer in the running or results are final. Our team will refund you.`;
-  } else if (kept) {
-    text = `Your payment of ${naira} arrived, but your vote for ${contestant.stage_name} could not be cast. Your credits are safe in your wallet.`;
-  } else if (contestant) {
-    subject = `Your ${votes} vote${votes === 1 ? '' : 's'} for ${contestant.stage_name}`;
-    text = `Thank you! ${votes} vote${votes === 1 ? ' has' : 's have'} been counted for ${contestant.stage_name} (${contestant.code}).`;
+  const subject = held ? 'We received your payment' : `Your ${votes} vote${votes === 1 ? '' : 's'} for ${contestant.stage_name}`;
+  const text = held
+    ? `Your payment of ${naira} arrived, but those votes could not be counted because ${contestant.stage_name} is no longer in the running or results are final. Our team will refund you.`
+    : `Thank you! ${votes} vote${votes === 1 ? ' has' : 's have'} been counted for ${contestant.stage_name} (${contestant.code}).`;
+  return ctx.mailer.send({ to: payment.email, subject, text: `${text}\n\nReceipt: ${link}` });
+}
+
+// The optional receipt offered after paying. One per payment, so holding a reference
+// can't be used to send someone repeated emails.
+export async function emailReceipt(ctx, payment, address) {
+  const { db } = ctx;
+  const email = typeof address === 'string' ? address.trim().toLowerCase().slice(0, 200) : '';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'Please enter a valid email address.');
+  if (payment.status !== 'paid') throw new HttpError(409, 'A receipt is issued once payment is confirmed.');
+  const { changes } = await db.prepare('UPDATE payments SET email = ? WHERE id = ? AND email IS NULL').run(email, payment.id);
+  if (changes !== 1) throw new HttpError(409, 'The receipt for this payment has already been sent.');
+
+  const contestant = await db.prepare('SELECT * FROM contestants WHERE id = ?').get(payment.vote_contestant_id);
+  if (email === contestant.email.toLowerCase()) {
+    await raiseFlag(ctx, {
+      kind: 'self_vote',
+      details: `${email} belongs to ${contestant.code}, and asked for the receipt for ${payment.vote_quantity} votes for them.`,
+      contestantId: contestant.id,
+    });
   }
-  ctx.mailer.send({ to: payment.email, subject, text: `${text}\n\nReceipt: ${link}` });
+  await sendPaymentEmail(ctx, { ...payment, email }, { held: payment.votes_status === 'held', contestant });
 }
 
 // Catches payments whose webhook and browser redirect both went missing.
 export async function reconcilePending(ctx) {
   const dayAgo = new Date(Date.now() - 864e5).toISOString();
-  const pending = ctx.db.prepare("SELECT reference FROM payments WHERE status = 'pending' AND created_at >= ?").all(dayAgo);
+  const pending = await ctx.db.prepare("SELECT reference FROM payments WHERE status = 'pending' AND created_at >= ? ORDER BY created_at DESC LIMIT 50").all(dayAgo);
   for (const { reference } of pending) {
     await settlePayment(ctx, reference).catch((err) => console.error(`Reconcile ${reference}:`, err.message));
   }
 }
 
-export function handleWebhook(ctx, rawBody, signature) {
+export async function handleWebhook(ctx, rawBody, signature) {
   if (!ctx.provider.signatureValid(rawBody, signature)) {
-    raiseFlag(ctx, { kind: 'bad_webhook_signature', severity: 'high', details: 'A payment webhook arrived with an invalid signature and was ignored.' });
+    await raiseFlag(ctx, { kind: 'bad_webhook_signature', severity: 'high', details: 'A payment webhook arrived with an invalid signature and was ignored.' });
     return { accepted: false };
   }
   let event;
@@ -386,12 +266,14 @@ export function handleWebhook(ctx, rawBody, signature) {
   } catch {
     return { accepted: true };
   }
-  const reference = event?.eventData?.paymentReference;
+  const reference = event?.data?.reference;
+  // A Paystack account has one webhook address, so another site's payments may land here too.
   const known = typeof reference === 'string'
-    && ctx.db.prepare('SELECT 1 FROM payments WHERE reference = ?').get(reference);
-  if (event?.eventType === 'SUCCESSFUL_TRANSACTION' && known) {
-    // Acknowledge first, as Monnify recommends, then settle.
-    setImmediate(() => settlePayment(ctx, reference).catch((err) => console.error(`Webhook ${reference}:`, err.message)));
+    && await ctx.db.prepare('SELECT 1 FROM payments WHERE reference = ?').get(reference);
+  if (event?.event === 'charge.success' && known) {
+    // Settled before answering, because a serverless function can freeze once it has responded.
+    // If this fails, the regular recheck of pending payments still catches it.
+    await settlePayment(ctx, reference).catch((err) => console.error(`Webhook ${reference}:`, err.message));
   }
   return { accepted: true };
 }

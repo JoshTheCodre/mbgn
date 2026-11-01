@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, ago, dateTime, num, plural, shortDate, useApp, useFetch, useLive } from '../lib.jsx';
 import {
-  CodeTag, Countdown, ErrorNote, Field, Loading, Movement, Portrait, CountUp, ShareButtons,
+  CodeTag, Countdown, ErrorNote, Field, LoadFailed, Loading, Movement, Portrait, CountUp, ShareButtons,
 } from '../ui.jsx';
 
 function DailyVotes({ daily }) {
@@ -149,7 +149,7 @@ export function Dashboard() {
 
   if (user === undefined) return <div className="wrap page"><Loading /></div>;
   if (!user || !user.contestant) return <OpenDashboard />;
-  if (error && !data) return <div className="wrap page"><ErrorNote error={error} /></div>;
+  if (error && !data) return <div className="wrap page"><LoadFailed error={error} onRetry={reload} what="your dashboard" /></div>;
   if (!data) return <div className="wrap page"><Loading /></div>;
   if (data.status !== 'approved') return <NotYetLive data={data} onRead={markRead} />;
 

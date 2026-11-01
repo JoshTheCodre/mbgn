@@ -5,42 +5,57 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
+import { PGlite } from '@electric-sql/pglite';
 import { createApp, createContext } from '../server/app.js';
 import { formatCode } from '../server/competition.js';
 import { loadConfig } from '../server/config.js';
 
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000001e221bc330000000049454e44ae426082', 'hex');
 
+// A real Postgres that runs in memory, so the tests need no account or network.
+function memoryPostgres() {
+  const pg = new PGlite({ parsers: { 20: Number, 1700: Number } });
+  const shape = (result) => ({ rows: result.rows, changes: result.affectedRows ?? 0 });
+  return {
+    query: async (sql, params) => shape(await pg.query(sql, params)),
+    transaction: (fn) => pg.transaction((t) => fn({
+      query: async (sql, params) => shape(await t.query(sql, params)),
+      exec: (sql) => t.exec(sql),
+    })),
+    close: () => pg.close(),
+  };
+}
+
 async function boot(overrides = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbgn-test-'));
   const config = loadConfig({
     nodeEnv: 'test',
     dataDir: dir,
-    dbPath: path.join(dir, 'test.sqlite'),
+    dbDriver: memoryPostgres(),
     uploadDir: path.join(dir, 'uploads'),
     publicUrl: 'http://localhost',
     adminEmail: 'admin@test.local',
     adminPassword: 'admin-password',
-    activityWindowMs: 20,
+    activityWindowMs: 60,
     appSecret: 'test-secret',
     smtpUrl: null,
-    monnify: null,
+    paystack: null,
     rateLimitScale: 1000,
     ...overrides,
   });
-  const ctx = createContext(config);
-  const server = createApp(ctx, { serveClient: false }).listen(0);
+  const ctx = await createContext(config);
+  const server = createApp(ctx).listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   return {
     ctx,
     base,
-    close() {
+    async close() {
       ctx.activity.stop();
       ctx.bus.close();
       server.closeAllConnections();
       server.close();
-      ctx.db.close();
+      await ctx.db.close();
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };
@@ -101,18 +116,9 @@ async function makeContestant(app, admin, name) {
 
 const emailFor = (name = 'sue') => `${name}${crypto.randomInt(1e9)}@test.local`;
 
-// A supporter's wallet: an email and phone number, with no account or password.
-async function makeSupporter(app, name = 'sue') {
-  const person = client(app.base);
-  const email = emailFor(name);
-  const phone = `0806${crypto.randomInt(1000000, 9999999)}`;
-  const res = await person.post('/supporters/wallet', { email, phone });
-  assert.equal(res.status, 201);
-  return Object.assign(person, { userId: res.data.user.id, email, phone });
-}
-
-async function buyCredits(person, votes) {
-  const { data: started } = await person.post('/wallet/purchases', { votes });
+// Pays through the simulated checkout, the way a supporter's browser does.
+async function payForVotes(person, code, quantity) {
+  const { data: started } = await person.post('/votes/pay', { code, quantity });
   await person.post(`/simulator/${started.reference}/pay`);
   const { data: verified } = await person.post(`/payments/${started.reference}/verify`);
   assert.equal(verified.status, 'paid');
@@ -220,30 +226,16 @@ describe('MBGN platform', () => {
     assert.ok(!/0805\d{7}/.test(text));
   });
 
-  test('no public sign-up or supporter login exists', async () => {
+  test('no public sign-up, supporter login or wallet exists', async () => {
     const anon = client(app.base);
     assert.equal((await anon.post('/auth/signup', { name: 'Sue', email: emailFor(), password: 'supporter-pass' })).status, 404);
-    const sue = await makeSupporter(app);
-    assert.equal((await anon.post('/auth/login', { email: sue.email, password: 'anything-at-all' })).status, 401);
+    assert.equal((await anon.post('/auth/login', { email: emailFor(), password: 'anything-at-all' })).status, 401);
+    assert.equal((await anon.get('/wallet')).status, 404);
+    assert.equal((await anon.post('/wallet/purchases', { votes: 1 })).status, 404);
+    assert.equal((await anon.post('/supporters/wallet', { email: emailFor(), phone: '08000000000' })).status, 404);
+    assert.equal((await anon.post('/votes/fund', { code: 'MBG001', quantity: 1, fund: 1 })).status, 404);
+    assert.equal((await anon.post('/votes', { code: 'MBG001', quantity: 1 })).status, 404);
   });
-
-  test('a wallet opens with just an email and phone, and the same details bring it back', async () => {
-    const sue = await makeSupporter(app);
-    await buyCredits(sue, 3);
-
-    const newPhone = client(app.base);
-    assert.equal((await newPhone.get('/wallet')).status, 401);
-    assert.equal((await newPhone.post('/supporters/wallet', { email: sue.email, phone: '08000000000' })).status, 401);
-    assert.equal((await newPhone.get('/wallet')).status, 401);
-    const back = await newPhone.post('/supporters/wallet', { email: sue.email.toUpperCase(), phone: sue.phone.replace(/^0/, '+234') });
-    assert.equal(back.status, 200);
-    assert.equal((await newPhone.get('/wallet')).data.balance, 3);
-
-    // The admin's email can't be used to get in this way.
-    const attempt = await client(app.base).post('/supporters/wallet', { email: 'admin@test.local', phone: '08000000000' });
-    assert.equal(attempt.status, 401);
-  });
-
   test('joining is what identifies a contestant, with no password', async () => {
     const person = client(app.base);
     const form = registrationForm('Joiner', { whatsapp: '+234 803 555 0101' });
@@ -265,25 +257,10 @@ describe('MBGN platform', () => {
     assert.equal((await client(app.base).req('POST', '/contestants/register', { form: registrationForm('Joiner') })).status, 409);
   });
 
-  test('someone with a wallet keeps their credits when they join the contest', async () => {
-    const sue = await makeSupporter(app, 'walletjoiner');
-    await buyCredits(sue, 4);
-    const form = registrationForm('WalletJoiner', { email: sue.email, phone: sue.phone });
-    assert.equal((await sue.req('POST', '/contestants/register', { form })).status, 201);
-    assert.equal((await sue.get('/wallet')).data.balance, 4);
-    assert.equal((await sue.get('/me/dashboard')).data.name, 'WalletJoiner');
-
-    // A stranger who only knows the email cannot take over a wallet by joining with it.
-    const other = await makeSupporter(app, 'victim');
-    const stolen = registrationForm('Stranger', { email: other.email });
-    assert.equal((await client(app.base).req('POST', '/contestants/register', { form: stolen })).status, 409);
-  });
-
-  test('paying directly needs only an email, creates no wallet and counts once', async () => {
+  test('paying needs no details, creates no account and counts once', async () => {
     const { code } = await makeContestant(app, admin, 'DirectPay');
     const anon = client(app.base);
-    const email = emailFor('directfan');
-    const { status, data: started } = await anon.post('/votes/pay', { code, quantity: 5, email });
+    const { status, data: started } = await anon.post('/votes/pay', { code, quantity: 5 });
     assert.equal(status, 201);
     assert.equal(started.amount, 2500);
     assert.equal(anon.cookie, '');
@@ -296,41 +273,73 @@ describe('MBGN platform', () => {
     const results = await Promise.all(Array.from({ length: 6 }, () => anon.post(`/payments/${started.reference}/verify`)));
     assert.ok(results.every((r) => r.data.status === 'paid' && r.data.votesStatus === 'counted'));
     assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 5);
-    assert.equal(app.ctx.db.prepare('SELECT COUNT(*) AS n FROM votes WHERE supporter_email = ?').get(email).n, 1);
-    assert.equal(app.ctx.db.prepare('SELECT 1 AS x FROM users WHERE email = ?').get(email), undefined);
-
-    const mail = app.ctx.db.prepare('SELECT subject, body FROM outbox WHERE to_addr = ?').get(email);
-    assert.ok(mail.subject.includes('5 votes'));
-    assert.ok(mail.body.includes(`/receipt/payment/${started.reference}`));
+    const row = await app.ctx.db.prepare('SELECT id, email FROM payments WHERE reference = ?').get(started.reference);
+    assert.equal(row.email, null);
+    assert.equal((await app.ctx.db.prepare('SELECT COUNT(*) AS n FROM votes WHERE payment_id = ?').get(row.id)).n, 1);
   });
 
-  test('direct payments check the email, amount, contestant and voting state', async () => {
+  test('payments check the amount, contestant and voting state, and ignore any email sent', async () => {
     const { code } = await makeContestant(app, admin, 'DirectRules');
     const anon = client(app.base);
-    const email = emailFor();
-    assert.equal((await anon.post('/votes/pay', { code, quantity: 1, email: 'nope' })).status, 400);
     for (const quantity of [0, -3, 1.5, '2', null]) {
-      assert.equal((await anon.post('/votes/pay', { code, quantity, email })).status, 400);
+      assert.equal((await anon.post('/votes/pay', { code, quantity })).status, 400);
     }
-    assert.equal((await anon.post('/votes/pay', { code: 'NOPE9', quantity: 1, email })).status, 404);
+    assert.equal((await anon.post('/votes/pay', { code: 'NOPE9', quantity: 1 })).status, 404);
     await admin.post('/admin/voting/paused');
-    assert.equal((await anon.post('/votes/pay', { code, quantity: 1, email })).status, 409);
+    assert.equal((await anon.post('/votes/pay', { code, quantity: 1 })).status, 409);
     await admin.post('/admin/voting/open');
-    // The client cannot set its own price.
-    assert.equal((await anon.post('/votes/pay', { code, quantity: 10, amount: 1, email })).data.amount, 5000);
+    // The client cannot set its own price, or plant an address for a receipt.
+    const { data: started } = await anon.post('/votes/pay', { code, quantity: 10, amount: 1, email: 'someone@test.local' });
+    assert.equal(started.amount, 5000);
+    assert.equal((await app.ctx.db.prepare('SELECT email FROM payments WHERE reference = ?').get(started.reference)).email, null);
   });
 
-  test('a direct payment started before closing counts; one for a removed contestant is held', async () => {
+  test('the optional receipt email goes out once, only after payment, and stays private', async () => {
+    const { code } = await makeContestant(app, admin, 'ReceiptMail');
+    const anon = client(app.base);
+    const email = emailFor('receiptfan');
+    const { data: started } = await anon.post('/votes/pay', { code, quantity: 5 });
+    const send = (address) => anon.post(`/payments/${started.reference}/receipt-email`, { email: address });
+
+    assert.equal((await send(email)).status, 409);
+    await anon.post(`/simulator/${started.reference}/pay`);
+    assert.equal((await anon.post(`/payments/${started.reference}/verify`)).data.emailed, false);
+    assert.equal((await send('nope')).status, 400);
+    assert.equal((await send(email.toUpperCase())).status, 200);
+    assert.equal((await send(emailFor('second'))).status, 409);
+    assert.equal((await anon.post('/payments/MBG-WRONG/receipt-email', { email })).status, 404);
+
+    const mail = await app.ctx.db.prepare('SELECT subject, body FROM outbox WHERE to_addr = ?').all(email);
+    assert.equal(mail.length, 1);
+    assert.ok(mail[0].subject.includes('5 votes'));
+    assert.ok(mail[0].body.includes(`/receipt/payment/${started.reference}`));
+
+    // The page learns that it was sent, never where.
+    const { data: view } = await client(app.base).get(`/payments/${started.reference}`);
+    assert.equal(view.emailed, true);
+    assert.ok(!JSON.stringify(view).includes(email));
+  });
+
+  test('a contestant asking for the receipt with their own email is flagged', async () => {
+    const { code } = await makeContestant(app, admin, 'SelfReceipt');
+    const reference = await payForVotes(client(app.base), code, 1);
+    const res = await client(app.base).post(`/payments/${reference}/receipt-email`, { email: 'selfreceipt@test.local' });
+    assert.equal(res.status, 200);
+    const { data: flags } = await admin.get('/admin/flags');
+    assert.ok(flags.some((f) => f.code === code && f.kind === 'self_vote'));
+  });
+
+  test('a payment started before closing counts; one for a removed contestant is held', async () => {
     const late = await makeContestant(app, admin, 'LatePayer');
     const anon = client(app.base);
-    const { data: started } = await anon.post('/votes/pay', { code: late.code, quantity: 6, email: emailFor() });
+    const { data: started } = await anon.post('/votes/pay', { code: late.code, quantity: 6 });
     await admin.post('/admin/voting/closed');
     await anon.post(`/simulator/${started.reference}/pay`);
     assert.equal((await anon.post(`/payments/${started.reference}/verify`)).data.votesStatus, 'counted');
     await admin.post('/admin/voting/open');
 
     const gone = await makeContestant(app, admin, 'GoneAway');
-    const { data: heldStart } = await anon.post('/votes/pay', { code: gone.code, quantity: 3, email: emailFor() });
+    const { data: heldStart } = await anon.post('/votes/pay', { code: gone.code, quantity: 3 });
     await admin.post(`/admin/contestants/${gone.id}/disqualify`, { reason: 'Broke the rules' });
     await anon.post(`/simulator/${heldStart.reference}/pay`);
     const { data: held } = await anon.post(`/payments/${heldStart.reference}/verify`);
@@ -341,135 +350,38 @@ describe('MBGN platform', () => {
     assert.ok((await admin.get('/admin/overview')).data.votesHeld >= 1);
   });
 
-  test('funding a wallet creates it silently, votes, and keeps the rest', async () => {
-    const { code } = await makeContestant(app, admin, 'FundVote');
-    const fan = client(app.base);
-    const email = emailFor('walletfan');
-    const details = { code, quantity: 5, fund: 20, email, phone: '08091112222' };
-
-    const { status, data: started } = await fan.post('/votes/fund', details);
-    assert.equal(status, 201);
-    assert.equal(started.amount, 10000);
-    assert.notEqual(fan.cookie, '');
-    assert.equal((await fan.get('/wallet')).data.balance, 0);
-    assert.equal((await fan.get(`/contestants/${code}`)).data.totalVotes, 0);
-
-    await fan.post(`/simulator/${started.reference}/pay`);
-    const verified = await Promise.all(Array.from({ length: 6 }, () => fan.post(`/payments/${started.reference}/verify`)));
-    assert.ok(verified.every((r) => r.data.status === 'paid'));
-    assert.equal((await fan.post(`/payments/${started.reference}/verify`)).data.votesStatus, 'counted');
-    assert.equal((await fan.get('/wallet')).data.balance, 15);
-    assert.equal((await fan.get(`/contestants/${code}`)).data.totalVotes, 5);
-
-    // The same details bring it back on another phone; a wrong number doesn't.
-    const stranger = client(app.base);
-    const wrong = await stranger.post('/votes/fund', { ...details, phone: '08000000000' });
-    assert.equal(wrong.status, 401);
-    assert.equal(stranger.cookie, '');
-    const otherPhone = client(app.base);
-    assert.equal((await otherPhone.post('/supporters/wallet', { email, phone: '+2348091112222' })).status, 200);
-    assert.equal((await otherPhone.get('/wallet')).data.balance, 15);
-
-    // Too little to cover the votes is refused.
-    assert.equal((await fan.post('/votes/fund', { code, quantity: 50, fund: 5 })).status, 400);
-  });
-
-  test('if the vote can no longer be cast, funded credits stay safe in the wallet', async () => {
-    const gone = await makeContestant(app, admin, 'FundGone');
-    const sue = await makeSupporter(app);
-    const { data: started } = await sue.post('/votes/fund', { code: gone.code, quantity: 5, fund: 10 });
-    await admin.post(`/admin/contestants/${gone.id}/disqualify`, { reason: 'Broke the rules' });
-    await sue.post(`/simulator/${started.reference}/pay`);
-    const { data } = await sue.post(`/payments/${started.reference}/verify`);
-    assert.equal(data.status, 'paid');
-    assert.equal(data.votesStatus, 'kept');
-    assert.equal(data.balance, 10);
-    assert.equal((await admin.get('/admin/contestants?q=FundGone')).data[0].totalVotes, 0);
-  });
-
-  test('a browser "success" alone never creates credits', async () => {
-    const sue = await makeSupporter(app);
-    const { data: started } = await sue.post('/wallet/purchases', { votes: 3 });
+  test('a browser "success" alone never counts votes', async () => {
+    const { code } = await makeContestant(app, admin, 'NoClaim');
+    const anon = client(app.base);
+    const { data: started } = await anon.post('/votes/pay', { code, quantity: 3 });
     assert.equal(started.amount, 1500);
 
     // Unpaid at the provider: asking to verify changes nothing.
-    const { data: check } = await sue.post(`/payments/${started.reference}/verify`, { paymentStatus: 'PAID', status: 'PAID' });
+    const { data: check } = await anon.post(`/payments/${started.reference}/verify`, { paymentStatus: 'PAID', status: 'PAID' });
     assert.equal(check.status, 'pending');
-    assert.equal(check.balance, 0);
-
-    // Someone else holding the reference learns nothing about the wallet's balance.
-    const other = await makeSupporter(app, 'other');
-    assert.equal((await other.post(`/payments/${started.reference}/verify`)).data.balance, undefined);
-
-    // The client cannot set its own price.
-    const { data: cheap } = await sue.post('/wallet/purchases', { votes: 10, amount: 1, price: 1 });
-    assert.equal(cheap.amount, 5000);
+    assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 0);
   });
 
-  test('duplicate verifications and racing settlements credit exactly once', async () => {
-    const sue = await makeSupporter(app);
-    const { data: started } = await sue.post('/wallet/purchases', { votes: 4 });
-    await sue.post(`/simulator/${started.reference}/pay`);
-
-    const results = await Promise.all(Array.from({ length: 8 }, () => sue.post(`/payments/${started.reference}/verify`)));
-    assert.ok(results.every((r) => r.data.status === 'paid'));
-
-    const { data: wallet } = await sue.get('/wallet');
-    assert.equal(wallet.balance, 4);
-    const { n } = app.ctx.db.prepare("SELECT COUNT(*) AS n FROM wallet_ledger WHERE kind = 'purchase' AND user_id = ?").get(sue.userId);
-    assert.equal(n, 1);
-  });
-
-  test('voting deducts credits, recalculates ranks, and retries do not double count', async () => {
+  test('paid votes recalculate ranks', async () => {
     const stella = await makeContestant(app, admin, 'Stella');
     const jennifer = await makeContestant(app, admin, 'Jennifer');
-    const sue = await makeSupporter(app);
-    await buyCredits(sue, 20);
+    const anon = client(app.base);
+    await payForVotes(anon, stella.code, 5);
+    await payForVotes(anon, jennifer.code, 7);
 
-    const key = crypto.randomUUID();
-    const first = await sue.post('/votes', { code: stella.code, quantity: 5, idempotencyKey: key });
-    assert.equal(first.status, 201);
-    assert.equal(first.data.balance, 15);
-    assert.equal(first.data.contestant.totalVotes, 5);
-
-    const retry = await sue.post('/votes', { code: stella.code, quantity: 5, idempotencyKey: key });
-    assert.equal(retry.data.receiptNo, first.data.receiptNo);
-    assert.equal(retry.data.balance, 15);
-
-    await sue.post('/votes', { code: jennifer.code, quantity: 7, idempotencyKey: crypto.randomUUID() });
-    const { data: board } = await client(app.base).get('/leaderboard?q=e');
+    const { data: board } = await anon.get('/leaderboard?q=e');
     const j = board.rows.find((r) => r.code === jennifer.code);
     const s = board.rows.find((r) => r.code === stella.code);
     assert.ok(j.position < s.position);
     assert.equal(j.totalVotes, 7);
+    assert.equal(s.totalVotes, 5);
     assert.ok(s.previousPosition != null);
   });
 
-  test('votes are refused without enough credits, and concurrent spends cannot overdraw', async () => {
-    const { code } = await makeContestant(app, admin, 'Overdraw');
-    const sue = await makeSupporter(app);
-    const poor = await sue.post('/votes', { code, quantity: 1, idempotencyKey: crypto.randomUUID() });
-    assert.equal(poor.status, 402);
-    assert.equal(poor.data.needed, 1);
-
-    await buyCredits(sue, 5);
-    for (const quantity of [0, -3, 1.5, '2', null]) {
-      assert.equal((await sue.post('/votes', { code, quantity, idempotencyKey: crypto.randomUUID() })).status, 400);
-    }
-    const attempts = await Promise.all(Array.from({ length: 10 }, () => sue.post('/votes', { code, quantity: 1, idempotencyKey: crypto.randomUUID() })));
-    assert.equal(attempts.filter((r) => r.status === 201).length, 5);
-    assert.equal(attempts.filter((r) => r.status === 402).length, 5);
-    assert.equal((await sue.get('/wallet')).data.balance, 0);
-    assert.equal((await client(app.base).get(`/contestants/${code}`)).data.totalVotes, 5);
-  });
-
-  test('voting needs a wallet and respects pause, close and the date window', async () => {
+  test('paying to vote respects pause, close and the date window', async () => {
     const { code } = await makeContestant(app, admin, 'Window');
-    const sue = await makeSupporter(app);
-    await buyCredits(sue, 5);
-    const vote = () => sue.post('/votes', { code, quantity: 1, idempotencyKey: crypto.randomUUID() });
-
-    assert.equal((await client(app.base).post('/votes', { code, quantity: 1, idempotencyKey: crypto.randomUUID() })).status, 401);
+    const anon = client(app.base);
+    const vote = () => anon.post('/votes/pay', { code, quantity: 1 });
 
     await admin.post('/admin/voting/paused');
     assert.equal((await vote()).status, 409);
@@ -488,17 +400,20 @@ describe('MBGN platform', () => {
   test('public feed is aggregated and anonymous; private alerts reach only the right contestant', async () => {
     const a = await makeContestant(app, admin, 'Alpha');
     const b = await makeContestant(app, admin, 'Bravo');
-    const sue = await makeSupporter(app, 'secretsupporter');
-    await buyCredits(sue, 30);
+    const anon = client(app.base);
+    const email = 'secretsupporter@test.local';
 
     const pub = await listen(app.base);
     const alpha = await listen(app.base, a.person.cookie);
     const bravo = await listen(app.base, b.person.cookie);
     await sleep(30);
 
-    await sue.post('/votes', { code: a.code, quantity: 5, idempotencyKey: crypto.randomUUID() });
-    await sue.post('/votes', { code: a.code, quantity: 10, idempotencyKey: crypto.randomUUID() });
-    await sleep(150);
+    const started = await Promise.all([5, 10].map((quantity) => anon.post('/votes/pay', { code: a.code, quantity })));
+    const references = started.map((r) => r.data.reference);
+    await Promise.all(references.map((reference) => anon.post(`/simulator/${reference}/pay`)));
+    await Promise.all(references.map((reference) => anon.post(`/payments/${reference}/verify`)));
+    await anon.post(`/payments/${references[0]}/receipt-email`, { email });
+    await sleep(200);
 
     const activity = pub.events.filter((e) => e.name === 'activity' && e.data.message.includes('Alpha received'));
     assert.deepEqual(activity.map((e) => e.data.message), ['Alpha received 15 new votes.']);
@@ -522,68 +437,67 @@ describe('MBGN platform', () => {
     bravo.stop();
   });
 
-  test('receipts belong to their owner', async () => {
-    const { code } = await makeContestant(app, admin, 'Receipt');
-    const sue = await makeSupporter(app);
-    const reference = await buyCredits(sue, 2);
-    const { data: vote } = await sue.post('/votes', { code, quantity: 2, idempotencyKey: crypto.randomUUID() });
+  test('payment receipts hide the email, and vote receipts are for admins', async () => {
+    const { code, person } = await makeContestant(app, admin, 'Receipt');
+    const anon = client(app.base);
+    const email = emailFor();
+    const reference = await payForVotes(anon, code, 2);
 
-    assert.equal((await sue.get(`/receipts/vote/${vote.receiptNo}`)).status, 200);
-    assert.equal((await sue.get(`/receipts/payment/${reference}`)).status, 200);
-
-    const other = await makeSupporter(app, 'nosy');
-    assert.equal((await other.get(`/receipts/vote/${vote.receiptNo}`)).status, 404);
-    assert.equal((await client(app.base).get(`/receipts/vote/${vote.receiptNo}`)).status, 401);
-
-    // A payment receipt is reached by its long reference, and hides most of the email.
+    // A payment receipt is reached by its long reference, and hides most of any email.
+    const noEmail = await client(app.base).get(`/receipts/payment/${reference}`);
+    assert.equal(noEmail.status, 200);
+    assert.equal(noEmail.data.customer, null);
+    await anon.post(`/payments/${reference}/receipt-email`, { email });
     const paymentReceipt = await client(app.base).get(`/receipts/payment/${reference}`);
-    assert.equal(paymentReceipt.status, 200);
-    assert.ok(!JSON.stringify(paymentReceipt.data).includes(sue.email));
+    assert.ok(paymentReceipt.data.customer.includes('***@'));
+    assert.ok(!JSON.stringify(paymentReceipt.data).includes(email));
     assert.equal((await client(app.base).get('/receipts/payment/MBG-WRONG')).status, 404);
+
+    const { data: votes } = await admin.get('/admin/votes');
+    const { receiptNo } = votes.find((v) => v.code === code);
+    assert.equal((await admin.get(`/receipts/vote/${receiptNo}`)).status, 200);
+    assert.equal((await person.get(`/receipts/vote/${receiptNo}`)).status, 404);
+    assert.equal((await client(app.base).get(`/receipts/vote/${receiptNo}`)).status, 401);
   });
 
   test('admin routes refuse everyone else, and cross-site writes are refused', async () => {
-    const sue = await makeSupporter(app);
-    assert.equal((await sue.get('/admin/overview')).status, 403);
+    const { person } = await makeContestant(app, admin, 'NotAdmin');
+    assert.equal((await person.get('/admin/overview')).status, 403);
     assert.equal((await client(app.base).get('/admin/overview')).status, 401);
-    assert.equal((await sue.get('/admin/export/votes.csv')).status, 403);
+    assert.equal((await person.get('/admin/export/votes.csv')).status, 403);
 
-    const res = await sue.req('POST', '/votes', { body: {}, headers: { Origin: 'https://evil.example' } });
+    const res = await person.req('POST', '/votes/pay', { body: {}, headers: { Origin: 'https://evil.example' } });
     assert.equal(res.status, 403);
   });
 
-  test('voiding a vote updates totals, ranks and optionally refunds', async () => {
+  test('voiding a vote updates totals and ranks', async () => {
     const { code } = await makeContestant(app, admin, 'Voided');
-    const sue = await makeSupporter(app);
-    await buyCredits(sue, 6);
-    await sue.post('/votes', { code, quantity: 6, idempotencyKey: crypto.randomUUID() });
+    const anon = client(app.base);
+    await payForVotes(anon, code, 6);
 
     const { data: votes } = await admin.get('/admin/votes');
     const vote = votes.find((v) => v.code === code);
-    assert.equal((await admin.post(`/admin/votes/${vote.id}/void`, { reason: 'Fraud confirmed', refund: true })).status, 200);
-    assert.equal((await client(app.base).get(`/contestants/${code}`)).data.totalVotes, 0);
-    assert.equal((await sue.get('/wallet')).data.balance, 6);
+    assert.equal((await admin.post(`/admin/votes/${vote.id}/void`, { reason: 'Fraud confirmed' })).status, 200);
+    assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 0);
     assert.equal((await admin.post(`/admin/votes/${vote.id}/void`, { reason: 'Again please' })).status, 409);
   });
 
   test('suspicious patterns raise flags for review', async () => {
     const { code, person } = await makeContestant(app, admin, 'Flagged');
-    await buyCredits(person, 2000);
-    const big = await person.post('/votes', { code, quantity: 1000, idempotencyKey: crypto.randomUUID() });
-    assert.equal(big.status, 201);
+    await payForVotes(person, code, 1000);
     const { data: flags } = await admin.get('/admin/flags');
     const kinds = flags.filter((f) => f.code === code).map((f) => f.kind);
     assert.ok(kinds.includes('large_vote'));
     assert.ok(kinds.includes('self_vote'));
   });
 
-  test('frozen wallets cannot vote or buy', async () => {
-    const { code } = await makeContestant(app, admin, 'Frozen');
-    const sue = await makeSupporter(app);
-    await buyCredits(sue, 2);
-    await admin.post(`/admin/users/${sue.userId}/freeze`, { frozen: true });
-    assert.equal((await sue.post('/votes', { code, quantity: 1, idempotencyKey: crypto.randomUUID() })).status, 403);
-    assert.equal((await sue.post('/wallet/purchases', { votes: 1 })).status, 403);
+  test('many payments from one network to one contestant raise a flag, without blocking them', async () => {
+    const { code } = await makeContestant(app, admin, 'OneNetwork');
+    const anon = client(app.base);
+    for (let i = 0; i < 20; i += 1) await payForVotes(anon, code, 1);
+    assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 20);
+    const { data: flags } = await admin.get('/admin/flags');
+    assert.ok(flags.some((f) => f.code === code && f.kind === 'shared_network'));
   });
 
   test('CSV exports neutralise spreadsheet formulas', async () => {
@@ -613,7 +527,7 @@ describe('MBGN platform', () => {
     const adminSession = client(app.base);
     await adminSession.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
     assert.equal((await adminSession.post('/auth/forgot', { email: 'admin@test.local' })).status, 200);
-    const mail = app.ctx.db.prepare("SELECT body FROM outbox WHERE subject LIKE 'Reset%' ORDER BY id DESC").get();
+    const mail = await app.ctx.db.prepare("SELECT body FROM outbox WHERE subject LIKE 'Reset%' ORDER BY id DESC").get();
     const token = mail.body.match(/\/reset\/([\w-]+)/)[1];
     assert.equal((await client(app.base).post('/auth/reset', { token, password: 'brand-new-pass' })).status, 200);
     assert.equal((await client(app.base).post('/auth/reset', { token, password: 'another-pass-1' })).status, 400);
@@ -622,51 +536,55 @@ describe('MBGN platform', () => {
   });
 });
 
-// Runs the real Monnify client against a local server that follows Monnify's documented contract.
-describe('Monnify integration (against a local stand-in)', () => {
-  const SECRET = 'SK_TEST_SECRET';
+// Runs the real Paystack client against a local server that follows Paystack's documented contract.
+describe('Paystack integration (against a local stand-in)', () => {
+  const SECRET = 'sk_test_fixture';
   let fake;
   let fakeUrl;
   let paidAmount;
   let status;
   let queries = 0;
+  let sent;
   let app;
+  let admin;
 
   before(async () => {
     fake = http.createServer((req, res) => {
-      const send = (body) => {
+      const send = (data) => {
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ requestSuccessful: true, responseMessage: 'success', responseCode: '0', responseBody: body }));
+        res.end(JSON.stringify({ status: true, message: 'ok', data }));
       };
       let raw = '';
       req.on('data', (d) => { raw += d; });
       req.on('end', () => {
         const url = new URL(req.url, 'http://x');
-        if (url.pathname === '/api/v1/auth/login') {
-          assert.equal(req.headers.authorization, `Basic ${Buffer.from(`MK_TEST:${SECRET}`).toString('base64')}`);
-          return send({ accessToken: 'token-123', expiresIn: 3600 });
+        assert.equal(req.headers.authorization, `Bearer ${SECRET}`);
+        if (url.pathname === '/transaction/initialize') {
+          sent = JSON.parse(raw);
+          assert.equal(sent.currency, 'NGN');
+          assert.ok(sent.callback_url.endsWith(`/pay/return/${sent.reference}`));
+          return send({ authorization_url: 'https://checkout.paystack.com/abc', access_code: 'abc', reference: sent.reference });
         }
-        assert.equal(req.headers.authorization, 'Bearer token-123');
-        if (url.pathname === '/api/v1/merchant/transactions/init-transaction') {
-          const body = JSON.parse(raw);
-          assert.equal(body.contractCode, 'CONTRACT');
-          assert.equal(body.currencyCode, 'NGN');
-          assert.ok(body.redirectUrl.endsWith(`/pay/return/${body.paymentReference}`));
-          return send({ transactionReference: 'MNFY|1', paymentReference: body.paymentReference, checkoutUrl: 'https://sandbox.sdk.monnify.com/checkout/MNFY|1' });
-        }
-        if (url.pathname === '/api/v2/merchant/transactions/query') {
+        if (url.pathname.startsWith('/transaction/verify/')) {
           queries += 1;
-          return send({ paymentReference: url.searchParams.get('paymentReference'), transactionReference: 'MNFY|1', paymentStatus: status, amountPaid: String(paidAmount), paymentMethod: 'CARD' });
+          return send({
+            id: 123,
+            reference: decodeURIComponent(url.pathname.split('/').pop()),
+            status,
+            amount: paidAmount * 100,
+            currency: 'NGN',
+            channel: 'card',
+          });
         }
         res.statusCode = 404;
-        return res.end('{}');
+        return res.end(JSON.stringify({ status: false, message: 'Not found' }));
       });
     }).listen(0);
     await new Promise((resolve) => fake.once('listening', resolve));
     fakeUrl = `http://127.0.0.1:${fake.address().port}`;
-    app = await boot({
-      monnify: { apiKey: 'MK_TEST', secretKey: SECRET, contractCode: 'CONTRACT', live: true, baseUrl: fakeUrl },
-    });
+    app = await boot({ paystack: { secretKey: SECRET, baseUrl: fakeUrl } });
+    admin = client(app.base);
+    await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
   });
   after(() => {
     app.close();
@@ -674,30 +592,30 @@ describe('Monnify integration (against a local stand-in)', () => {
     fake.close();
   });
 
-  const webhook = (body, signature) => fetch(`${app.base}/api/webhooks/monnify`, {
+  const webhook = (body, signature) => fetch(`${app.base}/api/webhooks/paystack`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(signature ? { 'monnify-signature': signature } : {}) },
+    headers: { 'Content-Type': 'application/json', ...(signature ? { 'x-paystack-signature': signature } : {}) },
     body,
   });
   const sign = (body) => crypto.createHmac('sha512', SECRET).update(body).digest('hex');
-  const eventFor = (reference) => JSON.stringify({ eventType: 'SUCCESSFUL_TRANSACTION', eventData: { paymentReference: reference, amountPaid: 999999, paymentStatus: 'PAID' } });
+  const eventFor = (reference) => JSON.stringify({ event: 'charge.success', data: { reference, amount: 99999900, status: 'success' } });
 
-  test('a direct payment counts only what Monnify confirms', async () => {
-    const admin = client(app.base);
-    await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
-    const { code } = await makeContestant(app, admin, 'MonnifyDirect');
+  test('a payment counts only what Paystack confirms', async () => {
+    const { code } = await makeContestant(app, admin, 'PaystackDirect');
     const anon = client(app.base);
-    const { data } = await anon.post('/votes/pay', { code, quantity: 4, email: emailFor() });
-    assert.ok(data.checkoutUrl.startsWith('https://sandbox.sdk.monnify.com/checkout/'));
+    const { data } = await anon.post('/votes/pay', { code, quantity: 4 });
+    assert.equal(data.checkoutUrl, 'https://checkout.paystack.com/abc');
 
-    status = 'PENDING';
+    // A checkout nobody has finished stays open: it may still be paid.
+    status = 'abandoned';
     paidAmount = 0;
     const body = eventFor(data.reference);
     await webhook(body, sign(body));
     await sleep(40);
     assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 0);
+    assert.equal((await anon.post(`/payments/${data.reference}/verify`)).data.status, 'pending');
 
-    status = 'PAID';
+    status = 'success';
     paidAmount = 2000;
     await webhook(body, sign(body));
     await sleep(60);
@@ -705,66 +623,139 @@ describe('Monnify integration (against a local stand-in)', () => {
     assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 4);
   });
 
-  test('starts a real checkout, and the simulator route does not exist', async () => {
-    const sue = await makeSupporter(app);
-    const { data } = await sue.post('/wallet/purchases', { votes: 2 });
-    assert.ok(data.checkoutUrl.startsWith('https://sandbox.sdk.monnify.com/checkout/'));
-    assert.equal((await sue.post(`/simulator/${data.reference}/pay`)).status, 404);
+  test('starts a real checkout in kobo, and the simulator route does not exist', async () => {
+    const { code } = await makeContestant(app, admin, 'PaystackStart');
+    const anon = client(app.base);
+    const { data } = await anon.post('/votes/pay', { code, quantity: 2 });
+    assert.equal(sent.amount, 100000);
+    assert.equal(sent.reference, data.reference);
+    assert.ok(sent.metadata.cancel_action.endsWith(`/pay/return/${data.reference}?cancelled=1`));
+    // Paystack requires an email, so it gets the site's own mailbox with the reference added.
+    assert.equal(sent.email, `votes+${data.reference.toLowerCase()}@${app.ctx.config.paymentEmail.split('@')[1]}`);
+    assert.equal((await anon.post(`/simulator/${data.reference}/pay`)).status, 404);
   });
 
-  test('forged or unsigned webhooks are ignored on live, and flagged', async () => {
-    const sue = await makeSupporter(app);
-    const { data } = await sue.post('/wallet/purchases', { votes: 2 });
-    status = 'PAID';
+  test('forged or unsigned webhooks are ignored, and flagged', async () => {
+    const { code } = await makeContestant(app, admin, 'PaystackForged');
+    const anon = client(app.base);
+    const { data } = await anon.post('/votes/pay', { code, quantity: 2 });
+    status = 'success';
     paidAmount = 1000;
     const body = eventFor(data.reference);
     assert.equal((await webhook(body, 'not-the-signature')).status, 401);
     assert.equal((await webhook(body)).status, 401);
     await sleep(40);
-    assert.equal((await sue.get('/wallet')).data.balance, 0);
-    assert.ok(app.ctx.db.prepare("SELECT 1 FROM flags WHERE kind = 'bad_webhook_signature'").get());
+    assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 0);
+    assert.ok(await app.ctx.db.prepare("SELECT 1 FROM flags WHERE kind = 'bad_webhook_signature'").get());
   });
 
-  test('a signed webhook credits once, using the amount Monnify reports rather than the webhook body', async () => {
-    const sue = await makeSupporter(app);
-    const { data } = await sue.post('/wallet/purchases', { votes: 2 });
+  test('a signed webhook counts once, using the amount Paystack reports rather than the webhook body', async () => {
+    const { code } = await makeContestant(app, admin, 'PaystackSigned');
+    const anon = client(app.base);
+    const { data } = await anon.post('/votes/pay', { code, quantity: 2 });
 
-    // Signed webhook says paid, but Monnify's own answer is still pending: no credit.
-    status = 'PENDING';
+    // Signed webhook says paid, but Paystack's own answer is still pending: nothing counts.
+    status = 'ongoing';
     paidAmount = 0;
     const body = eventFor(data.reference);
     assert.equal((await webhook(body, sign(body))).status, 200);
     await sleep(40);
-    assert.equal((await sue.get('/wallet')).data.balance, 0);
+    assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 0);
 
-    status = 'PAID';
+    status = 'success';
     paidAmount = 1000;
     await Promise.all([webhook(body, sign(body)), webhook(body, sign(body)), webhook(body, sign(body))]);
     await sleep(60);
-    await sue.post(`/payments/${data.reference}/verify`);
-    assert.equal((await sue.get('/wallet')).data.balance, 2);
+    await anon.post(`/payments/${data.reference}/verify`);
+    assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 2);
     assert.ok(queries > 0);
   });
 
-  test('an underpayment gives no credits and goes to review', async () => {
-    const sue = await makeSupporter(app);
-    const { data } = await sue.post('/wallet/purchases', { votes: 10 });
-    status = 'PAID';
-    paidAmount = 100;
-    const { data: result } = await sue.post(`/payments/${data.reference}/verify`);
-    assert.equal(result.status, 'review');
-    assert.equal(result.balance, 0);
-    assert.ok(app.ctx.db.prepare("SELECT 1 FROM flags WHERE kind = 'payment_mismatch'").get());
+  test('a webhook for a payment that is not ours is accepted and ignored', async () => {
+    const before = queries;
+    const body = eventFor('qitt_other_project_reference');
+    assert.equal((await webhook(body, sign(body))).status, 200);
+    await sleep(40);
+    assert.equal(queries, before);
   });
 
-  test('failed and expired payments are marked failed', async () => {
-    const sue = await makeSupporter(app);
-    const { data } = await sue.post('/wallet/purchases', { votes: 1 });
-    status = 'EXPIRED';
+  test('an underpayment counts no votes and goes to review', async () => {
+    const { code } = await makeContestant(app, admin, 'PaystackShort');
+    const anon = client(app.base);
+    const { data } = await anon.post('/votes/pay', { code, quantity: 10 });
+    status = 'success';
+    paidAmount = 100;
+    const { data: result } = await anon.post(`/payments/${data.reference}/verify`);
+    assert.equal(result.status, 'review');
+    assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 0);
+    assert.ok(await app.ctx.db.prepare("SELECT 1 FROM flags WHERE kind = 'payment_mismatch'").get());
+  });
+
+  test('failed payments are marked failed', async () => {
+    const { code } = await makeContestant(app, admin, 'PaystackFailed');
+    const anon = client(app.base);
+    const { data } = await anon.post('/votes/pay', { code, quantity: 1 });
+    status = 'failed';
     paidAmount = 0;
-    const { data: result } = await sue.post(`/payments/${data.reference}/verify`);
+    const { data: result } = await anon.post(`/payments/${data.reference}/verify`);
     assert.equal(result.status, 'failed');
-    assert.equal(result.balance, 0);
+  });
+});
+
+// Runs the real S3 client against a local server that answers the way R2 does.
+describe('Cloudflare R2 photos (against a local stand-in)', () => {
+  test('photos are stored in the bucket, stay private until approval, and a missing one is a 404', async () => {
+    const stored = new Map();
+    const fake = http.createServer((req, res) => {
+      const chunks = [];
+      req.on('data', (d) => chunks.push(d));
+      req.on('end', () => {
+        if (req.method === 'PUT') {
+          stored.set(req.url.split('?')[0], { body: Buffer.concat(chunks), type: req.headers['content-type'] });
+          res.setHeader('ETag', '"abc"');
+          return res.end();
+        }
+        const object = stored.get(req.url.split('?')[0]);
+        if (!object) {
+          res.statusCode = 404;
+          res.setHeader('Content-Type', 'application/xml');
+          return res.end('<?xml version="1.0"?><Error><Code>NoSuchKey</Code><Message>Missing</Message></Error>');
+        }
+        res.setHeader('Content-Type', object.type);
+        return res.end(object.body);
+      });
+    }).listen(0);
+    await new Promise((resolve) => fake.once('listening', resolve));
+    const app = await boot({
+      r2: { endpoint: `http://127.0.0.1:${fake.address().port}`, accessKeyId: 'key', secretAccessKey: 'secret', bucket: 'photos' },
+    });
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const person = client(app.base);
+      assert.equal((await person.req('POST', '/contestants/register', { form: registrationForm('Bucket') })).status, 201);
+
+      const { data: [row] } = await admin.get('/admin/contestants?q=Bucket');
+      const key = `/photos/${row.photoUrl.split('/').pop()}`;
+      assert.deepEqual(stored.get(key).body, PNG);
+      assert.equal(stored.get(key).type, 'image/png');
+
+      // Going through the site, so the bucket itself never has to be public.
+      const url = `${app.base}${row.photoUrl}`;
+      assert.equal((await fetch(url)).status, 404);
+      const seen = await fetch(url, { headers: { Cookie: admin.cookie } });
+      assert.equal(seen.status, 200);
+      assert.deepEqual(Buffer.from(await seen.arrayBuffer()), PNG);
+      await admin.post(`/admin/contestants/${row.id}/approve`);
+      assert.equal((await fetch(url)).status, 200);
+
+      stored.delete(key);
+      assert.equal((await fetch(url)).status, 404);
+    } finally {
+      await app.close();
+      fake.closeAllConnections();
+      fake.close();
+    }
   });
 });
 
@@ -779,15 +770,29 @@ describe('production safety', () => {
       assert.equal(statuses[10], 429);
       assert.equal((await attempt('someone-else@test.local')).status, 401);
     } finally {
-      app.close();
+      await app.close();
     }
   });
 
-  test('refuses to boot in production with the simulator or without a secret', () => {
-    assert.throws(() => loadConfig({ nodeEnv: 'production', appSecret: 'x', monnify: null }), /simulator/);
-    assert.throws(
-      () => loadConfig({ nodeEnv: 'production', appSecret: undefined, monnify: { apiKey: 'a', secretKey: 'b', contractCode: 'c', baseUrl: 'x' } }),
-      /APP_SECRET/,
-    );
+  test('the site does not hand out a photo it cannot find, or crash on a bad id', async () => {
+    const app = await boot();
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      assert.equal((await admin.post('/admin/contestants/not-a-number/approve')).status, 404);
+      assert.equal((await fetch(`${app.base}/photos/${'a'.repeat(32)}.png`)).status, 404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('refuses to boot in production with the simulator, a test key, or without a secret or payment email', () => {
+    const paystack = { secretKey: 'sk_live_x', baseUrl: 'x' };
+    assert.throws(() => loadConfig({ nodeEnv: 'production', appSecret: 'x', paystack: null }), /simulator/);
+    assert.throws(() => loadConfig({ nodeEnv: 'production', appSecret: 'x', paystack: { ...paystack, secretKey: 'sk_test_x' } }), /test key/);
+    assert.throws(() => loadConfig({ nodeEnv: 'test', paystack: { ...paystack, secretKey: 'pk_test_x' } }), /secret key/);
+    assert.throws(() => loadConfig({ nodeEnv: 'production', appSecret: undefined, paystack }), /APP_SECRET/);
+    assert.throws(() => loadConfig({ nodeEnv: 'production', appSecret: 'x', paystack }), /PAYMENT_EMAIL/);
+    assert.throws(() => loadConfig({ nodeEnv: 'test', databaseUrl: null }), /DATABASE_URL/);
   });
 });

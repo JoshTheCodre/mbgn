@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
-  ApiError, ago, api, naira, newVoteKey, num, plural, useApp, useFetch, useLive,
+  ApiError, ago, api, naira, plural, useApp, useFetch, useLive,
 } from '../lib.jsx';
 import {
-  ActivityFeed, CodeTag, Crown, Countdown, Dialog, ErrorNote, Field, Loading, Movement, Portrait, CountUp, ShareButtons,
+  ActivityFeed, CardsSkeleton, CodeTag, CoverSkeleton, Crown, Countdown, ErrorNote, Field, LoadFailed, Loading, Movement,
+  Portrait, ProfileSkeleton, RankSkeleton, CountUp, ShareButtons,
 } from '../ui.jsx';
 
 const prefersCalm = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -197,7 +198,7 @@ function JoinCard({ top }) {
 
 export function Home() {
   const { competition } = useApp();
-  const { data, reload } = useFetch('/leaderboard?limit=5');
+  const { data, error, reload } = useFetch('/leaderboard?limit=5');
   useLive('leaderboard', reload);
   const top = data?.rows ?? [];
   const withPhotos = top.filter((row) => row.photoUrl);
@@ -207,7 +208,7 @@ export function Home() {
     <>
       <section className="hero">
         <div className="hero-photos" aria-hidden="true">
-          {top.filter((row) => row.photoUrl).map((row) => <img key={row.code} src={row.photoUrl} alt="" />)}
+          {top.filter((row) => row.photoUrl).map((row) => <img key={row.code} src={row.photoUrl} alt="" decoding="async" />)}
         </div>
         <span className="hero-glow hero-glow-a" aria-hidden="true" />
         <span className="hero-glow hero-glow-b" aria-hidden="true" />
@@ -225,7 +226,7 @@ export function Home() {
             <Countdown competition={competition} />
             <CodeSearch examples={top.flatMap((row) => [row.name, row.code]).slice(0, 6)} />
           </div>
-          {covers.length ? <HeroCover rows={covers} /> : null}
+          {covers.length ? <HeroCover rows={covers} /> : data || error ? null : <CoverSkeleton />}
         </div>
       </section>
 
@@ -235,7 +236,7 @@ export function Home() {
             <h2>Live leaderboard</h2>
             <Link to="/leaderboard" className="text-link">See everyone</Link>
           </div>
-          {data ? <RankList rows={top} /> : <Loading />}
+          {data ? <RankList rows={top} /> : error ? <LoadFailed error={error} onRetry={reload} what="the leaderboard" /> : <RankSkeleton />}
         </div>
         <aside className="live-panel">
           <div className="section-head">
@@ -378,14 +379,14 @@ export function Leaderboard() {
           <h1>Leaderboard</h1>
           <p className="muted">
             <span className="live-dot">Live</span>
-            {data?.updatedAt ? ` Last vote counted ${ago(data.updatedAt)}.` : ' Waiting for the first vote.'}
+            {data?.updatedAt ? ` Last vote counted ${ago(data.updatedAt)}.` : data ? ' Waiting for the first vote.' : ''}
           </p>
         </div>
       </div>
       <BoardFilters f={f} filters={data?.filters} />
-      <ErrorNote error={error} />
+      {data ? <ErrorNote error={error} /> : null}
       {data && !f.query && data.rows.length >= 3 ? <Podium rows={data.rows} /> : null}
-      {data ? <RankList rows={data.rows} flash={flash} /> : <Loading />}
+      {data ? <RankList rows={data.rows} flash={flash} /> : error ? <LoadFailed error={error} onRetry={reload} what="the leaderboard" /> : <RankSkeleton count={8} />}
       <p className="muted small-note">Ranked by total verified votes. If two contestants tie, the one who reached that total first stays ahead. Movement compares with 24 hours ago.</p>
     </div>
   );
@@ -393,7 +394,7 @@ export function Leaderboard() {
 
 export function Contestants() {
   const f = useBoardFilters();
-  const { data, error } = useFetch(`/leaderboard?${f.query}`);
+  const { data, error, reload } = useFetch(`/leaderboard?${f.query}`);
   return (
     <div className="wrap page">
       <div className="page-head">
@@ -403,8 +404,8 @@ export function Contestants() {
         </div>
       </div>
       <BoardFilters f={f} filters={data?.filters} />
-      <ErrorNote error={error} />
-      {!data ? <Loading /> : data.rows.length === 0 ? <p className="muted empty">No contestants match that search.</p> : (
+      {data ? <ErrorNote error={error} /> : null}
+      {!data ? (error ? <LoadFailed error={error} onRetry={reload} what="the contestants" /> : <CardsSkeleton />) : data.rows.length === 0 ? <p className="muted empty">No contestants match that search.</p> : (
         <ul className="card-grid">
           {data.rows.map((c) => (
             <li key={c.code}>
@@ -427,34 +428,17 @@ export function Contestants() {
   );
 }
 
-function VotePanel({ contestant, onVoted, viaLink }) {
-  const { user, refreshUser, competition } = useApp();
+function VotePanel({ contestant, viaLink }) {
+  const { competition } = useApp();
   const [quantity, setQuantity] = useState(5);
   const [custom, setCustom] = useState('');
-  const [step, setStep] = useState(null); // null, 'direct' or 'wallet'
-  const [fund, setFund] = useState(null);
-  const [email, setEmail] = useState(() => {
-    try { return localStorage.getItem('mbgn-email') ?? ''; } catch { return ''; }
-  });
-  const [phone, setPhone] = useState('');
-  const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
-  const [done, setDone] = useState(null);
-  const voteKey = useRef(newVoteKey());
 
   const packages = competition?.packages ?? [];
   const priceOf = (n) => packages.find((p) => p.votes === n)?.price ?? n * (competition?.votePrice ?? 0);
   const amount = custom !== '' ? Number(custom) : quantity;
   const valid = Number.isInteger(amount) && amount > 0;
-  const balance = user?.credits ?? 0;
-  const canUseWallet = valid && balance >= amount;
-  const needed = valid ? Math.max(amount - balance, 1) : 1;
-
-  // How much to add: exactly what's needed, or one of the packages above it.
-  const fundOptions = [...new Set([needed, ...packages.map((p) => p.votes).filter((v) => v > needed)])].slice(0, 4);
-  const fundAmount = fundOptions.includes(fund) ? fund : (fundOptions[1] ?? fundOptions[0]);
-  const leftover = balance + fundAmount - amount;
   const voting = competition?.voting;
 
   function choose(n, typed) {
@@ -463,39 +447,14 @@ function VotePanel({ contestant, onVoted, viaLink }) {
     setError(null);
   }
 
-  async function checkout(path, body) {
+  async function pay() {
     setBusy(true);
     setError(null);
     try {
-      try { if (!user) localStorage.setItem('mbgn-email', email); } catch { /* convenience only */ }
-      const started = await api(path, { body: { code: contestant.code, quantity: amount, viaLink, ...body } });
+      const started = await api('/votes/pay', { body: { code: contestant.code, quantity: amount, viaLink } });
       window.location.assign(started.checkoutUrl);
     } catch (err) {
       setError(err);
-      setBusy(false);
-    }
-  }
-
-  async function vote() {
-    setBusy(true);
-    setError(null);
-    try {
-      const receipt = await api('/votes', {
-        body: { code: contestant.code, quantity: amount, idempotencyKey: voteKey.current, viaLink },
-      });
-      voteKey.current = newVoteKey();
-      setDone(receipt);
-      setConfirming(false);
-      setCustom('');
-      await refreshUser();
-      onVoted();
-    } catch (err) {
-      // A definite refusal can safely start over; anything else keeps the key so a retry can't double-spend.
-      if (err.status && err.status < 500) voteKey.current = newVoteKey();
-      setError(err);
-      setConfirming(false);
-      refreshUser().catch(() => {});
-    } finally {
       setBusy(false);
     }
   }
@@ -505,14 +464,6 @@ function VotePanel({ contestant, onVoted, viaLink }) {
   return (
     <div className="vote-panel">
       <h2>Vote for {contestant.name}</h2>
-      {balance > 0 ? <p className="vote-balance"><Link to="/wallet">{plural(balance, 'credit')} in your wallet</Link></p> : null}
-      {done ? (
-        <div className="note note-good" role="status">
-          <b>{plural(done.quantity, 'vote')} counted for {done.contestant.name}.</b>{' '}
-          Now in position {done.contestant.position} with {num(done.contestant.totalVotes)} votes.{' '}
-          <Link to={`/receipt/vote/${done.receiptNo}`}>View receipt</Link>
-        </div>
-      ) : null}
       <div className="qty-chips" role="group" aria-label="Number of votes">
         {[1, 5, 10, 20, 50, 100].map((n) => (
           <button
@@ -536,79 +487,10 @@ function VotePanel({ contestant, onVoted, viaLink }) {
         />
       </div>
 
-      {user === undefined || !valid ? null : step === null ? (
-        canUseWallet ? (
-          <div className="vote-choices">
-            <button type="button" className="btn btn-vote btn-wide" onClick={() => setConfirming(true)}>Vote with {plural(amount, 'credit')}</button>
-            <button type="button" className="text-link as-button" onClick={() => setStep('direct')}>Pay {naira(priceOf(amount))} directly instead</button>
-          </div>
-        ) : (
-          <div className="vote-choices">
-            <button type="button" className="btn btn-vote btn-wide" onClick={() => setStep('direct')}>Pay {naira(priceOf(amount))} and vote</button>
-            <button type="button" className="btn btn-ghost btn-wide" onClick={() => setStep('wallet')}>Fund wallet and vote</button>
-            <p className="muted small-note">With a wallet, your next votes don’t need a new payment.</p>
-          </div>
-        )
-      ) : step === 'direct' ? (
-        <form className="stack" onSubmit={(e) => { e.preventDefault(); checkout('/votes/pay', { email }); }}>
-          {user ? null : (
-            <Field label="Email for your receipt" hint="Never shown publicly.">
-              <input type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
-            </Field>
-          )}
-          <button className="btn btn-vote btn-wide" disabled={busy}>{busy ? 'Opening checkout…' : `Pay ${naira(priceOf(amount))}`}</button>
-          <button type="button" className="text-link as-button" onClick={() => setStep(null)}>Back</button>
-        </form>
-      ) : (
-        <form className="stack" onSubmit={(e) => { e.preventDefault(); checkout('/votes/fund', { fund: fundAmount, email, phone }); }}>
-          <div>
-            <span className="field-label">How many credits to add?</span>
-            <div className="qty-chips fund-chips" role="group" aria-label="Credits to add">
-              {fundOptions.map((n) => (
-                <button
-                  key={n}
-                  type="button"
-                  className={`chip ${fundAmount === n ? 'active' : ''}`}
-                  aria-pressed={fundAmount === n}
-                  onClick={() => setFund(n)}
-                >{num(n)}</button>
-              ))}
-            </div>
-            <p className="muted small-note">
-              {plural(amount, 'vote')} {amount === 1 ? 'goes' : 'go'} to {contestant.name} now.
-              {leftover > 0 ? ` ${plural(leftover, 'credit')} ${leftover === 1 ? 'stays' : 'stay'} in your wallet.` : ''}
-            </p>
-          </div>
-          {user ? null : (
-            <>
-              <Field label="Email"><input type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></Field>
-              <Field label="Phone number" hint="These details open your wallet on any phone.">
-                <input type="tel" autoComplete="tel" required value={phone} onChange={(e) => setPhone(e.target.value)} />
-              </Field>
-            </>
-          )}
-          <button className="btn btn-vote btn-wide" disabled={busy}>{busy ? 'Opening checkout…' : `Pay ${naira(priceOf(fundAmount))}`}</button>
-          <button type="button" className="text-link as-button" onClick={() => setStep(null)}>Back</button>
-        </form>
-      )}
+      {valid ? (
+        <button type="button" className="btn btn-vote btn-wide" disabled={busy} onClick={pay}>{busy ? 'Opening checkout…' : `Pay ${naira(priceOf(amount))} and vote`}</button>
+      ) : null}
       <ErrorNote error={error} />
-
-      <Dialog open={confirming} onClose={() => setConfirming(false)} title="Confirm your vote">
-        <div className="confirm">
-          <div className="confirm-who">
-            <Portrait name={contestant.name} photoUrl={contestant.photoUrl} code={contestant.code} />
-            <div>
-              <strong>{contestant.name}</strong>
-              <small>{contestant.code} · {contestant.state}</small>
-            </div>
-          </div>
-          <p>Spend <b>{plural(amount, 'credit')}</b> on <b>{plural(amount, 'vote')}</b> for {contestant.name}? Votes cannot be moved once cast.</p>
-          <div className="dialog-actions">
-            <button type="button" className="btn btn-ghost" onClick={() => setConfirming(false)}>Cancel</button>
-            <button type="button" className="btn btn-vote" disabled={busy} onClick={vote}>{busy ? 'Counting…' : 'Confirm vote'}</button>
-          </div>
-        </div>
-      </Dialog>
     </div>
   );
 }
@@ -616,7 +498,7 @@ function VotePanel({ contestant, onVoted, viaLink }) {
 export function Profile() {
   const { code } = useParams();
   const [params] = useSearchParams();
-  const { data, error, reload, loading } = useFetch(`/contestants/${encodeURIComponent(code)}`);
+  const { data, error, reload } = useFetch(`/contestants/${encodeURIComponent(code)}`);
   useLive('leaderboard', reload);
 
   // Someone arriving from outside the site came through a shared voting link.
@@ -637,6 +519,8 @@ export function Profile() {
   }, [code]);
 
   if (error && !data) {
+    // Only a real "no such code" means that. Anything else is a problem on our side or the connection.
+    if (error.status !== 404) return <div className="wrap page"><LoadFailed error={error} onRetry={reload} what="this contestant" /></div>;
     return (
       <div className="wrap page">
         <h1>We could not find that contestant</h1>
@@ -645,7 +529,7 @@ export function Profile() {
       </div>
     );
   }
-  if (!data || loading && !data) return <div className="wrap page"><Loading /></div>;
+  if (!data) return <ProfileSkeleton />;
 
   const url = `${window.location.origin}/c/${data.code}`;
   return (
@@ -662,7 +546,7 @@ export function Profile() {
           <div><dt>Position</dt><dd><CountUp value={data.position} /></dd></div>
           <div><dt>24 hours</dt><dd className="profile-move"><Movement value={data.movement24h} /></dd></div>
         </dl>
-        <VotePanel contestant={data} onVoted={reload} viaLink={viaLink} />
+        <VotePanel contestant={data} viaLink={viaLink} />
         <p className="profile-bio">{data.bio}</p>
         <div className="social-links">
           {data.tiktok ? <a href={data.tiktok} target="_blank" rel="noreferrer noopener">TikTok</a> : null}
@@ -714,7 +598,7 @@ function Edition({ edition }) {
 }
 
 export function Results() {
-  const { data, error } = useFetch('/results');
+  const { data, error, reload } = useFetch('/results');
   return (
     <div className="wrap page">
       <div className="page-head">
@@ -723,8 +607,8 @@ export function Results() {
           <p className="muted">Final standings, decided by verified votes under the competition rules.</p>
         </div>
       </div>
-      <ErrorNote error={error} />
-      {!data ? <Loading /> : data.length === 0
+      {data ? <ErrorNote error={error} /> : null}
+      {!data ? (error ? <LoadFailed error={error} onRetry={reload} what="the winners" /> : <Loading label="Loading the winners" />) : data.length === 0
         ? <p className="muted empty">Final results will be published here when voting closes.</p>
         : data.map((edition) => <Edition key={edition.id} edition={edition} />)}
     </div>

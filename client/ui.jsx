@@ -1,13 +1,26 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { agoShort, api, num, shareTargets, useApp, useLive } from './lib.jsx';
+import {
+  agoShort, api, num, recall, remember, shareTargets, useApp, useLive,
+} from './lib.jsx';
 import { THEMES, applyTheme, currentTheme } from './themes.js';
 
 const FIELD_MIX = [100, 82, 92, 70, 88, 76, 96, 64];
 
 // Used when a demo contestant has no photograph yet.
 export function Portrait({ name, photoUrl, code, className = '' }) {
-  if (photoUrl) return <img className={`portrait ${className}`} src={photoUrl} alt={`Portrait of ${name}`} loading="lazy" />;
+  if (photoUrl) {
+    return (
+      <img
+        className={`portrait photo-loading ${className}`}
+        src={photoUrl}
+        alt={`Portrait of ${name}`}
+        loading="lazy"
+        decoding="async"
+        onLoad={(e) => e.currentTarget.classList.remove('photo-loading')}
+      />
+    );
+  }
   const seed = [...(code ?? name ?? '')].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
   return (
     <div className={`portrait monogram ${className}`} style={{ '--field': `color-mix(in srgb, var(--accent) ${FIELD_MIX[seed % FIELD_MIX.length]}%, var(--mono-end))` }} role="img" aria-label={`Placeholder for ${name}`}>
@@ -58,7 +71,148 @@ export function Dialog({ open, onClose, title, children }) {
 }
 
 export const ErrorNote = ({ error }) => (error ? <p className="note note-error" role="alert">{error.message ?? String(error)}</p> : null);
-export const Loading = ({ label = 'Loading…' }) => <p className="muted loading" role="status">{label}</p>;
+
+// ---- Loading states ----
+const Bone = ({ className = '', style }) => <span className={`skeleton ${className}`} style={style} aria-hidden="true" />;
+
+// Announces the wait to screen readers, and reassures anyone left waiting a long time.
+function Waiting({ label }) {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    const id = setTimeout(() => setSlow(true), 8000);
+    return () => clearTimeout(id);
+  }, []);
+  return (
+    <>
+      <span className="visually-hidden" role="status">{label}</span>
+      {slow ? <p className="muted slow-note">Still loading. This is taking longer than usual.</p> : null}
+    </>
+  );
+}
+
+export function Loading({ label = 'Loading' }) {
+  return (
+    <div className="skeleton-lines">
+      <Bone style={{ width: '62%' }} />
+      <Bone style={{ width: '88%' }} />
+      <Bone style={{ width: '74%' }} />
+      <Waiting label={label} />
+    </div>
+  );
+}
+
+export function RankSkeleton({ count = 5 }) {
+  return (
+    <div className="ranks-skeleton">
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className="rank-skeleton">
+          <Bone className="bone-pos" />
+          <Bone className="bone-face" />
+          <span className="bone-who">
+            <Bone style={{ width: `${70 - (i % 3) * 12}%` }} />
+            <Bone className="bone-small" style={{ width: `${48 - (i % 2) * 10}%` }} />
+          </span>
+          <Bone className="bone-votes" />
+        </div>
+      ))}
+      <Waiting label="Loading the leaderboard" />
+    </div>
+  );
+}
+
+export function CardsSkeleton({ count = 8 }) {
+  return (
+    <>
+      <div className="card-grid" aria-hidden="true">
+        {Array.from({ length: count }, (_, i) => (
+          <div key={i} className="card">
+            <div className="card-photo"><Bone className="bone-fill" /></div>
+            <div className="card-body">
+              <Bone style={{ width: '65%' }} />
+              <Bone className="bone-small" style={{ width: '40%' }} />
+              <Bone className="bone-small" style={{ width: '75%' }} />
+            </div>
+          </div>
+        ))}
+      </div>
+      <Waiting label="Loading the contestants" />
+    </>
+  );
+}
+
+export function FeedSkeleton({ count = 5 }) {
+  return (
+    <div className="feed-skeleton">
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i}>
+          <Bone style={{ width: `${44 + (i % 3) * 8}%` }} />
+          <Bone className="bone-amount" />
+        </div>
+      ))}
+      <Waiting label="Loading recent votes" />
+    </div>
+  );
+}
+
+export function ProfileSkeleton() {
+  return (
+    <div className="wrap page profile">
+      <div className="profile-photo"><Bone className="bone-fill" /></div>
+      <div className="profile-main skeleton-lines">
+        <Bone className="bone-small" style={{ width: '36%' }} />
+        <Bone className="bone-title" style={{ width: '58%' }} />
+        <Bone className="bone-panel" />
+        <Bone className="bone-panel bone-panel-tall" />
+        <Waiting label="Loading this contestant" />
+      </div>
+    </div>
+  );
+}
+
+export function PageSkeleton() {
+  return (
+    <div className="wrap page skeleton-lines">
+      <Bone className="bone-title" style={{ width: '42%' }} />
+      <Bone style={{ width: '68%' }} />
+      <Bone className="bone-panel bone-panel-tall" />
+      <Waiting label="Loading this page" />
+    </div>
+  );
+}
+
+export function CoverSkeleton() {
+  return <div className="cover-float"><div className="cover skeleton" aria-hidden="true" /></div>;
+}
+
+export function LoadFailed({ error, onRetry, what = 'this' }) {
+  const [busy, setBusy] = useState(false);
+  async function retry() {
+    setBusy(true);
+    await onRetry();
+    setBusy(false);
+  }
+  return (
+    <div className="load-failed" role="alert">
+      <p><b>We couldn’t load {what}.</b> {error?.status ? 'Please try again.' : 'Check your connection and try again.'}</p>
+      <button type="button" className="btn btn-ghost btn-small" disabled={busy} onClick={retry}>{busy ? 'Trying…' : 'Try again'}</button>
+    </div>
+  );
+}
+
+// Shown from the first moment, before any of the site's scripts have arrived.
+export function BootScreen() {
+  return (
+    <>
+      <header className="site-header">
+        <div className="wrap header-row"><span className="logo">MBGN</span></div>
+      </header>
+      <main className="boot" role="status" aria-label="Loading">
+        <Crown className="boot-crown" />
+        <span className="boot-bar" aria-hidden="true"><i /></span>
+      </main>
+    </>
+  );
+}
 
 export function Field({ label, hint, children }) {
   return (
@@ -81,7 +235,21 @@ export function Countdown({ competition, compact = false }) {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
-  if (!competition) return null;
+  if (!competition) {
+    return (
+      <div className={`countdown ${compact ? 'compact' : ''}`} aria-hidden="true">
+        <span className="countdown-label">Voting closes in</span>
+        <div className="countdown-parts">
+          {['Days', 'Hrs', 'Min', 'Sec'].map((label) => (
+            <span key={label} className="countdown-part">
+              <b className="skeleton-text">00</b>
+              <small>{label}</small>
+            </span>
+          ))}
+        </div>
+      </div>
+    );
+  }
   const { voting, startsAt, endsAt } = competition;
 
   if (voting.status === 'paused') return <p className="count-note">Voting is paused. Please check back soon.</p>;
@@ -212,9 +380,7 @@ export function LivePopups() {
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
 
   useLive('activity', (a) => add(a));
-  useLive('notification', (n) => {
-    if (n.kind !== 'wallet') add({ ...n, private: true });
-  });
+  useLive('notification', (n) => add({ ...n, private: true }));
 
   return (
     <div className="popups" aria-live="polite">
@@ -263,9 +429,17 @@ function FeedAmount({ item }) {
 }
 
 export function ActivityFeed({ limit = 5 }) {
-  const [items, setItems] = useState(null);
+  const path = `/activity?limit=${limit}`;
+  const [items, setItems] = useState(() => recall(path));
+  const [error, setError] = useState(null);
   const [, tick] = useState(0);
-  const load = () => api(`/activity?limit=${limit}`).then(setItems).catch(() => setItems([]));
+  const load = () => api(path)
+    .then((next) => {
+      remember(path, next);
+      setItems(next);
+      setError(null);
+    })
+    .catch(setError);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [limit]);
   useEffect(() => {
@@ -275,7 +449,7 @@ export function ActivityFeed({ limit = 5 }) {
   useLive('activity', (a) => setItems((prev) => [a, ...(prev ?? [])].slice(0, limit)));
   useLive('activity_refresh', () => load());
 
-  if (!items) return <Loading />;
+  if (!items) return error ? <LoadFailed error={error} onRetry={load} what="recent votes" /> : <FeedSkeleton count={limit} />;
   if (items.length === 0) return <p className="muted">The first votes will appear here as they come in.</p>;
   return (
     <ol className="feed">
@@ -299,12 +473,27 @@ export function ThemePicker() {
   const { competition } = useApp();
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(currentTheme);
+  const root = useRef(null);
+
+  // Clicking or tapping anywhere else, or pressing Escape, closes it.
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointer = (e) => { if (!root.current?.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('pointerdown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
   if (!competition?.themePicker) return null;
   const selected = THEMES.find((t) => t.id === active) ?? THEMES[0];
   const swatch = (t) => ({ background: `linear-gradient(135deg, ${t.swatch[0]}, ${t.swatch[1]})` });
 
   return (
-    <div className="theme-picker">
+    <div className="theme-picker" ref={root}>
       {open ? (
         <div className="theme-list" role="group" aria-label="Choose a theme">
           {THEMES.map((t) => (
@@ -321,9 +510,9 @@ export function ThemePicker() {
           ))}
         </div>
       ) : null}
-      <button type="button" className="theme-toggle" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+      <button type="button" className="theme-toggle" aria-label={`Theme: ${selected.name}`} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         <span className="theme-swatch" style={swatch(selected)} />
-        {open ? 'Close' : `Theme: ${selected.name}`}
+        Theme
       </button>
     </div>
   );

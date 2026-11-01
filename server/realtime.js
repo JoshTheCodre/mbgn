@@ -23,7 +23,12 @@ export function createBus() {
       res.write(': connected\n\n');
       const client = { res, userId };
       clients.add(client);
-      req.on('close', () => clients.delete(client));
+      // Vercel ends functions after a time limit, so end first. The browser reconnects by itself.
+      const limit = process.env.VERCEL ? setTimeout(() => res.end(), 50000) : null;
+      req.on('close', () => {
+        clearTimeout(limit);
+        clients.delete(client);
+      });
     },
     // Everyone on the site.
     publish(event, data) {

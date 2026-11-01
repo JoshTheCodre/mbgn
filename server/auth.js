@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import express from 'express';
 import { nowIso } from './db.js';
 
 const SESSION_DAYS = 30;
@@ -10,6 +11,18 @@ export class HttpError extends Error {
     this.status = status;
     this.extra = extra;
   }
+}
+
+// Express 4 ignores a rejected promise, which would leave the request hanging. These pass it on.
+export const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+export function asyncRouter() {
+  const router = express.Router();
+  for (const method of ['get', 'post', 'put', 'patch', 'delete', 'use']) {
+    const original = router[method].bind(router);
+    router[method] = (...args) => original(...args.map((arg) => (typeof arg === 'function' ? wrap(arg) : arg)));
+  }
+  return router;
 }
 
 export function hashPassword(password) {
@@ -41,10 +54,10 @@ function parseCookies(header = '') {
   return out;
 }
 
-export function startSession(ctx, res, userId) {
+export async function startSession(ctx, res, userId) {
   const token = crypto.randomBytes(32).toString('base64url');
   const expires = new Date(Date.now() + SESSION_DAYS * 864e5);
-  ctx.db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
+  await ctx.db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
     .run(sha256(token), userId, expires.toISOString());
   res.cookie(COOKIE, token, {
     httpOnly: true,
@@ -55,26 +68,26 @@ export function startSession(ctx, res, userId) {
   });
 }
 
-export function endSession(ctx, req, res) {
+export async function endSession(ctx, req, res) {
   const token = parseCookies(req.headers.cookie)[COOKIE];
-  if (token) ctx.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256(token));
+  if (token) await ctx.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256(token));
   res.clearCookie(COOKIE, { path: '/' });
 }
 
-export function sessionUser(ctx, req) {
+export async function sessionUser(ctx, req) {
   const token = parseCookies(req.headers.cookie)[COOKIE];
   if (!token) return null;
-  const row = ctx.db.prepare(`
-    SELECT u.id, u.email, u.name, u.phone, u.role, u.credits, u.frozen
+  const row = await ctx.db.prepare(`
+    SELECT u.id, u.email, u.name, u.phone, u.role
     FROM sessions s JOIN users u ON u.id = s.user_id
     WHERE s.token_hash = ? AND s.expires_at > ?`).get(sha256(token), nowIso());
   return row ?? null;
 }
 
-export const attachUser = (ctx) => (req, _res, next) => {
-  req.user = sessionUser(ctx, req);
+export const attachUser = (ctx) => wrap(async (req, _res, next) => {
+  req.user = await sessionUser(ctx, req);
   next();
-};
+});
 
 export function requireUser(req, _res, next) {
   if (!req.user) return next(new HttpError(401, 'Please enter your details first.'));

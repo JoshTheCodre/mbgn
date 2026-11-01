@@ -1,10 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { api, dateTime, naira, num, plural, useApp, useFetch, useLive } from '../lib.jsx';
-import { ErrorNote, Field, Loading, CountUp } from '../ui.jsx';
-
-// Only same-site paths, so a crafted link can't send someone elsewhere after paying.
-const safeReturn = (value) => (value && /^\/[^/\\]/.test(value) ? value : '/wallet');
+import { api, dateTime, naira, num, plural, useApp, useFetch } from '../lib.jsx';
+import { ErrorNote, Field, Loading } from '../ui.jsx';
 
 export function AdminLogin() {
   const { setUser } = useApp();
@@ -93,15 +90,103 @@ export function Reset() {
   );
 }
 
+const PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+const PHOTO_MAX_SIDE = 1200;
+
+// Phone photos can be several megabytes, and every visitor would have to download them.
+async function shrinkPhoto(file) {
+  try {
+    const image = await createImageBitmap(file);
+    const scale = Math.min(1, PHOTO_MAX_SIDE / Math.max(image.width, image.height));
+    if (scale === 1 && file.size < 400 * 1024) return file;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(image.width * scale);
+    canvas.height = Math.round(image.height * scale);
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => { canvas.toBlob(resolve, 'image/jpeg', 0.85); });
+    if (!blob || blob.size >= file.size) return file;
+    return new File([blob], file.name.replace(/\.\w+$/, '.jpg'), { type: 'image/jpeg' });
+  } catch {
+    return file; // The original is still a valid upload if under the limit.
+  }
+}
+
+function PhotoPicker() {
+  const [photo, setPhoto] = useState(null);
+  const [dragging, setDragging] = useState(false);
+  const [problem, setProblem] = useState(null);
+
+  useEffect(() => () => { if (photo) URL.revokeObjectURL(photo.url); }, [photo]);
+
+  async function choose(e) {
+    const input = e.target;
+    const chosen = input.files?.[0];
+    setDragging(false);
+    if (!chosen) {
+      setPhoto(null);
+      return;
+    }
+    const file = PHOTO_TYPES.includes(chosen.type) ? await shrinkPhoto(chosen) : chosen;
+    const issue = !PHOTO_TYPES.includes(chosen.type) ? 'Please choose a JPG, PNG or WebP image.'
+      : file.size > PHOTO_MAX_BYTES ? 'That photo is larger than 5 MB. Please choose a smaller one.' : null;
+    setProblem(issue);
+    if (issue) {
+      input.value = '';
+      setPhoto(null);
+      return;
+    }
+    if (file !== chosen) {
+      const replacement = new DataTransfer();
+      replacement.items.add(file);
+      input.files = replacement.files;
+    }
+    setPhoto({ url: URL.createObjectURL(file), name: chosen.name, size: `${(file.size / (1024 * 1024)).toFixed(1)} MB` });
+  }
+
+  return (
+    <>
+      <label className={`photo-pick ${photo ? 'has-photo' : ''} ${dragging ? 'dragging' : ''}`}>
+        <span className="photo-pick-frame">
+          {photo ? <img src={photo.url} alt="Your selected photo" /> : (
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <circle cx="12" cy="8" r="4.2" />
+              <path d="M3.8 21c.6-4.6 4-7.2 8.2-7.2s7.6 2.6 8.2 7.2c0 .4-.3.7-.7.7H4.5c-.4 0-.7-.3-.7-.7Z" />
+            </svg>
+          )}
+        </span>
+        <span className="photo-pick-text">
+          <strong>{photo ? photo.name : 'Add your photo'}</strong>
+          <small>{photo ? photo.size : 'A clear, recent photo of your face.'}</small>
+          <span className="btn btn-ghost btn-small">{photo ? 'Change photo' : 'Choose photo'}</span>
+        </span>
+        <input
+          name="photo"
+          type="file"
+          accept={PHOTO_TYPES.join(',')}
+          title=" "
+          aria-label="Profile photo"
+          required
+          onChange={choose}
+          onDragEnter={() => setDragging(true)}
+          onDragLeave={() => setDragging(false)}
+        />
+      </label>
+      {problem ? <p className="note note-error" role="alert">{problem}</p> : null}
+      <p className="field-hint">JPG, PNG or WebP, up to 5 MB. Only the review team sees it until you are approved.</p>
+    </>
+  );
+}
+
 export function Register() {
   const { competition, refreshUser, user } = useApp();
   const navigate = useNavigate();
-  const [preview, setPreview] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const errorRef = useRef(null);
-
-  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
 
   if (user?.contestant) return <Navigate to="/dashboard" replace />;
 
@@ -130,21 +215,8 @@ export function Register() {
       </header>
       <form className="register-form" onSubmit={submit}>
         <fieldset>
-          <legend>Your profile photograph</legend>
-          <label className="photo-drop">
-            {preview ? <img src={preview} alt="Your selected photograph" /> : <span>Add a clear, recent photo of your face</span>}
-            <input
-              name="photo"
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              required
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                setPreview(file ? URL.createObjectURL(file) : null);
-              }}
-            />
-          </label>
-          <p className="field-hint">JPG, PNG or WebP, up to 5 MB. Only the review team sees it until you are approved.</p>
+          <legend>Profile photo</legend>
+          <PhotoPicker />
         </fieldset>
         <fieldset>
           <legend>About you</legend>
@@ -190,155 +262,46 @@ export function Register() {
   );
 }
 
-// No sign-in: these details create the wallet the first time and bring it back on any device.
-function WalletDetails() {
-  const { setUser } = useApp();
+// Voting never asks for an email, so this is how a supporter can keep a copy.
+function EmailReceipt({ reference }) {
+  const [sent, setSent] = useState(false);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
   async function submit(e) {
     e.preventDefault();
-    const form = new FormData(e.currentTarget);
     setBusy(true);
     setError(null);
     try {
-      const { user } = await api('/supporters/wallet', { body: { email: form.get('email'), phone: form.get('phone') } });
-      setUser(user);
+      await api(`/payments/${encodeURIComponent(reference)}/receipt-email`, { body: { email: new FormData(e.currentTarget).get('email') } });
+      setSent(true);
     } catch (err) {
       setError(err);
+    } finally {
       setBusy(false);
     }
   }
 
+  if (sent) return <p className="note note-good" role="status">Your receipt is on its way.</p>;
   return (
-    <div className="wrap page narrow">
-      <h1>Open your wallet</h1>
-      <p className="muted">Already funded a wallet? Enter the email and phone number you used. If you don’t have one yet, it’s set up for you when you fund it while voting.</p>
-      <form className="stack" onSubmit={submit}>
-        <Field label="Email address"><input name="email" type="email" autoComplete="email" required /></Field>
-        <Field label="Phone number"><input name="phone" type="tel" autoComplete="tel" required /></Field>
-        <ErrorNote error={error} />
-        <button className="btn btn-primary btn-wide" disabled={busy}>{busy ? 'Opening…' : 'Open my wallet'}</button>
-      </form>
-    </div>
+    <form className="stack email-receipt" onSubmit={submit}>
+      <Field label="Email me this receipt" hint="Optional. Only used to send this receipt.">
+        <input name="email" type="email" autoComplete="email" required />
+      </Field>
+      <ErrorNote error={error} />
+      <button className="btn btn-ghost btn-wide" disabled={busy}>{busy ? 'Sending…' : 'Send receipt'}</button>
+    </form>
   );
-}
-
-function WalletView() {
-  const { competition, refreshUser, setUser } = useApp();
-  const [params] = useSearchParams();
-  const need = Number(params.get('need')) || null;
-  const returnTo = params.get('return');
-  const { data, reload } = useFetch('/wallet');
-  const [custom, setCustom] = useState(need ? String(need) : '');
-  const [busy, setBusy] = useState(null);
-  const [error, setError] = useState(null);
-  const [tab, setTab] = useState('votes');
-
-  useLive('wallet', () => { reload(); refreshUser().catch(() => {}); });
-
-  async function buy(body, key) {
-    setBusy(key);
-    setError(null);
-    try {
-      const started = await api('/wallet/purchases', { body: { ...body, returnTo: safeReturn(returnTo) } });
-      window.location.assign(started.checkoutUrl);
-    } catch (err) {
-      setError(err);
-      setBusy(null);
-    }
-  }
-
-  async function forget() {
-    await api('/auth/logout', { method: 'POST' }).catch(() => {});
-    setUser(null);
-  }
-
-  const customVotes = Number(custom);
-  const customValid = Number.isInteger(customVotes) && customVotes > 0;
-
-  return (
-    <div className="wrap page wallet">
-      <div className="wallet-balance">
-        <span className="eyebrow">Your balance</span>
-        <p className="wallet-number">{data ? <CountUp value={data.balance} /> : '…'}</p>
-        <span>voting credits · 1 credit = 1 vote</span>
-      </div>
-
-      <section>
-        <h2>Buy voting credits</h2>
-        {need ? <p className="note">You need {plural(need, 'more credit')} for that vote. {returnTo ? 'We’ll bring you back afterwards.' : ''}</p> : null}
-        <ErrorNote error={error} />
-        <ul className="packages">
-          {(competition?.packages ?? []).map((p) => (
-            <li key={p.id}>
-              <button type="button" className="package" disabled={Boolean(busy)} onClick={() => buy({ packageId: p.id }, `p${p.id}`)}>
-                <b>{num(p.votes)}</b>
-                <span>{p.votes === 1 ? 'vote' : 'votes'}</span>
-                <em>{busy === `p${p.id}` ? 'Opening…' : naira(p.price)}</em>
-              </button>
-            </li>
-          ))}
-        </ul>
-        <form className="custom-buy" onSubmit={(e) => { e.preventDefault(); if (customValid) buy({ votes: customVotes }, 'custom'); }}>
-          <Field label="Or choose your own number of votes">
-            <input type="number" min="1" step="1" inputMode="numeric" value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="e.g. 35" />
-          </Field>
-          <button className="btn btn-primary" disabled={!customValid || Boolean(busy)}>
-            {busy === 'custom' ? 'Opening…' : customValid ? `Pay ${naira(customVotes * (competition?.votePrice ?? 0))}` : 'Pay'}
-          </button>
-        </form>
-        <p className="muted small-note">Credits are added only after the payment provider confirms your payment to our server.</p>
-      </section>
-
-      <section>
-        <div className="tabs" role="tablist">
-          <button type="button" role="tab" aria-selected={tab === 'votes'} className={tab === 'votes' ? 'active' : ''} onClick={() => setTab('votes')}>Votes cast</button>
-          <button type="button" role="tab" aria-selected={tab === 'payments'} className={tab === 'payments' ? 'active' : ''} onClick={() => setTab('payments')}>Payments</button>
-        </div>
-        {!data ? <Loading /> : tab === 'votes' ? (
-          data.votes.length === 0 ? <p className="muted empty">You haven’t voted yet. <Link to="/contestants">Find a contestant</Link>.</p> : (
-            <ul className="history">
-              {data.votes.map((v) => (
-                <li key={v.receiptNo}>
-                  <span><b>{plural(v.quantity, 'vote')}</b> for <Link to={`/c/${v.code}`}>{v.name}</Link>{v.status === 'void' ? <em className="tag tag-bad">Voided</em> : null}<small>{dateTime(v.createdAt)}</small></span>
-                  <Link className="text-link" to={`/receipt/vote/${v.receiptNo}`}>Receipt</Link>
-                </li>
-              ))}
-            </ul>
-          )
-        ) : (
-          data.payments.length === 0 ? <p className="muted empty">No payments yet.</p> : (
-            <ul className="history">
-              {data.payments.map((p) => (
-                <li key={p.reference}>
-                  <span><b>{plural(p.credits, 'credit')}</b> for {naira(p.amount)} <em className={`tag tag-${p.status}`}>{p.status}</em><small>{dateTime(p.createdAt)}</small></span>
-                  {p.status === 'paid'
-                    ? <Link className="text-link" to={`/receipt/payment/${p.reference}`}>Receipt</Link>
-                    : p.status === 'pending' ? <Link className="text-link" to={`/pay/return/${p.reference}`}>Check status</Link> : null}
-                </li>
-              ))}
-            </ul>
-          )
-        )}
-        {data ? <p className="muted small-note">Wallet for {data.email}. <button type="button" className="text-link as-button" onClick={forget}>Not you? Use other details</button></p> : null}
-      </section>
-    </div>
-  );
-}
-
-export function Wallet() {
-  const { user } = useApp();
-  if (user === undefined) return <div className="wrap page"><Loading /></div>;
-  return user ? <WalletView /> : <WalletDetails />;
 }
 
 export function PayReturn() {
   const { reference } = useParams();
-  const { refreshUser } = useApp();
   const [payment, setPayment] = useState(null);
   const [error, setError] = useState(null);
   const [attempts, setAttempts] = useState(0);
+  const [params] = useSearchParams();
+  // Only changes the wording and stops the checking. What counts is still what the provider says.
+  const cancelled = params.get('cancelled') === '1';
 
   useEffect(() => {
     let stop = false;
@@ -350,8 +313,7 @@ export function PayReturn() {
         if (stop) return;
         setPayment(result);
         setError(null);
-        if (result.status === 'paid') refreshUser().catch(() => {});
-        if (result.status !== 'pending') return;
+        if (result.status !== 'pending' || cancelled) return;
       } catch (err) {
         if (stop) return;
         setError(err);
@@ -363,20 +325,27 @@ export function PayReturn() {
     }
     check();
     return () => { stop = true; clearTimeout(timer); };
-  }, [reference, refreshUser]);
+  }, [reference, cancelled]);
 
   if (!payment) {
     return (
       <div className="wrap page narrow pay-status">
+        {error ? null : <span className="spinner" aria-hidden="true" />}
         <h1>Confirming your payment…</h1>
+        {error ? null : <p className="muted">This usually takes a few seconds. Please keep this page open.</p>}
         <ErrorNote error={error} />
       </div>
     );
   }
 
-  const { contestant, status, votesStatus, balance } = payment;
-  const back = payment.returnTo ?? (payment.balance === undefined ? '/' : '/wallet');
-  const receipt = <p className="form-foot"><Link to={`/receipt/payment/${reference}`}>View receipt</Link></p>;
+  const { contestant, status, votesStatus } = payment;
+  const back = payment.returnTo ?? '/';
+  const receipt = (
+    <>
+      <p className="form-foot"><Link to="/">Back to home</Link> · <Link to={`/receipt/payment/${reference}`}>View receipt</Link></p>
+      {payment.emailed ? null : <EmailReceipt reference={reference} />}
+    </>
+  );
   return (
     <div className="wrap page narrow pay-status">
       {status === 'paid' && votesStatus === 'counted' ? (
@@ -384,16 +353,10 @@ export function PayReturn() {
           <p className="eyebrow">Payment confirmed</p>
           <h1>{plural(payment.votes, 'vote')} counted for {contestant.name}</h1>
           <p className="muted">Now in position {contestant.position} with {num(contestant.totalVotes)} votes.</p>
-          {balance > 0 ? <p>You have <b>{plural(balance, 'credit')}</b> left in your wallet.</p> : null}
-          <Link to={back} className="btn btn-vote btn-wide">Vote again</Link>
-          {receipt}
-        </>
-      ) : null}
-      {status === 'paid' && votesStatus === 'kept' ? (
-        <>
-          <h1>Your credits are safe</h1>
-          <p className="muted">We couldn’t cast your vote for {contestant.name}, so {plural(payment.credits, 'credit')} stayed in your wallet.</p>
-          <Link to="/wallet" className="btn btn-primary btn-wide">Open my wallet</Link>
+          <div className="pay-actions">
+            <Link to={back} className="btn btn-vote btn-wide">Vote again</Link>
+            <Link to="/leaderboard" className="btn btn-ghost btn-wide">See the leaderboard</Link>
+          </div>
           {receipt}
         </>
       ) : null}
@@ -404,26 +367,25 @@ export function PayReturn() {
           {receipt}
         </>
       ) : null}
-      {status === 'paid' && !contestant ? (
+      {status === 'pending' && cancelled ? (
         <>
-          <p className="eyebrow">Payment confirmed</p>
-          <h1>{plural(payment.credits, 'credit')} added</h1>
-          <p>Your balance is now <b>{plural(balance ?? 0, 'credit')}</b>.</p>
-          <Link to={back} className="btn btn-primary btn-wide">Back to my wallet</Link>
-          {receipt}
+          <h1>Payment cancelled</h1>
+          <p className="muted">You weren’t charged, and no votes were counted.</p>
+          <Link to={back} className="btn btn-primary btn-wide">Try again</Link>
         </>
       ) : null}
-      {status === 'pending' ? (
+      {status === 'pending' && !cancelled ? (
         <>
+          {attempts < 20 ? <span className="spinner" aria-hidden="true" /> : null}
           <h1>Waiting for confirmation</h1>
-          <p className="muted">We haven’t received confirmation of this payment yet. {attempts >= 20 ? 'If you paid, it will go through as soon as the provider confirms, and we’ll email your receipt. You can safely leave this page.' : 'This page checks automatically.'}</p>
+          <p className="muted">We haven’t received confirmation of this payment yet. {attempts >= 20 ? 'If you paid, your votes will count as soon as the provider confirms. You can safely leave this page.' : 'This page checks automatically.'}</p>
           <Link to={back} className="btn btn-ghost btn-wide">Go back</Link>
         </>
       ) : null}
       {status === 'failed' ? (
         <>
           <h1>Payment not completed</h1>
-          <p className="muted">Nothing was added or counted for this attempt.</p>
+          <p className="muted">Nothing was counted for this attempt.</p>
           <Link to={back} className="btn btn-primary btn-wide">Try again</Link>
         </>
       ) : null}
@@ -460,12 +422,12 @@ export function PaySim() {
     <div className="wrap page narrow">
       <p className="eyebrow">Simulated checkout</p>
       <h1>{data ? naira(data.amount) : '…'}</h1>
-      <p className="muted">This stands in for Monnify’s checkout while no keys are configured. No real money moves.</p>
+      <p className="muted">This stands in for Paystack’s checkout while no key is configured. No real money moves.</p>
       <ErrorNote error={error ?? payError} />
-      {data ? <p>{data.mode === 'direct' ? `${plural(data.votes, 'vote')} for ${data.contestant.name}` : plural(data.credits, 'voting credit')}</p> : null}
+      {data ? <p>{plural(data.votes, 'vote')} for {data.contestant.name}</p> : null}
       <div className="stack">
         <button type="button" className="btn btn-primary btn-wide" disabled={busy || !data} onClick={pay}>Simulate successful payment</button>
-        <Link to={`/pay/return/${reference}`} className="btn btn-ghost btn-wide">Leave without paying</Link>
+        <Link to={`/pay/return/${reference}?cancelled=1`} className="btn btn-ghost btn-wide">Leave without paying</Link>
       </div>
     </div>
   );
@@ -479,7 +441,6 @@ export function Receipt() {
       <div className="wrap page narrow">
         <h1>Receipt not available</h1>
         <ErrorNote error={error} />
-        {error.status === 401 ? <Link to="/wallet" className="btn btn-primary">Open my wallet</Link> : null}
       </div>
     );
   }
@@ -494,13 +455,13 @@ export function Receipt() {
         <p className="receipt-number">{data.number}</p>
         <dl>
           <div><dt>Date</dt><dd>{dateTime(data.date)}</dd></div>
-          <div><dt>Issued to</dt><dd>{data.customer}</dd></div>
+          {data.customer ? <div><dt>Issued to</dt><dd>{data.customer}</dd></div> : null}
           {data.lines.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
         </dl>
       </article>
       <div className="receipt-actions">
         <button type="button" className="btn btn-primary" onClick={() => window.print()}>Print or save as PDF</button>
-        <Link to="/wallet" className="btn btn-ghost">Back to my wallet</Link>
+        <Link to="/" className="btn btn-ghost">Back to the site</Link>
       </div>
     </div>
   );

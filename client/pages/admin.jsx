@@ -45,11 +45,10 @@ function Overview({ data, go }) {
   if (!data) return <Loading />;
   return (
     <>
-      <dl className="tiles">
+      <dl className="tiles tiles-3">
         <div><dt>Revenue</dt><dd>{naira(data.revenue)}</dd><small>{naira(data.revenue24h)} in 24 hrs</small></div>
         <div><dt>Valid votes</dt><dd>{num(data.totalVotes)}</dd><small>{num(data.votes24h)} in 24 hrs</small></div>
-        <div><dt>Active contestants</dt><dd>{num(data.contestants)}</dd><small>{num(data.supporters)} paying supporters</small></div>
-        <div><dt>Unspent credits</dt><dd>{num(data.creditsUnspent)}</dd><small>sold but not yet voted</small></div>
+        <div><dt>Active contestants</dt><dd>{num(data.contestants)}</dd><small>{num(data.pending)} waiting for review</small></div>
       </dl>
       <section className="panel">
         <h2>Needs your attention</h2>
@@ -66,17 +65,16 @@ function Overview({ data, go }) {
 
 function ActionDialog({ action, onClose, onDone }) {
   const [reason, setReason] = useState('');
-  const [refund, setRefund] = useState(false);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
-  useEffect(() => { setReason(''); setRefund(false); setError(null); }, [action]);
+  useEffect(() => { setReason(''); setError(null); }, [action]);
 
   async function submit(e) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await action.run({ reason, refund });
+      await action.run({ reason });
       onDone();
     } catch (err) {
       setError(err);
@@ -93,9 +91,6 @@ function ActionDialog({ action, onClose, onDone }) {
           <Field label={action?.reasonLabel ?? 'Reason'}>
             <textarea rows={3} required minLength={3} value={reason} onChange={(e) => setReason(e.target.value)} />
           </Field>
-        ) : null}
-        {action?.offerRefund ? (
-          <label className="check-line"><input type="checkbox" checked={refund} onChange={(e) => setRefund(e.target.checked)} /> Return the credits to the supporter’s wallet</label>
         ) : null}
         <ErrorNote error={error} />
         <div className="dialog-actions">
@@ -228,20 +223,19 @@ function MoneyTab({ onChange }) {
         !payments.data ? <Loading /> : (
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>Date</th><th>Reference</th><th>Supporter</th><th>Type</th><th className="num">Credits / votes</th><th className="num">Amount</th><th>Status</th></tr></thead>
+              <thead><tr><th>Date</th><th>Reference</th><th>Receipt email</th><th className="num">Votes</th><th className="num">Amount</th><th>Status</th></tr></thead>
               <tbody>
                 {payments.data.map((p) => (
                   <tr key={p.reference}>
                     <td>{dateTime(p.createdAt)}</td>
                     <td>{p.status === 'paid' ? <Link to={`/receipt/payment/${p.reference}`}>{p.reference}</Link> : p.reference}</td>
-                    <td>{p.email}</td>
-                    <td>{p.mode === 'direct' ? 'Direct' : 'Wallet'}</td>
-                    <td className="num">{num(p.credits)}</td>
+                    <td>{p.email ?? '—'}</td>
+                    <td className="num">{num(p.votes)}</td>
                     <td className="num">{naira(p.amount)}</td>
                     <td><em className={`tag tag-${p.status}`}>{p.status}</em>{p.votesStatus === 'held' ? <em className="tag tag-review">refund due</em> : null}</td>
                   </tr>
                 ))}
-                {payments.data.length === 0 ? <tr><td colSpan="7" className="muted">No payments yet.</td></tr> : null}
+                {payments.data.length === 0 ? <tr><td colSpan="6" className="muted">No payments yet.</td></tr> : null}
               </tbody>
             </table>
           </div>
@@ -250,7 +244,7 @@ function MoneyTab({ onChange }) {
         !votes.data ? <Loading /> : (
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>Date</th><th>Receipt</th><th>Contestant</th><th className="num">Votes</th><th>Supporter</th><th>Status</th><th><span className="visually-hidden">Action</span></th></tr></thead>
+              <thead><tr><th>Date</th><th>Receipt</th><th>Contestant</th><th className="num">Votes</th><th>Receipt email</th><th>Status</th><th><span className="visually-hidden">Action</span></th></tr></thead>
               <tbody>
                 {votes.data.map((v) => (
                   <tr key={v.id}>
@@ -258,7 +252,7 @@ function MoneyTab({ onChange }) {
                     <td><Link to={`/receipt/vote/${v.receiptNo}`}>{v.receiptNo}</Link></td>
                     <td>{v.name} ({v.code})</td>
                     <td className="num">{num(v.quantity)}</td>
-                    <td>{v.email}</td>
+                    <td>{v.email ?? '—'}</td>
                     <td><em className={`tag tag-${v.status}`}>{v.status}</em></td>
                     <td>
                       {v.status === 'valid' ? (
@@ -267,10 +261,9 @@ function MoneyTab({ onChange }) {
                           className="text-link as-button"
                           onClick={() => setAction({
                             title: 'Void this vote',
-                            description: `Removes ${v.quantity} votes from ${v.name} and recalculates the leaderboard.`,
+                            description: `Removes ${v.quantity} votes from ${v.name} and recalculates the leaderboard. Any refund is done separately in Paystack.`,
                             confirm: 'Void vote',
-                            offerRefund: v.hasWallet,
-                            run: ({ reason, refund }) => api(`/admin/votes/${v.id}/void`, { body: { reason, refund } }),
+                            run: ({ reason }) => api(`/admin/votes/${v.id}/void`, { body: { reason } }),
                           })}
                         >Void</button>
                       ) : null}
@@ -292,7 +285,6 @@ function ReviewTab({ onChange }) {
   const [status, setStatus] = useState('open');
   const { data, reload, error } = useFetch(`/admin/flags?status=${status}`);
   const close = async (id, outcome) => { await api(`/admin/flags/${id}/${outcome}`, { method: 'POST' }); reload(); onChange(); };
-  const freeze = async (userId, frozen) => { await api(`/admin/users/${userId}/freeze`, { body: { frozen } }); reload(); };
   return (
     <>
       <p className="muted">Suspicious patterns are flagged here automatically. Nothing is blocked until you decide. To remove votes, void them under Payments &amp; votes.</p>
@@ -307,10 +299,9 @@ function ReviewTab({ onChange }) {
               <div>
                 <strong>{f.kind.replace(/_/g, ' ')}</strong> <em className={`tag tag-sev-${f.severity}`}>{f.severity}</em>
                 <p>{f.details}</p>
-                <small className="muted">{dateTime(f.createdAt)}{f.email ? ` · ${f.email}` : ''}{f.code ? ` · ${f.code}` : ''}{f.frozen ? ' · wallet frozen' : ''}</small>
+                <small className="muted">{dateTime(f.createdAt)}{f.code ? ` · ${f.code}` : ''}</small>
               </div>
               <div className="admin-actions">
-                {f.userId ? <button type="button" className="btn btn-ghost btn-small" onClick={() => freeze(f.userId, !f.frozen)}>{f.frozen ? 'Unfreeze wallet' : 'Freeze wallet'}</button> : null}
                 {f.status === 'open' ? (
                   <>
                     <button type="button" className="btn btn-ghost btn-small" onClick={() => close(f.id, 'dismissed')}>Dismiss</button>
@@ -438,7 +429,7 @@ function CompetitionTab({ onChange }) {
             disabled={closed}
             onClick={() => setAction({
               title: 'Close voting',
-              description: 'Supporters will no longer be able to vote. Their unspent credits stay in their wallets.',
+              description: 'Supporters will no longer be able to vote.',
               confirm: 'Close voting',
               needsReason: false,
               run: () => api('/admin/voting/closed', { method: 'POST' }),

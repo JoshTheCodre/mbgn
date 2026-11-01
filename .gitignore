@@ -1,5 +1,9 @@
 node_modules/
-dist/
+.next/
+.vercel/
+next-env.d.ts
 data/
 .env
+.env.local
 .claude/
+.neon
