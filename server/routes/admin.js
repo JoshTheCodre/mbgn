@@ -3,6 +3,9 @@ import {
   allocateCode, audit, notifyUser, photoUrl, publishActivity, recomputeRanks, votingState,
 } from '../competition.js';
 import { getSetting, nowIso, setSetting, tx } from '../db.js';
+import {
+  assignGroup, countWaiting, groupById, placeWaiting,
+} from '../groups.js';
 import { voidVote } from '../votes.js';
 
 const clean = (value, max = 500) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
@@ -35,6 +38,9 @@ const contestantView = (c) => ({
   tiktok: c.tiktok,
   instagram: c.instagram,
   facebook: c.facebook,
+  verification: c.verification,
+  followerResults: c.follower_results ? JSON.parse(c.follower_results) : [],
+  whatsappGroupName: c.group_name ?? null,
   category: c.category,
   status: c.status,
   statusReason: c.status_reason,
@@ -43,6 +49,29 @@ const contestantView = (c) => ({
   createdAt: c.created_at,
   approvedAt: c.approved_at,
 });
+
+// Only real invite links: this one goes out to every contestant in a batch.
+function groupInvite(value) {
+  let url;
+  try {
+    url = new URL(clean(value, 300));
+  } catch {
+    url = null;
+  }
+  const code = url?.pathname.split('/').filter(Boolean)[0] ?? '';
+  if (url?.protocol !== 'https:' || url.hostname !== 'chat.whatsapp.com' || !/^\w+$/.test(code)) {
+    throw new HttpError(400, 'Please paste a WhatsApp group invite link, starting https://chat.whatsapp.com/');
+  }
+  return `https://chat.whatsapp.com/${code}`;
+}
+
+function groupCapacity(value) {
+  const capacity = Number(value);
+  if (!Number.isInteger(capacity) || capacity < 1 || capacity > 1024) throw new HttpError(400, 'Group size must be a whole number up to 1,024, the most WhatsApp allows.');
+  return capacity;
+}
+
+const sameInvite = (err) => (err.code === '23505' ? new HttpError(409, 'That invite link is already on the list.') : err);
 
 export function adminRouter(ctx) {
   const { db, config } = ctx;
@@ -60,7 +89,7 @@ export function adminRouter(ctx) {
   router.get('/overview', async (_req, res) => {
     const one = async (sql, ...args) => (await db.prepare(sql).get(...args)).n;
     const dayAgo = new Date(Date.now() - 864e5).toISOString();
-    const [voting, totalVotes, votes24h, revenue, revenue24h, votesHeld, contestants, pending, openFlags, paymentsInReview] = await Promise.all([
+    const [voting, totalVotes, votes24h, revenue, revenue24h, votesHeld, contestants, pending, openFlags, paymentsInReview, waitingForGroup] = await Promise.all([
       votingState(db),
       one("SELECT COALESCE(SUM(quantity), 0) AS n FROM votes WHERE status = 'valid'"),
       one("SELECT COALESCE(SUM(quantity), 0) AS n FROM votes WHERE status = 'valid' AND created_at >= ?", dayAgo),
@@ -71,9 +100,10 @@ export function adminRouter(ctx) {
       one("SELECT COUNT(*) AS n FROM contestants WHERE status = 'pending'"),
       one("SELECT COUNT(*) AS n FROM flags WHERE status = 'open'"),
       one("SELECT COUNT(*) AS n FROM payments WHERE status = 'review'"),
+      countWaiting(db),
     ]);
     res.json({
-      voting, totalVotes, votes24h, revenue, revenue24h, votesHeld, contestants, pending, openFlags, paymentsInReview,
+      voting, totalVotes, votes24h, revenue, revenue24h, votesHeld, contestants, pending, openFlags, paymentsInReview, waitingForGroup,
     });
   });
 
@@ -118,7 +148,8 @@ export function adminRouter(ctx) {
     const params = [];
     if (status) { where.push('status = ?'); params.push(status); }
     if (q) { where.push('(stage_name ILIKE ? OR full_name ILIKE ? OR code ILIKE ? OR email ILIKE ?)'); params.push(...Array(4).fill(`%${q}%`)); }
-    const rows = await db.prepare(`SELECT * FROM contestants ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+    const rows = await db.prepare(`SELECT *, (SELECT name FROM whatsapp_groups g WHERE g.id = contestants.whatsapp_group_id) AS group_name
+      FROM contestants ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, COALESCE(position, 999999), id DESC LIMIT 500`).all(...params);
     res.json(rows.map(contestantView));
   });
@@ -126,11 +157,12 @@ export function adminRouter(ctx) {
   async function sendApproval(c) {
     const link = `${config.publicUrl}/c/${c.code}`;
     const notYet = await getSetting(db, 'competition_phase') === 'registration' ? ' Voting opens when registration closes, so get your supporters ready.' : '';
+    const group = await groupById(db, c.whatsapp_group_id);
     await notifyUser(ctx, c.user_id, 'approval', `You're in! Your contestant code is ${c.code}. Share your voting link: ${link}.${notYet}`);
     await ctx.mailer.send({
       to: c.email,
       subject: `You're in! Your MBGN code is ${c.code}`,
-      text: `Congratulations ${c.stage_name},\n\nYour application has been approved.\n\nYour permanent contestant code: ${c.code}\nYour personal voting link: ${link}\n${notYet ? `\n${notYet.trim()}\n` : ''}\nLog in to your dashboard to follow your votes and ranking: ${config.publicUrl}/dashboard`,
+      text: `Congratulations ${c.stage_name},\n\nYour application has been approved.\n\nYour permanent contestant code: ${c.code}\nYour personal voting link: ${link}\n${notYet ? `\n${notYet.trim()}\n` : ''}${group ? `\nYour WhatsApp group: ${group.invite_url}\n` : ''}\nLog in to your dashboard to follow your votes and ranking: ${config.publicUrl}/dashboard`,
     });
   }
 
@@ -143,6 +175,7 @@ export function adminRouter(ctx) {
         await db.prepare('UPDATE contestants SET code = ?, code_seq = ? WHERE id = ?').run(code, seq, c.id);
       }
       await db.prepare("UPDATE contestants SET status = 'approved', status_reason = NULL, approved_at = ? WHERE id = ?").run(nowIso(), c.id);
+      if (!c.whatsapp_group_id) await assignGroup(db, c.id);
       await recomputeRanks(db);
       await audit(ctx, req.user.id, 'contestant.approve', `#${c.id} ${c.stage_name}`);
       return await getContestant(c.id);
@@ -201,6 +234,58 @@ export function adminRouter(ctx) {
     await audit(ctx, req.user.id, 'registration.deadline', endsAt || 'none');
     ctx.bus.publish('competition', {});
     res.json({ endsAt: endsAt || null });
+  });
+
+  // ---- Who can join: the follower check and the WhatsApp groups ----
+  router.get('/joining', async (_req, res) => {
+    const [minFollowers, groups, waiting] = await Promise.all([
+      getSetting(db, 'min_followers'),
+      db.prepare(`SELECT g.*, (SELECT COUNT(*) FROM contestants c WHERE c.whatsapp_group_id = g.id) AS used
+        FROM whatsapp_groups g ORDER BY g.id`).all(),
+      countWaiting(db),
+    ]);
+    // The same rule that decides who is placed next: the oldest open group with room.
+    const current = groups.find((g) => !g.closed && g.used < g.capacity);
+    res.json({
+      minFollowers: Number(minFollowers),
+      checkMode: ctx.followers.mode,
+      waiting,
+      groups: groups.map((g) => ({
+        id: g.id, name: g.name, url: g.invite_url, capacity: g.capacity, used: g.used, closed: Boolean(g.closed), current: g.id === current?.id,
+      })),
+    });
+  });
+
+  router.put('/joining', async (req, res) => {
+    const minFollowers = Number(req.body?.minFollowers);
+    if (!Number.isInteger(minFollowers) || minFollowers < 0) throw new HttpError(400, 'Followers needed must be a whole number.');
+    await setSetting(db, 'min_followers', minFollowers);
+    await audit(ctx, req.user.id, 'joining.min_followers', String(minFollowers));
+    ctx.bus.publish('competition', {});
+    res.json({ minFollowers });
+  });
+
+  router.post('/whatsapp-groups', async (req, res) => {
+    const name = clean(req.body?.name, 60);
+    if (name.length < 2) throw new HttpError(400, 'Please name this group, like Batch 2.');
+    const url = groupInvite(req.body?.url);
+    const capacity = groupCapacity(req.body?.capacity);
+    await db.prepare('INSERT INTO whatsapp_groups (name, invite_url, capacity, created_at) VALUES (?, ?, ?, ?)')
+      .run(name, url, capacity, nowIso()).catch((err) => { throw sameInvite(err); });
+    await audit(ctx, req.user.id, 'whatsapp_group.add', name);
+    res.status(201).json({ placed: await placeWaiting(ctx) });
+  });
+
+  router.put('/whatsapp-groups/:id', async (req, res) => {
+    const name = clean(req.body?.name, 60);
+    if (name.length < 2) throw new HttpError(400, 'Please name this group, like Batch 2.');
+    const url = groupInvite(req.body?.url);
+    const capacity = groupCapacity(req.body?.capacity);
+    const { changes } = await db.prepare('UPDATE whatsapp_groups SET name = ?, invite_url = ?, capacity = ?, closed = ? WHERE id = ?')
+      .run(name, url, capacity, req.body?.closed ? 1 : 0, req.params.id).catch((err) => { throw sameInvite(err); });
+    if (!changes) throw new HttpError(404, 'That group was not found.');
+    await audit(ctx, req.user.id, 'whatsapp_group.update', name);
+    res.json({ placed: await placeWaiting(ctx) });
   });
 
   // ---- Money and votes ----

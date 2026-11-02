@@ -50,8 +50,13 @@ export function loadConfig(overrides = {}) {
   // Vercel has no permanent disk, so uploaded photos would vanish.
   if (env.VERCEL && !r2) throw new Error('The R2_ settings are required on Vercel: photos need permanent storage.');
 
+  const followers = overrides.followers !== undefined ? overrides.followers : env.SCRAPECREATORS_API_KEY
+    ? { apiKey: env.SCRAPECREATORS_API_KEY, baseUrl: 'https://api.scrapecreators.com' }
+    : null;
+
   return {
     production,
+    followers,
     port: Number(overrides.port ?? env.PORT ?? 3000),
     publicUrl: (overrides.publicUrl ?? env.PUBLIC_URL ?? vercelUrl ?? `http://localhost:${env.PORT ?? 3000}`).replace(/\/$/, ''),
     dataDir,

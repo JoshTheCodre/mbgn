@@ -3,6 +3,7 @@ import {
 } from '../auth.js';
 import { movementBaseline, photoUrl } from '../competition.js';
 import { nowIso } from '../db.js';
+import { groupById } from '../groups.js';
 import {
   emailReceipt, paymentView, settlePayment, startPayment,
 } from '../payments.js';
@@ -119,9 +120,13 @@ export function contestantRouter(ctx) {
 
   router.get('/dashboard', async (req, res) => {
     const c = await ownContestant(req);
+    const group = ['pending', 'approved'].includes(c.status) ? await groupById(db, c.whatsapp_group_id) : null;
     const base = {
       status: c.status,
       statusReason: c.status_reason,
+      verification: c.verification,
+      followerResults: c.follower_results ? JSON.parse(c.follower_results) : [],
+      whatsappGroup: group ? { name: group.name, url: group.invite_url } : null,
       name: c.stage_name,
       fullName: c.full_name,
       photoUrl: photoUrl(c),

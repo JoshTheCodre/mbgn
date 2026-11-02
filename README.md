@@ -66,7 +66,9 @@ Remove `DEMO_MODE` from `next.config.mjs` first, then:
 3. In the Paystack dashboard (Settings > API Keys & Webhooks), set the webhook URL to
    `https://your-domain/api/webhooks/paystack`. An account has one webhook URL for each mode.
 4. Set `SMTP_URL` so emails are delivered. Without it they only reach the admin email log.
-5. Back up the database. Neon's free plan can only restore the last 6 hours, and a busy site can use up
+5. Set `SCRAPECREATORS_API_KEY` so follower counts are read automatically. Without it, every application
+   waits for an admin to check the accounts by hand. Add the first WhatsApp group on the Competition tab.
+6. Back up the database. Neon's free plan can only restore the last 6 hours, and a busy site can use up
    its monthly compute hours, so move to a paid plan for the live contest.
 
 ## How a contest runs
@@ -75,6 +77,19 @@ Remove `DEMO_MODE` from `next.config.mjs` first, then:
    and voting pages are hidden. Approved contestants get their code and voting link, ready to share.
    A new contest gets a 7-day deadline, which an admin can change or remove on the Competition tab. At the
    deadline new applications stop by themselves. A later date reopens them.
+
+   **The follower check** runs when someone sends the form. At least one of their Instagram, TikTok or
+   Facebook accounts needs the number of followers set on the Competition tab (800 to begin with).
+   - *Passed:* the application goes to the review team, and they get their WhatsApp group link on screen,
+     on their dashboard and by email.
+   - *Not enough:* nothing is saved, and they can try again.
+   - *Could not be read* (a private page, or the data service is down): the application goes through
+     marked "Check followers by hand". They get the group link once approved.
+
+   **WhatsApp groups** are added on the Competition tab. Links go out from the oldest open group with room,
+   so the next group takes over when one fills up, or when an admin marks it as full. If none has room,
+   people wait and get the link by email as soon as an admin adds a group. WhatsApp does not report who
+   actually joined, so a group's count is the number of people given its link.
 2. **Voting** only starts when an admin presses **End registration and start voting** on the Competition tab,
    whether or not the deadline has passed, which leaves time to finish reviewing.
    New applications stop, approved contestants are told by email, and the voting pages appear. Waiting
@@ -129,3 +144,6 @@ The prize amount on the registration page is set in [client/pages/public.jsx](cl
 - Starting a new edition has no one-click reset. Past results stay on the Winners page, and past
   winners can be added by hand.
 - A payment reversed by Paystack after its votes were counted is not taken back automatically.
+- The follower check proves an account has the followers, not that the applicant owns it, or that the
+  followers are real. One account can only be on one application, and admins see the links and counts
+  when approving.

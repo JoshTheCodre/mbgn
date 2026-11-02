@@ -7,6 +7,8 @@ import {
   lastUpdated, movementBaseline, photoUrl, publicContestant, publicProfile, registrationState, votingState,
 } from '../competition.js';
 import { getSetting, nowIso, tx } from '../db.js';
+import { PLATFORMS } from '../followers.js';
+import { assignGroup } from '../groups.js';
 import { handleWebhook } from '../payments.js';
 
 export const NIGERIAN_STATES = [
@@ -61,9 +63,16 @@ export function socialLink(value, host) {
   } catch {
     throw new HttpError(400, `That ${label} link does not look right.`);
   }
-  if (!parsed.hostname.toLowerCase().endsWith(`${host}.com`)) throw new HttpError(400, `Please use a ${host}.com link for ${label}.`);
+  const hostname = parsed.hostname.toLowerCase();
+  if (hostname !== `${host}.com` && !hostname.endsWith(`.${host}.com`)) throw new HttpError(400, `Please use a ${host}.com link for ${label}.`);
   parsed.protocol = 'https:';
-  return parsed.toString();
+  if (host === 'facebook') return parsed.toString();
+  // Instagram and TikTok accounts are read by username, so a link to a post or a short link will not do.
+  const first = parsed.pathname.split('/').filter(Boolean)[0] ?? '';
+  const name = first.replace(/^@/, '');
+  const isProfile = host === 'tiktok' ? first.startsWith('@') : !['p', 'reel', 'reels', 'stories', 'explore', 'tv'].includes(name.toLowerCase());
+  if (!isProfile || !/^[\w.-]{1,60}$/.test(name)) throw new HttpError(400, `Please enter your ${label} username, like @yourname.`);
+  return host === 'tiktok' ? `https://www.tiktok.com/@${name}` : `https://www.instagram.com/${name}`;
 }
 
 export const normalizeCode = (value) => clean(value, 30).toUpperCase().replace(/\s+/g, '');
@@ -108,7 +117,7 @@ export function publicRouter(ctx) {
 
   // ---- Competition facts ----
   router.get('/competition', shortCache, async (_req, res) => {
-    const [phase, registration, name, voting, startsAt, endsAt, votePrice, packages, resultsPublishedAt] = await Promise.all([
+    const [phase, registration, name, voting, startsAt, endsAt, votePrice, packages, resultsPublishedAt, minFollowers] = await Promise.all([
       getSetting(db, 'competition_phase'),
       registrationState(db),
       getSetting(db, 'competition_name'),
@@ -118,10 +127,13 @@ export function publicRouter(ctx) {
       getSetting(db, 'vote_price'),
       db.prepare('SELECT id, votes, price FROM packages WHERE active = 1 ORDER BY votes').all(),
       getSetting(db, 'results_published_at'),
+      getSetting(db, 'min_followers'),
     ]);
     res.json({
       phase,
       registration,
+      minFollowers: Number(minFollowers),
+      followerCheckIsTest: ctx.followers.mode === 'test',
       name,
       voting,
       startsAt: startsAt || null,
@@ -239,6 +251,9 @@ export function publicRouter(ctx) {
     const tiktok = socialLink(b.tiktok, 'tiktok');
     const instagram = socialLink(b.instagram, 'instagram');
     const facebook = socialLink(b.facebook, 'facebook');
+    const links = { tiktok, instagram, facebook };
+    const given = PLATFORMS.filter((platform) => links[platform]);
+    if (given.length === 0) throw new HttpError(400, 'Please add at least one of your Instagram, TikTok or Facebook accounts.');
 
     if (!req.file) throw new HttpError(400, 'Please add a profile photograph.');
     const type = IMAGE_TYPES.find((t) => t.test(req.file.buffer));
@@ -247,32 +262,55 @@ export function publicRouter(ctx) {
     const alreadyJoined = () => new HttpError(409, 'You have already joined with this email address. Open your dashboard instead.');
     if (await db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) throw alreadyJoined();
 
+    // Someone else's popular account should not get a second person through.
+    for (const platform of given) {
+      const taken = await db.prepare(`SELECT 1 FROM contestants WHERE LOWER(${platform}) = LOWER(?) AND status <> 'rejected'`).get(links[platform]);
+      if (taken) throw new HttpError(409, `That ${platform === 'tiktok' ? 'TikTok' : platform === 'instagram' ? 'Instagram' : 'Facebook'} account is already part of another application.`);
+    }
+
+    // Nothing is stored for someone who does not pass, so they can simply try again later.
+    const minFollowers = Number(await getSetting(db, 'min_followers'));
+    const { outcome, results } = await ctx.followers.check(links, minFollowers);
+    if (outcome === 'failed') return res.json({ outcome, results, minFollowers });
+
     const photoFile = `${crypto.randomBytes(16).toString('hex')}.${type.ext}`;
     await ctx.photos.put(photoFile, req.file.buffer, type.mime);
 
-    const userId = await tx(db, async () => {
+    const { userId, group } = await tx(db, async () => {
       const at = nowIso();
       const { lastInsertRowid: uid } = await db.prepare(`INSERT INTO users (email, name, phone, role, created_at)
         VALUES (?, ?, ?, 'contestant', ?) RETURNING id`).run(email, fullName, phone, at);
-      await db.prepare(`INSERT INTO contestants (user_id, full_name, stage_name, email, phone, whatsapp, state, location, bio,
-        photo_file, tiktok, instagram, facebook, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(uid, fullName, stageName, email, phone, whatsapp, state, location, bio, photoFile, tiktok, instagram, facebook, at);
-      return uid;
+      const { lastInsertRowid: contestantId } = await db.prepare(`INSERT INTO contestants (user_id, full_name, stage_name, email, phone, whatsapp, state, location, bio,
+        photo_file, tiktok, instagram, facebook, verification, follower_results, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
+        .run(uid, fullName, stageName, email, phone, whatsapp, state, location, bio, photoFile, tiktok, instagram, facebook, outcome, JSON.stringify(results), at);
+      return { userId: uid, group: outcome === 'passed' ? await assignGroup(db, contestantId) : null };
     }).catch((err) => {
       // The same email submitted twice at once.
       throw err.code === '23505' ? alreadyJoined() : err;
     });
 
-    await ctx.mailer.send({
+    const groupLine = group ? `\n\nJoin your WhatsApp group here:\n${group.invite_url}` : '\n\nWe will send your WhatsApp group link to this email address.';
+    await ctx.mailer.send(outcome === 'passed' ? {
+      to: email,
+      subject: 'You passed the MBGN follower check',
+      text: `Congratulations ${stageName},\n\nYou passed the follower check and your application is now with our review team. We will send more information to this email address.${groupLine}`,
+    } : {
       to: email,
       subject: 'We received your MBGN application',
-      text: `Hello ${stageName},\n\nYour application is now with our review team. We will email you as soon as a decision is made.`,
+      text: `Hello ${stageName},\n\nWe could not finish checking your followers automatically, so our team will look at your accounts. We will email you as soon as a decision is made.`,
     });
     ctx.bus.publish('admin', { type: 'registration' });
 
     // Joining is what identifies a contestant: this browser is recognised from now on.
     await startSession(ctx, res, userId);
-    res.status(201).json({ ok: true });
+    res.status(201).json({
+      outcome,
+      results,
+      minFollowers,
+      email,
+      whatsappGroup: group ? { name: group.name, url: group.invite_url } : null,
+    });
   });
 
   // On a new device, the details given when joining bring back the dashboard. It is read-only.

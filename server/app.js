@@ -4,6 +4,7 @@ import multer from 'multer';
 import { HttpError, attachUser, hashPassword, sameOriginWrites, wrap } from './auth.js';
 import { takeRankSnapshot } from './competition.js';
 import { nowIso, openDb } from './db.js';
+import { createFollowerChecker } from './followers.js';
 import { createMailer } from './mailer.js';
 import { createPhotoStore } from './photos.js';
 import { createPaystack, createSimulator, reconcilePending } from './payments.js';
@@ -22,6 +23,7 @@ export async function createContext(config) {
     mailer: createMailer(config, db),
     photos: createPhotoStore(config),
     provider: config.paystack ? createPaystack(config) : createSimulator(db),
+    followers: createFollowerChecker(config),
   };
   ctx.activity = createActivityAggregator(ctx);
   // A new contest gets a week to take applications. Only set once, so an admin's change stays.

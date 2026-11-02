@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, ago, dateTime, num, plural, shortDate, useApp, useFetch, useLive } from '../lib.jsx';
 import {
-  CodeTag, Countdown, ErrorNote, Field, LoadFailed, Loading, Movement, Portrait, CountUp, ShareButtons,
+  CodeTag, Countdown, ErrorNote, Field, LoadFailed, Loading, Movement, Portrait, CountUp, ShareButtons, WhatsAppGroup,
 } from '../ui.jsx';
 
 function DailyVotes({ daily }) {
@@ -72,9 +72,28 @@ function Notifications({ items, onRead }) {
   );
 }
 
+function GroupPanel({ data }) {
+  if (data.whatsappGroup) {
+    return (
+      <section className="panel group-panel">
+        <h2>Your WhatsApp group</h2>
+        <p className="muted">Join {data.whatsappGroup.name} for updates about your batch.</p>
+        <WhatsAppGroup group={data.whatsappGroup} />
+      </section>
+    );
+  }
+  if (data.status === 'pending' && data.verification === 'passed') {
+    return <p className="note">Your WhatsApp group link will be sent to your email soon.</p>;
+  }
+  return null;
+}
+
 function NotYetLive({ data, onRead }) {
   const copy = {
-    pending: ['Your application is being reviewed', 'We will email you as soon as a decision is made. Once approved, your contestant code and voting link appear here.'],
+    pending: [
+      data.verification === 'passed' ? 'You passed the follower check' : 'Your application is being reviewed',
+      `${data.verification === 'review' ? 'Our team is looking at your social media accounts. ' : ''}We will email you as soon as a decision is made. Once approved, your contestant code and voting link appear here.`,
+    ],
     rejected: ['Your application was not approved', data.statusReason ?? ''],
     suspended: ['Your profile is suspended', data.statusReason ?? ''],
     disqualified: ['You have been disqualified', data.statusReason ?? ''],
@@ -90,6 +109,7 @@ function NotYetLive({ data, onRead }) {
           {data.code ? <p>Your code <b>{data.code}</b> stays reserved for you.</p> : null}
         </div>
       </div>
+      <GroupPanel data={data} />
       <Notifications items={data.notifications} onRead={onRead} />
     </div>
   );
@@ -188,6 +208,8 @@ export function Dashboard() {
         <ShareButtons url={data.votingLink} name={data.name} />
         <p className="muted small-note">{plural(stats.linkVisits, 'visit')} through your link · {plural(stats.votesFromLink, 'vote')} from those visitors</p>
       </section>
+
+      <GroupPanel data={data} />
 
       <div className="dash-grid">
         <section className="panel">

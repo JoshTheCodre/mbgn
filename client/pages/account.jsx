@@ -3,7 +3,9 @@ import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-r
 import {
   api, dateTime, naira, num, plural, registrationOpen, useApp, useFetch,
 } from '../lib.jsx';
-import { ErrorNote, Field, Loading } from '../ui.jsx';
+import {
+  BrandLogo, ErrorNote, Field, FollowerRow, Loading, PLATFORM_NAMES, WhatsAppGroup,
+} from '../ui.jsx';
 
 export function AdminLogin() {
   const { setUser } = useApp();
@@ -183,15 +185,110 @@ function PhotoPicker() {
   );
 }
 
+// Accepts what the form does: @name, name, or a full link.
+function accountLabel(value) {
+  const parts = value.split(/[?#]/)[0].split('/').filter(Boolean);
+  const name = parts[parts.length - 1] ?? value;
+  return name.startsWith('@') ? name : `@${name}`;
+}
+
+const stillness = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// Paced so people can follow it, one account at a time. The counts shown are the real answer:
+// a row stays on "Counting" for as long as the server takes to reply.
+function FollowerCheck({ accounts, response, onFinished }) {
+  const [done, setDone] = useState(0);
+  const [counting, setCounting] = useState(false);
+  const pause = (ms) => (stillness() ? 0 : ms);
+
+  useEffect(() => {
+    if (done >= accounts.length) {
+      const id = setTimeout(onFinished, pause(1200));
+      return () => clearTimeout(id);
+    }
+    if (!counting) {
+      const id = setTimeout(() => setCounting(true), pause(1000));
+      return () => clearTimeout(id);
+    }
+    if (!response) return undefined;
+    const id = setTimeout(() => { setDone(done + 1); setCounting(false); }, pause(1100));
+    return () => clearTimeout(id);
+  }, [done, counting, response]);
+
+  const active = accounts[done];
+  const progress = ((done + (counting ? 0.5 : 0)) / accounts.length) * 100;
+  return (
+    <div className="check-card">
+      <div className="spinner" aria-hidden="true" />
+      <h1>Checking your followers</h1>
+      <p className="muted" role="status">
+        {active ? `${counting ? 'Counting followers on' : 'Looking for your account on'} ${PLATFORM_NAMES[active.platform]}…` : 'Getting your result…'}
+      </p>
+      <div className="check-progress" aria-hidden="true"><span style={{ width: `${progress}%` }} /></div>
+      <ul className="follower-rows">
+        {accounts.map((a, i) => (i < done
+          ? <FollowerRow key={a.platform} {...a} minFollowers={response.minFollowers} result={response.results.find((r) => r.platform === a.platform)} />
+          : (
+            <li key={a.platform} className={`follower-row ${i === done ? 'active' : 'queued'}`}>
+              <span className={`follower-logo follower-logo-${a.platform}`}><BrandLogo name={a.platform} /></span>
+              <span className="follower-who"><strong>{PLATFORM_NAMES[a.platform]}</strong><small>{a.account}</small></span>
+              <span className="follower-count">{i === done ? (counting ? 'Counting…' : 'Looking…') : 'Next'}</span>
+            </li>
+          )))}
+      </ul>
+    </div>
+  );
+}
+
+function CheckResult({ accounts, response, testMode, onRetry }) {
+  const { outcome, minFollowers, results, email, whatsappGroup } = response;
+  const hasMissing = results.some((r) => r.status === 'missing');
+  return (
+    <div className={`check-card check-${outcome}`}>
+      {outcome === 'passed' ? <div className="check-seal" aria-hidden="true">✓</div> : null}
+      <p className="eyebrow">Your result</p>
+      <h1>{{ passed: 'Congratulations, you passed!', review: 'Our team will take it from here', failed: 'You are not there yet' }[outcome]}</h1>
+      {outcome === 'passed' ? <p className="muted">Your application is now with our review team. We will send more information to <b>{email}</b>.</p> : null}
+      {outcome === 'review' ? <p className="muted">We could not finish the check automatically, so our team will look at your accounts and email <b>{email}</b>.</p> : null}
+      {outcome === 'failed' ? (
+        <p className="muted">
+          You need at least <b>{num(minFollowers)}</b> followers on one of your accounts. Your application has not been sent, so you can try again once you get there.
+          {hasMissing ? ' If we could not find an account, check the spelling.' : ''}
+        </p>
+      ) : null}
+      <ul className="follower-rows">
+        {accounts.map((a) => <FollowerRow key={a.platform} {...a} minFollowers={minFollowers} result={results.find((r) => r.platform === a.platform)} />)}
+      </ul>
+      {testMode ? <p className="note">Test mode: these follower counts are made up.</p> : null}
+      <div className="check-actions">
+        {outcome === 'passed' && whatsappGroup ? (
+          <div className="check-group">
+            <h2>One more step</h2>
+            <p className="muted">Join {whatsappGroup.name} on WhatsApp for updates about your batch.</p>
+            <WhatsAppGroup group={whatsappGroup} />
+          </div>
+        ) : null}
+        {outcome === 'passed' && !whatsappGroup ? <p className="note">Your WhatsApp group link will be sent to your email soon.</p> : null}
+        {outcome === 'failed'
+          ? <button type="button" className="btn btn-primary btn-wide" onClick={onRetry}>Change my accounts</button>
+          : <Link to="/dashboard" className="btn btn-ghost btn-wide">Go to my dashboard</Link>}
+        {outcome === 'failed' ? <Link to="/" className="btn btn-ghost btn-wide">Back to the home page</Link> : null}
+      </div>
+    </div>
+  );
+}
+
 export function Register() {
   const { competition, refreshUser, user } = useApp();
-  const navigate = useNavigate();
   const [error, setError] = useState(null);
-  const [busy, setBusy] = useState(false);
+  const [step, setStep] = useState('form');
+  const [accounts, setAccounts] = useState([]);
+  const [response, setResponse] = useState(null);
   const errorRef = useRef(null);
 
-  if (user?.contestant) return <Navigate to="/dashboard" replace />;
-  if (competition?.phase && !registrationOpen(competition)) {
+  // Stays here after joining, so the new contestant can see their result.
+  if (user?.contestant && !response) return <Navigate to="/dashboard" replace />;
+  if (competition?.phase && !registrationOpen(competition) && !response) {
     const voting = competition.phase === 'voting';
     return (
       <div className="wrap page narrow">
@@ -203,30 +300,66 @@ export function Register() {
     );
   }
 
+  function showError(err) {
+    setError(err);
+    setStep('form');
+    setTimeout(() => errorRef.current?.scrollIntoView({ block: 'center' }), 0);
+  }
+
   async function submit(e) {
     e.preventDefault();
-    setBusy(true);
+    const form = new FormData(e.currentTarget);
+    const given = Object.keys(PLATFORM_NAMES)
+      .filter((platform) => form.get(platform).trim())
+      .map((platform) => ({ platform, account: accountLabel(form.get(platform).trim()) }));
+    if (given.length === 0) {
+      showError(new Error('Please add at least one of your Instagram, TikTok or Facebook accounts.'));
+      return;
+    }
     setError(null);
+    setResponse(null);
+    setAccounts(given);
+    setStep('checking');
+    window.scrollTo(0, 0);
     try {
-      await api('/contestants/register', { form: new FormData(e.currentTarget) });
-      await refreshUser();
-      navigate('/dashboard');
+      const answer = await api('/contestants/register', { form });
+      setResponse(answer);
+      if (answer.outcome !== 'failed') await refreshUser();
     } catch (err) {
-      setError(err);
-      setTimeout(() => errorRef.current?.scrollIntoView({ block: 'center' }), 0);
-    } finally {
-      setBusy(false);
+      showError(err);
     }
   }
 
+  function tryAgain() {
+    setResponse(null);
+    setStep('form');
+    window.scrollTo(0, 0);
+  }
+
+  const minFollowers = num(competition?.minFollowers ?? 800);
+
   return (
     <div className="wrap page register">
+      {step === 'checking' ? <FollowerCheck accounts={accounts} response={response} onFinished={() => { setStep('result'); window.scrollTo(0, 0); }} /> : null}
+      {step === 'result' ? <CheckResult accounts={accounts} response={response} testMode={competition?.followerCheckIsTest} onRetry={tryAgain} /> : null}
+      {/* Stays in the page during the check, so nothing is lost if they need to change an account. */}
+      <div hidden={step !== 'form'}>
       <header className="register-head">
         <p className="eyebrow">Contestant application</p>
         <h1>Join the contest</h1>
-        <p className="muted">Our team reviews every application. Once approved, you get a permanent contestant code, your personal voting link and your dashboard.</p>
+        <p className="muted">You need at least {minFollowers} followers on Instagram, TikTok or Facebook. One account is enough, and we check it as soon as you send this form.</p>
       </header>
       <form className="register-form" onSubmit={submit}>
+        <fieldset>
+          <legend>Your social media</legend>
+          <p className="field-hint">Add every account you have. At least one needs {minFollowers} followers.</p>
+          <div className="form-grid three">
+            <Field label="Instagram"><input name="instagram" placeholder="@yourname" /></Field>
+            <Field label="TikTok"><input name="tiktok" placeholder="@yourname" /></Field>
+            <Field label="Facebook"><input name="facebook" placeholder="yourname or page link" /></Field>
+          </div>
+          {competition?.followerCheckIsTest ? <p className="note">Test mode: follower counts are made up. A username ending in _ and a number has that many followers, so @ada_500 does not pass and @ada_1200 does.</p> : null}
+        </fieldset>
         <fieldset>
           <legend>Profile photo</legend>
           <PhotoPicker />
@@ -257,20 +390,13 @@ export function Register() {
           </div>
           <p className="field-hint">Your email and WhatsApp number also bring back your dashboard on a new phone.</p>
         </fieldset>
-        <fieldset>
-          <legend>Social media</legend>
-          <div className="form-grid three">
-            <Field label="TikTok"><input name="tiktok" placeholder="@yourname" /></Field>
-            <Field label="Instagram"><input name="instagram" placeholder="@yourname" /></Field>
-            <Field label="Facebook"><input name="facebook" placeholder="yourname or page link" /></Field>
-          </div>
-        </fieldset>
         <div ref={errorRef}>
           <ErrorNote error={error} />
           {error?.status === 409 ? <p><Link to="/dashboard">Open your dashboard</Link></p> : null}
         </div>
-        <button className="btn btn-primary btn-wide" disabled={busy}>{busy ? 'Sending…' : 'Join the contest'}</button>
+        <button className="btn btn-primary btn-wide">Check my followers and join</button>
       </form>
+      </div>
     </div>
   );
 }

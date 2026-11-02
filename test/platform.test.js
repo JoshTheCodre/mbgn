@@ -10,6 +10,8 @@ import { createApp, createContext } from '../server/app.js';
 import { formatCode } from '../server/competition.js';
 import { loadConfig } from '../server/config.js';
 import { setSetting } from '../server/db.js';
+import { createFollowerChecker } from '../server/followers.js';
+import { socialLink } from '../server/routes/public.js';
 
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000001e221bc330000000049454e44ae426082', 'hex');
 
@@ -45,6 +47,7 @@ async function boot(overrides = {}, { freshContest = false } = {}) {
     appSecret: 'test-secret',
     smtpUrl: null,
     paystack: null,
+    followers: null,
     rateLimitScale: 1000,
     ...overrides,
   });
@@ -919,5 +922,185 @@ describe('production safety', () => {
     assert.throws(() => loadConfig({ nodeEnv: 'production', appSecret: undefined, paystack }), /APP_SECRET/);
     assert.throws(() => loadConfig({ nodeEnv: 'production', appSecret: 'x', paystack }), /PAYMENT_EMAIL/);
     assert.throws(() => loadConfig({ nodeEnv: 'test', databaseUrl: null }), /DATABASE_URL/);
+  });
+});
+
+describe('Follower check and WhatsApp groups', () => {
+  let app;
+  let admin;
+  const invite = (code) => `https://chat.whatsapp.com/${code}`;
+  const join = (person, name, overrides) => person.req('POST', '/contestants/register', { form: registrationForm(name, overrides) });
+  const mailTo = (email) => app.ctx.db.prepare('SELECT subject, body FROM outbox WHERE to_addr = ? ORDER BY id').all(email);
+
+  before(async () => {
+    app = await boot({}, { freshContest: true });
+    admin = client(app.base);
+    await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+  });
+  after(() => app.close());
+
+  test('not enough followers saves nothing and leaves the person free to try again', async () => {
+    const person = client(app.base);
+    const res = await join(person, 'Under', { instagram: '@under_799', tiktok: '@under_12' });
+    assert.equal(res.status, 200);
+    assert.equal(res.data.outcome, 'failed');
+    assert.equal(res.data.minFollowers, 800);
+    assert.deepEqual(res.data.results.map((r) => [r.platform, r.followers]), [['instagram', 799], ['tiktok', 12]]);
+    assert.equal(person.cookie, '');
+    assert.equal(await app.ctx.db.prepare("SELECT 1 FROM users WHERE email = 'under@test.local'").get(), undefined);
+
+    const again = await join(person, 'Under', { instagram: '@under_800' });
+    assert.equal(again.status, 201);
+    assert.equal(again.data.outcome, 'passed');
+  });
+
+  test('one account with enough is a pass, and an account that does not exist is not', async () => {
+    const pass = await join(client(app.base), 'OneEnough', { instagram: '@oneenough_3', tiktok: '@oneenough_notfound', facebook: 'oneenough_900' });
+    assert.equal(pass.data.outcome, 'passed');
+    const missing = await join(client(app.base), 'Ghost', { instagram: '@ghost_notfound' });
+    assert.equal(missing.status, 200);
+    assert.equal(missing.data.outcome, 'failed');
+    assert.equal(missing.data.results[0].status, 'missing');
+  });
+
+  test('at least one account is required, and an account can only be used once', async () => {
+    assert.equal((await join(client(app.base), 'NoSocials', { instagram: '' })).status, 400);
+    assert.equal((await join(client(app.base), 'First', { instagram: '@Shared.Account' })).status, 201);
+    const second = await join(client(app.base), 'Second', { instagram: 'https://instagram.com/shared.account/?igsh=abc' });
+    assert.equal(second.status, 409);
+    assert.match(second.data.error, /already part of another application/);
+  });
+
+  test('a lookup that could not be finished goes to an admin, and the link waits for approval', async () => {
+    const person = client(app.base);
+    const res = await join(person, 'Unread', { instagram: '@unread_offline', tiktok: '@unread_5' });
+    assert.equal(res.status, 201);
+    assert.equal(res.data.outcome, 'review');
+    assert.equal(res.data.whatsappGroup, null);
+
+    const { data: [row] } = await admin.get('/admin/contestants?q=Unread');
+    assert.equal(row.verification, 'review');
+    assert.equal(row.followerResults[1].followers, 5);
+    assert.equal((await person.get('/me/dashboard')).data.whatsappGroup, null);
+    app.reviewId = row.id;
+  });
+
+  test('links go out from the oldest open group with room, and people wait when none has room', async () => {
+    // Nobody has a group yet, so everyone who passed so far is waiting.
+    const waiting = (await admin.get('/admin/joining')).data.waiting;
+    assert.ok(waiting > 0);
+    assert.equal((await admin.get('/admin/overview')).data.waitingForGroup, waiting);
+
+    const added = await admin.post('/admin/whatsapp-groups', { name: 'Batch 1', url: invite('AbC1?mode=x'), capacity: waiting + 1 });
+    assert.equal(added.status, 201);
+    assert.equal(added.data.placed, waiting);
+    assert.match((await mailTo('first@test.local')).at(-1).body, /chat\.whatsapp\.com\/AbC1/);
+    await admin.post('/admin/whatsapp-groups', { name: 'Batch 2', url: invite('Next2'), capacity: 1000 });
+
+    const last = client(app.base);
+    const lastPlace = await join(last, 'LastPlace', { instagram: '@lastplace' });
+    assert.equal(lastPlace.data.whatsappGroup.name, 'Batch 1');
+    const overflow = await join(client(app.base), 'Overflow', { instagram: '@overflow' });
+    assert.equal(overflow.data.whatsappGroup.name, 'Batch 2');
+
+    const dashboard = (await last.get('/me/dashboard')).data;
+    assert.equal(dashboard.whatsappGroup.url, invite('AbC1'));
+    assert.equal(dashboard.verification, 'passed');
+    assert.match((await mailTo('lastplace@test.local'))[0].body, /chat\.whatsapp\.com\/AbC1/);
+
+    const { data } = await admin.get('/admin/joining');
+    assert.deepEqual(data.groups.map((g) => [g.name, g.used === g.capacity, g.current]), [['Batch 1', true, false], ['Batch 2', false, true]]);
+    assert.equal(data.waiting, 0);
+  });
+
+  test('marking a group as full moves on to the next, and approval gives waiting applicants a link', async () => {
+    const { data: { groups } } = await admin.get('/admin/joining');
+    const batch2 = groups.find((g) => g.name === 'Batch 2');
+    await admin.req('PUT', `/admin/whatsapp-groups/${batch2.id}`, { body: { ...batch2, closed: true } });
+    const noRoom = await join(client(app.base), 'NoRoom', { instagram: '@noroom' });
+    assert.equal(noRoom.data.outcome, 'passed');
+    assert.equal(noRoom.data.whatsappGroup, null);
+
+    const reopened = await admin.req('PUT', `/admin/whatsapp-groups/${batch2.id}`, { body: { ...batch2, closed: false } });
+    assert.equal(reopened.data.placed, 1);
+    assert.match((await mailTo('noroom@test.local')).at(-1).body, /chat\.whatsapp\.com\/Next2/);
+
+    await admin.post(`/admin/contestants/${app.reviewId}/approve`);
+    const mail = await mailTo('unread@test.local');
+    assert.match(mail.at(-1).subject, /You're in/);
+    assert.match(mail.at(-1).body, /chat\.whatsapp\.com\/Next2/);
+  });
+
+  test('admins set the rules: bad links are refused, and only admins can change them', async () => {
+    const bad = [invite(''), 'https://evil.com/AbC', 'http://chat.whatsapp.com/AbC', 'https://chat.whatsapp.com.evil.com/AbC', 'nonsense'];
+    for (const url of bad) assert.equal((await admin.post('/admin/whatsapp-groups', { name: 'Bad', url, capacity: 10 })).status, 400, url);
+    assert.equal((await admin.post('/admin/whatsapp-groups', { name: 'Huge', url: invite('Huge'), capacity: 5000 })).status, 400);
+    assert.equal((await admin.post('/admin/whatsapp-groups', { name: 'Again', url: invite('Next2'), capacity: 10 })).status, 409);
+    const stranger = client(app.base);
+    assert.equal((await stranger.get('/admin/joining')).status, 401);
+    assert.equal((await stranger.post('/admin/whatsapp-groups', { name: 'Mine', url: invite('Mine'), capacity: 10 })).status, 401);
+
+    assert.equal((await admin.req('PUT', '/admin/joining', { body: { minFollowers: 2000 } })).status, 200);
+    assert.equal((await stranger.get('/competition')).data.minFollowers, 2000);
+    assert.equal((await join(client(app.base), 'Raised', { instagram: '@raised_1999' })).data.outcome, 'failed');
+    await admin.req('PUT', '/admin/joining', { body: { minFollowers: 800 } });
+  });
+
+  test('reads each network through the data service, and treats anything unclear as unreadable', async () => {
+    const seen = [];
+    const service = http.createServer((req, res) => {
+      const url = new URL(req.url, 'http://x');
+      seen.push({ path: url.pathname, query: Object.fromEntries(url.searchParams), key: req.headers['x-api-key'] });
+      const reply = (status, body) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+      const who = url.searchParams.get('handle') ?? url.searchParams.get('url');
+      if (who.includes('gone')) return reply(404, { success: false });
+      if (who.includes('broken')) return reply(500, {});
+      if (url.pathname.endsWith('/instagram/profile')) return reply(200, { data: { user: { edge_followed_by: { count: 1500 } } } });
+      if (url.pathname.endsWith('/tiktok/profile')) return reply(200, { user: {}, stats: { followerCount: 700 } });
+      return reply(200, { isPrivate: who.includes('private'), followerCount: who.includes('private') ? undefined : 950 });
+    }).listen(0);
+    await new Promise((resolve) => service.once('listening', resolve));
+    const checker = createFollowerChecker({ followers: { apiKey: 'key', baseUrl: `http://127.0.0.1:${service.address().port}` } });
+    assert.equal(checker.mode, 'live');
+    try {
+      const all = await checker.check({
+        instagram: 'https://www.instagram.com/ada', tiktok: 'https://www.tiktok.com/@ada', facebook: 'https://www.facebook.com/ada',
+      }, 800);
+      assert.equal(all.outcome, 'passed');
+      assert.deepEqual(all.results.map((r) => r.followers), [1500, 700, 950]);
+      assert.deepEqual(seen.map((s) => s.query.handle ?? s.query.url), ['ada', 'ada', 'https://www.facebook.com/ada']);
+      assert.ok(seen.every((s) => s.key === 'key'));
+
+      assert.equal((await checker.check({ tiktok: 'https://www.tiktok.com/@ada' }, 800)).outcome, 'failed');
+      assert.equal((await checker.check({ tiktok: 'https://www.tiktok.com/@gone' }, 800)).outcome, 'failed');
+      for (const facebook of ['https://www.facebook.com/broken', 'https://www.facebook.com/private']) {
+        const { outcome, results } = await checker.check({ facebook }, 800);
+        assert.equal(outcome, 'review');
+        assert.equal(results[0].status, 'unavailable');
+      }
+    } finally {
+      service.close();
+    }
+    // A provider that cannot be reached must not fail anyone.
+    const down = createFollowerChecker({ followers: { apiKey: 'key', baseUrl: 'http://127.0.0.1:1' } });
+    assert.equal((await down.check({ tiktok: 'https://www.tiktok.com/@ada' }, 800)).outcome, 'review');
+  });
+
+  test('production never invents follower counts', async () => {
+    const checker = createFollowerChecker({ followers: null, production: true });
+    assert.equal(checker.mode, 'manual');
+    assert.equal((await checker.check({ instagram: 'https://www.instagram.com/ada_5000' }, 800)).outcome, 'review');
+  });
+
+  test('social links come down to one form for each account', () => {
+    for (const value of ['@Ada', 'Ada', 'https://instagram.com/Ada/', 'instagram.com/Ada', 'https://www.instagram.com/Ada?igsh=x']) {
+      assert.equal(socialLink(value, 'instagram'), 'https://www.instagram.com/Ada', value);
+    }
+    assert.equal(socialLink('https://m.tiktok.com/@ada?lang=en', 'tiktok'), 'https://www.tiktok.com/@ada');
+    assert.equal(socialLink('https://www.facebook.com/profile.php?id=123', 'facebook'), 'https://www.facebook.com/profile.php?id=123');
+    for (const [value, host] of [
+      ['https://vm.tiktok.com/ZMabc/', 'tiktok'], ['https://www.instagram.com/p/abc/', 'instagram'],
+      ['https://www.instagram.com/', 'instagram'], ['https://notinstagram.com/ada', 'instagram'],
+    ]) assert.throws(() => socialLink(value, host), /username|link/, value);
   });
 });

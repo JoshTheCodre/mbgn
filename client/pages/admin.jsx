@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, dateTime, naira, num, useApp, useFetch, useLive } from '../lib.jsx';
-import { Dialog, ErrorNote, Field, Loading, Portrait } from '../ui.jsx';
+import { api, dateTime, naira, num, plural, useApp, useFetch, useLive } from '../lib.jsx';
+import {
+  Dialog, ErrorNote, Field, Loading, PLATFORM_NAMES, Portrait,
+} from '../ui.jsx';
 
 const TABS = [
   ['overview', 'Overview'],
@@ -54,6 +56,7 @@ function Overview({ data, go }) {
         <h2>Needs your attention</h2>
         <ul className="todo">
           <li><button type="button" className="text-link as-button" onClick={() => go('contestants')}>{num(data.pending)} applications waiting for review</button></li>
+          {data.waitingForGroup ? <li><button type="button" className="text-link as-button" onClick={() => go('competition')}>{plural(data.waitingForGroup, 'contestant')} waiting for a WhatsApp group</button></li> : null}
           <li><button type="button" className="text-link as-button" onClick={() => go('review')}>{num(data.openFlags)} open fraud flags</button></li>
           <li><button type="button" className="text-link as-button" onClick={() => go('money')}>{num(data.paymentsInReview)} payments in review, {num(data.votesHeld)} held for refund</button></li>
           <li>Voting status: <b>{data.voting.status}</b>. <button type="button" className="text-link as-button" onClick={() => go('competition')}>Change</button></li>
@@ -164,6 +167,8 @@ function ContestantsTab({ onChange }) {
                 <Portrait name={c.stageName} photoUrl={c.photoUrl} code={c.code ?? c.stageName} className="admin-photo" />
                 <div className="admin-card-who">
                   <strong>{c.stageName}</strong> <em className={`tag tag-${c.status}`}>{c.status}</em>
+                  {c.verification === 'passed' ? <em className="tag tag-approved">Followers passed</em> : null}
+                  {c.verification === 'review' ? <em className="tag tag-review">Check followers by hand</em> : null}
                   <small>{c.code ?? 'No code yet'}{c.position ? ` · position ${c.position} · ${num(c.totalVotes)} votes` : ''}</small>
                   <small>{c.location}, {c.state} · applied {dateTime(c.createdAt)}</small>
                 </div>
@@ -189,6 +194,10 @@ function ContestantsTab({ onChange }) {
                       {c.facebook ? <a href={c.facebook} target="_blank" rel="noreferrer noopener">Facebook</a> : null}
                       {!c.tiktok && !c.instagram && !c.facebook ? 'None given' : null}
                     </dd></div>
+                    {c.followerResults.length ? (
+                      <div><dt>Followers</dt><dd>{c.followerResults.map((r) => `${PLATFORM_NAMES[r.platform]}: ${r.status === 'found' ? num(r.followers) : r.status === 'missing' ? 'not found' : 'could not be read'}`).join(' · ')}</dd></div>
+                    ) : null}
+                    {c.whatsappGroupName ? <div><dt>WhatsApp group</dt><dd>{c.whatsappGroupName}</dd></div> : null}
                     {c.statusReason ? <div><dt>Reason</dt><dd>{c.statusReason}</dd></div> : null}
                   </dl>
                   <p className="admin-bio">{c.bio}</p>
@@ -341,6 +350,138 @@ function PackageRow({ pack, reload, setError }) {
   );
 }
 
+const CHECK_MODES = {
+  live: 'Follower counts are read automatically when someone applies.',
+  test: 'Test mode: follower counts are made up until the data service key is added.',
+  manual: 'No data service is connected, so every application waits for you to check the accounts by hand.',
+};
+
+function GroupRow({ group, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const full = group.used >= group.capacity;
+
+  async function save(e) {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    if (await onSave({ ...group, name: f.get('name'), url: f.get('url'), capacity: Number(f.get('capacity')) })) setEditing(false);
+  }
+
+  return (
+    <li className="group-row">
+      <div className="group-row-head">
+        <div>
+          <strong>{group.name}</strong>
+          {group.current ? <em className="tag tag-approved">Giving out now</em> : null}
+          {group.closed ? <em className="tag">Closed</em> : full ? <em className="tag tag-review">Full</em> : null}
+          <small>{num(group.used)} of {num(group.capacity)} places given out</small>
+        </div>
+        <div className="admin-actions">
+          <button type="button" className="btn btn-ghost btn-small" onClick={() => onSave({ ...group, closed: !group.closed })}>{group.closed ? 'Reopen' : 'Mark as full'}</button>
+          <button type="button" className="btn btn-ghost btn-small" aria-expanded={editing} onClick={() => setEditing(!editing)}>{editing ? 'Cancel' : 'Edit'}</button>
+        </div>
+      </div>
+      <div className="group-meter" aria-hidden="true"><span style={{ width: `${Math.min(100, (group.used / group.capacity) * 100)}%` }} /></div>
+      {editing ? (
+        <form className="inline-form" onSubmit={save}>
+          <Field label="Name"><input name="name" defaultValue={group.name} required /></Field>
+          <Field label="Invite link"><input name="url" type="url" defaultValue={group.url} required /></Field>
+          <Field label="Places"><input name="capacity" type="number" min="1" max="1024" defaultValue={group.capacity} required /></Field>
+          <button className="btn btn-primary">Save</button>
+        </form>
+      ) : <p className="group-link"><a href={group.url} target="_blank" rel="noreferrer noopener">{group.url}</a></p>}
+    </li>
+  );
+}
+
+function JoiningPanels() {
+  const { refreshCompetition } = useApp();
+  const { data, reload } = useFetch('/admin/joining');
+  const [error, setError] = useState(null);
+  const [message, setMessage] = useState(null);
+
+  const placedNote = (placed) => (placed ? `Sent the link to ${plural(placed, 'waiting contestant')}.` : null);
+
+  async function saveMinimum(e) {
+    e.preventDefault();
+    setError(null);
+    setMessage(null);
+    try {
+      await api('/admin/joining', { method: 'PUT', body: { minFollowers: Number(new FormData(e.currentTarget).get('minFollowers')) } });
+      setMessage('Followers needed has been saved.');
+      reload();
+      refreshCompetition({ fresh: true });
+    } catch (err) {
+      setError(err);
+    }
+  }
+
+  async function addGroup(e) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const f = new FormData(form);
+    setError(null);
+    setMessage(null);
+    try {
+      const { placed } = await api('/admin/whatsapp-groups', { body: { name: f.get('name'), url: f.get('url'), capacity: Number(f.get('capacity')) } });
+      form.reset();
+      setMessage(placedNote(placed) ?? 'Group added.');
+      reload();
+    } catch (err) {
+      setError(err);
+    }
+  }
+
+  async function saveGroup(group) {
+    setError(null);
+    setMessage(null);
+    try {
+      const { placed } = await api(`/admin/whatsapp-groups/${group.id}`, { method: 'PUT', body: group });
+      setMessage(placedNote(placed));
+      reload();
+      return true;
+    } catch (err) {
+      setError(err);
+      return false;
+    }
+  }
+
+  if (!data) return <section className="panel"><Loading /></section>;
+  const current = data.groups.find((g) => g.current);
+  const nearlyFull = current && current.used >= current.capacity * 0.9 && !data.groups.some((g) => !g.closed && g.used < g.capacity && g.id !== current.id);
+
+  return (
+    <>
+      <section className="panel">
+        <h2>Follower check</h2>
+        <p className="muted">{CHECK_MODES[data.checkMode]}</p>
+        <form className="inline-form" onSubmit={saveMinimum}>
+          <Field label="Followers needed" hint="On at least one of Instagram, TikTok or Facebook.">
+            <input key={data.minFollowers} name="minFollowers" type="number" min="0" defaultValue={data.minFollowers} required />
+          </Field>
+          <button className="btn btn-ghost">Save</button>
+        </form>
+      </section>
+      <section className="panel">
+        <h2>WhatsApp groups</h2>
+        <p className="muted">People who pass the check get the link marked “Giving out now”. When a group is full, the next one on the list takes over.</p>
+        <ErrorNote error={error} />
+        {message ? <p className="note note-good">{message}</p> : null}
+        {!current ? <p className="note note-error">No group has room. {data.waiting ? `Waiting for a link: ${num(data.waiting)}. ` : ''}Add a group below, and anyone waiting gets the link by email.</p> : null}
+        {nearlyFull ? <p className="note">{current.name} is nearly full. Add the next group so nobody has to wait.</p> : null}
+        {data.groups.length ? <ul className="group-rows">{data.groups.map((g) => <GroupRow key={g.id} group={g} onSave={saveGroup} />)}</ul> : null}
+        <p className="muted small-note">“Places given out” counts people who received the link. WhatsApp does not tell the site who actually joined, so mark a group as full yourself if it fills up sooner.</p>
+        <h3>Add a group</h3>
+        <form className="inline-form" onSubmit={addGroup}>
+          <Field label="Name"><input name="name" placeholder={`Batch ${data.groups.length + 1}`} required /></Field>
+          <Field label="Invite link"><input name="url" type="url" placeholder="https://chat.whatsapp.com/…" required /></Field>
+          <Field label="Places"><input name="capacity" type="number" min="1" max="1024" defaultValue="1000" required /></Field>
+          <button className="btn btn-primary">Add group</button>
+        </form>
+      </section>
+    </>
+  );
+}
+
 function CompetitionTab({ onChange }) {
   const { refreshCompetition } = useApp();
   const { data, reload } = useFetch('/admin/settings');
@@ -480,6 +621,7 @@ function CompetitionTab({ onChange }) {
           </>
         )}
       </section>
+      <JoiningPanels />
       {registering ? null : (
       <section className="panel">
         <h2>Voting</h2>

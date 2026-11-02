@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
-  ApiError, ago, api, naira, plural, registrationOpen, useApp, useFetch, useLive,
+  ApiError, ago, api, naira, num, plural, registrationOpen, useApp, useFetch, useLive,
 } from '../lib.jsx';
 import {
   ActivityFeed, CardsSkeleton, CodeTag, CoverSkeleton, Crown, Countdown, ErrorNote, Field, LoadFailed, Loading, Movement,
@@ -258,12 +258,12 @@ function RegistrationHome() {
             </div>
             <ol className="how-steps">
               <li>
-                <h3>Join the contest</h3>
-                <p>Add your photo and a few details. It only takes a few minutes.</p>
+                <h3>Join and pass the follower check</h3>
+                <p>Add your photo and details. You need at least {num(competition?.minFollowers ?? 800)} followers on Instagram, TikTok or Facebook, and we check it on the spot.</p>
               </li>
               <li>
                 <h3>Get approved</h3>
-                <p>Our team reviews your application, then you get your own code and voting link.</p>
+                <p>You get your WhatsApp group link straight away. Once our team approves you, you get your own code and voting link.</p>
               </li>
               <li>
                 <h3>Get your supporters ready</h3>
