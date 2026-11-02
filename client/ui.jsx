@@ -228,13 +228,36 @@ function pad(n) {
   return String(n).padStart(2, '0');
 }
 
-// Counts down to whichever moment matters next: voting opening, or voting closing.
-export function Countdown({ competition, compact = false }) {
+export function Timer({ target, label, compact = false }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+  const left = Math.max(0, new Date(target).getTime() - now);
+  const parts = [
+    ['Days', Math.floor(left / 864e5)],
+    ['Hrs', Math.floor(left / 36e5) % 24],
+    ['Min', Math.floor(left / 6e4) % 60],
+    ['Sec', Math.floor(left / 1e3) % 60],
+  ];
+  return (
+    <div className={`countdown ${compact ? 'compact' : ''}`} role="timer" aria-label={`${label} ${parts[0][1]} days`}>
+      <span className="countdown-label">{label}</span>
+      <div className="countdown-parts">
+        {parts.map(([name, value]) => (
+          <span key={name} className="countdown-part">
+            <b key={value} className="tick">{pad(value)}</b>
+            <small>{name}</small>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Counts down to whichever moment matters next: voting opening, or voting closing.
+export function Countdown({ competition, compact = false }) {
   if (!competition) {
     return (
       <div className={`countdown ${compact ? 'compact' : ''}`} aria-hidden="true">
@@ -252,31 +275,13 @@ export function Countdown({ competition, compact = false }) {
   }
   const { voting, startsAt, endsAt } = competition;
 
+  if (voting.status === 'registration') return <p className="count-note">{voting.message}</p>;
   if (voting.status === 'paused') return <p className="count-note">Voting is paused. Please check back soon.</p>;
   if (voting.status === 'closed') return <p className="count-note">Voting has closed.</p>;
 
   const target = voting.status === 'upcoming' ? startsAt : endsAt;
   if (!target) return <p className="count-note">Voting is open.</p>;
-  const left = Math.max(0, new Date(target).getTime() - now);
-  const parts = [
-    ['Days', Math.floor(left / 864e5)],
-    ['Hrs', Math.floor(left / 36e5) % 24],
-    ['Min', Math.floor(left / 6e4) % 60],
-    ['Sec', Math.floor(left / 1e3) % 60],
-  ];
-  return (
-    <div className={`countdown ${compact ? 'compact' : ''}`} role="timer" aria-label={`${voting.status === 'upcoming' ? 'Voting opens in' : 'Voting closes in'} ${parts[0][1]} days`}>
-      <span className="countdown-label">{voting.status === 'upcoming' ? 'Voting opens in' : 'Voting closes in'}</span>
-      <div className="countdown-parts">
-        {parts.map(([label, value]) => (
-          <span key={label} className="countdown-part">
-            <b key={value} className="tick">{pad(value)}</b>
-            <small>{label}</small>
-          </span>
-        ))}
-      </div>
-    </div>
-  );
+  return <Timer target={target} label={voting.status === 'upcoming' ? 'Voting opens in' : 'Voting closes in'} compact={compact} />;
 }
 
 const COUNT_MS = 700;
@@ -341,9 +346,41 @@ export function Movement({ value, plain = false }) {
   return <span className="move move-flat" title="No change in 24 hours">No change</span>;
 }
 
-export function ShareButtons({ url, name }) {
+const BRAND_LOGOS = {
+  whatsapp: 'M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z',
+  facebook: 'M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z',
+  x: 'M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z',
+};
+
+const BrandLogo = ({ name }) => (
+  <svg className="brand-logo" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d={BRAND_LOGOS[name]} /></svg>
+);
+
+// The share panel on the registration pages: a card of its own.
+export function ShareCard({ title, text, message }) {
+  const targets = shareTargets(window.location.origin, message);
+
+  return (
+    <section className="wrap section" id="share">
+      <div className="share-card">
+        <div className="share-card-copy">
+          <p className="eyebrow">Spread the word</p>
+          <h2>{title}</h2>
+          <p className="muted">{text}</p>
+        </div>
+        <div className="share-line">
+          <a className="btn btn-whatsapp" href={targets.whatsapp} target="_blank" rel="noreferrer"><BrandLogo name="whatsapp" />WhatsApp</a>
+          <a className="btn btn-facebook" href={targets.facebook} target="_blank" rel="noreferrer"><BrandLogo name="facebook" />Facebook</a>
+          <a className="btn btn-x" href={targets.x} target="_blank" rel="noreferrer" aria-label="Share on X"><BrandLogo name="x" />Post</a>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export function ShareButtons({ url, name, message }) {
   const [copied, setCopied] = useState(false);
-  const text = `Vote for ${name} on Most Beautiful Girl Online Nigeria!`;
+  const text = message ?? `Vote for ${name} on Most Beautiful Girl Online Nigeria!`;
   const targets = shareTargets(url, text);
 
   async function copy() {
@@ -351,17 +388,19 @@ export function ShareButtons({ url, name }) {
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
-  async function nativeShare() {
-    await navigator.share({ title: 'MBGN', text, url }).catch(() => {});
-  }
 
   return (
-    <div className="share-row">
-      <a className="btn btn-whatsapp" href={targets.whatsapp} target="_blank" rel="noreferrer">WhatsApp</a>
-      <a className="btn btn-ghost" href={targets.facebook} target="_blank" rel="noreferrer">Facebook</a>
-      <a className="btn btn-ghost" href={targets.x} target="_blank" rel="noreferrer">X</a>
-      {navigator.share ? <button type="button" className="btn btn-ghost" onClick={nativeShare}>Share…</button> : null}
-      <button type="button" className="btn btn-ghost" onClick={copy}>{copied ? 'Copied ✓' : 'Copy link'}</button>
+    <div className="share-line share-line-four">
+      <a className="btn btn-whatsapp" href={targets.whatsapp} target="_blank" rel="noreferrer"><BrandLogo name="whatsapp" />WhatsApp</a>
+      <a className="btn btn-facebook" href={targets.facebook} target="_blank" rel="noreferrer"><BrandLogo name="facebook" />Facebook</a>
+      <a className="btn btn-x" href={targets.x} target="_blank" rel="noreferrer" aria-label="Share on X"><BrandLogo name="x" />Post</a>
+      <button type="button" className="btn btn-ghost" onClick={copy}>
+        <svg className="brand-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+          <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+        </svg>
+        {copied ? 'Copied ✓' : 'Copy link'}
+      </button>
     </div>
   );
 }

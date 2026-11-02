@@ -347,6 +347,7 @@ function CompetitionTab({ onChange }) {
   const results = useFetch('/results');
   const [error, setError] = useState(null);
   const [saved, setSaved] = useState(false);
+  const [deadlineSaved, setDeadlineSaved] = useState(false);
   const [action, setAction] = useState(null);
 
   async function saveSettings(e) {
@@ -367,7 +368,22 @@ function CompetitionTab({ onChange }) {
       });
       setSaved(true);
       reload();
-      refreshCompetition();
+      refreshCompetition({ fresh: true });
+    } catch (err) {
+      setError(err);
+    }
+  }
+
+  async function saveDeadline(e) {
+    e.preventDefault();
+    const value = new FormData(e.currentTarget).get('registrationEndsAt');
+    setError(null);
+    setDeadlineSaved(false);
+    try {
+      await api('/admin/registration', { method: 'PUT', body: { endsAt: value ? new Date(value).toISOString() : '' } });
+      setDeadlineSaved(true);
+      reload();
+      refreshCompetition({ fresh: true });
     } catch (err) {
       setError(err);
     }
@@ -379,7 +395,7 @@ function CompetitionTab({ onChange }) {
       await api(`/admin/voting/${status}`, { method: 'POST' });
       reload();
       onChange();
-      refreshCompetition();
+      refreshCompetition({ fresh: true });
     } catch (err) {
       setError(err);
     }
@@ -413,10 +429,58 @@ function CompetitionTab({ onChange }) {
 
   if (!data) return <Loading />;
   const closed = data.votingStatus === 'closed';
+  const registering = data.phase === 'registration';
+  const waiting = data.pendingApplications;
+  const deadlinePassed = Boolean(data.registrationEndsAt) && new Date(data.registrationEndsAt) <= new Date();
 
   return (
     <div className="admin-columns">
       <ErrorNote error={error} />
+      <section className="panel">
+        <h2>Contest stage</h2>
+        {registering ? (
+          <>
+            {deadlinePassed
+              ? <p><b>Applications have closed.</b> The deadline has passed. Voting starts when you press the button below, or set a later date to reopen applications.</p>
+              : <p><b>Registration is open.</b> The home page promotes joining, and voting is off.</p>}
+            <p className="muted">{num(data.approvedContestants)} approved · {num(waiting)} waiting for review</p>
+            <form className="inline-form stage-deadline" onSubmit={saveDeadline}>
+              <Field label="Registration closes" hint="Blank means no deadline. Applications stop at this time.">
+                <input key={data.registrationEndsAt} name="registrationEndsAt" type="datetime-local" defaultValue={toLocalInput(data.registrationEndsAt)} />
+              </Field>
+              <button className="btn btn-ghost">Save date</button>
+            </form>
+            {deadlineSaved ? <p className="note note-good">Date saved. The countdown has been updated.</p> : null}
+            <button
+              type="button"
+              className="btn btn-primary btn-small"
+              onClick={() => setAction({
+                title: 'End registration and start voting',
+                description: `New applications stop and voting opens for everyone straight away. ${num(data.approvedContestants)} approved contestants will be told by email.${waiting ? ` ${num(waiting)} applications are still waiting: you can still approve them afterwards.` : ''}`,
+                confirm: 'Start voting',
+                needsReason: false,
+                run: () => api('/admin/phase/voting', { method: 'POST' }),
+              })}
+            >End registration and start voting</button>
+          </>
+        ) : (
+          <>
+            <p><b>Voting is on.</b> Registration has closed.</p>
+            <button
+              type="button"
+              className="btn btn-ghost btn-small"
+              onClick={() => setAction({
+                title: 'Reopen registration',
+                description: 'Voting stops and every voting page disappears until you start voting again. Votes already counted are kept.',
+                confirm: 'Reopen registration',
+                needsReason: false,
+                run: () => api('/admin/phase/registration', { method: 'POST' }),
+              })}
+            >Reopen registration</button>
+          </>
+        )}
+      </section>
+      {registering ? null : (
       <section className="panel">
         <h2>Voting</h2>
         <p>Voting is currently <b>{data.votingStatus}</b>.</p>
@@ -455,6 +519,7 @@ function CompetitionTab({ onChange }) {
           </>
         )}
       </section>
+      )}
 
       <section className="panel">
         <h2>Competition details</h2>
@@ -517,7 +582,7 @@ function CompetitionTab({ onChange }) {
       <ActionDialog
         action={action}
         onClose={() => setAction(null)}
-        onDone={() => { setAction(null); reload(); results.reload(); onChange(); refreshCompetition(); }}
+        onDone={() => { setAction(null); reload(); results.reload(); onChange(); refreshCompetition({ fresh: true }); }}
       />
     </div>
   );

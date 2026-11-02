@@ -1,8 +1,11 @@
 import { nowIso, tx } from './db.js';
 
 export async function votingState(db) {
-  const rows = await db.prepare("SELECT key, value FROM settings WHERE key IN ('voting_status', 'voting_starts_at', 'voting_ends_at')").all();
+  const rows = await db.prepare("SELECT key, value FROM settings WHERE key IN ('competition_phase', 'voting_status', 'voting_starts_at', 'voting_ends_at')").all();
   const settings = Object.fromEntries(rows.map((row) => [row.key, row.value]));
+  if (settings.competition_phase === 'registration') {
+    return { open: false, status: 'registration', message: 'Voting opens when registration closes.' };
+  }
   const status = settings.voting_status;
   const startsAt = settings.voting_starts_at;
   const endsAt = settings.voting_ends_at;
@@ -13,6 +16,15 @@ export async function votingState(db) {
   if (startsAt && now < startsAt) return { open: false, status: 'upcoming', message: 'Voting has not started yet.' };
   if (endsAt && now >= endsAt) return { open: false, status: 'closed', message: 'Voting has closed.' };
   return { open: true, status: 'open', message: 'Voting is open.' };
+}
+
+// Applications stop at the deadline, or once voting has started. Voting itself
+// only starts when an admin says so, which leaves time to finish reviewing.
+export async function registrationState(db) {
+  const rows = await db.prepare("SELECT key, value FROM settings WHERE key IN ('competition_phase', 'registration_ends_at')").all();
+  const settings = Object.fromEntries(rows.map((row) => [row.key, row.value]));
+  const endsAt = settings.registration_ends_at || null;
+  return { open: settings.competition_phase === 'registration' && (!endsAt || nowIso() < endsAt), endsAt };
 }
 
 export function formatCode(prefix, seq) {

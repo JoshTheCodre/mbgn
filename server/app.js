@@ -24,6 +24,9 @@ export async function createContext(config) {
     provider: config.paystack ? createPaystack(config) : createSimulator(db),
   };
   ctx.activity = createActivityAggregator(ctx);
+  // A new contest gets a week to take applications. Only set once, so an admin's change stays.
+  await db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING')
+    .run('registration_ends_at', new Date(Date.now() + 7 * 864e5).toISOString());
   await ensureAdmin(ctx);
   return ctx;
 }

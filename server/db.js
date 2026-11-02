@@ -7,6 +7,8 @@ pg.types.setTypeParser(pg.types.builtins.NUMERIC, Number);
 
 const DEFAULT_SETTINGS = {
   competition_name: 'Most Beautiful Girl Online Nigeria',
+  // A contest starts by taking applications. An admin moves it on to 'voting'.
+  competition_phase: 'registration',
   vote_price: '500',
   voting_status: 'open',
   voting_starts_at: '',

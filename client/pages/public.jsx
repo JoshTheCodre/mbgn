@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
-  ApiError, ago, api, naira, plural, useApp, useFetch, useLive,
+  ApiError, ago, api, naira, plural, registrationOpen, useApp, useFetch, useLive,
 } from '../lib.jsx';
 import {
   ActivityFeed, CardsSkeleton, CodeTag, CoverSkeleton, Crown, Countdown, ErrorNote, Field, LoadFailed, Loading, Movement,
-  Portrait, ProfileSkeleton, RankSkeleton, CountUp, ShareButtons,
+  PageSkeleton, Portrait, ProfileSkeleton, RankSkeleton, CountUp, ShareButtons, ShareCard, Timer,
 } from '../ui.jsx';
 
 const prefersCalm = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -174,8 +174,7 @@ function HowVoting({ competition }) {
   );
 }
 
-function JoinCard({ top }) {
-  const faces = top.filter((row) => row.photoUrl).slice(0, 4);
+function JoinCard({ to, label }) {
   return (
     <section className="wrap section">
       <div className="join-card">
@@ -184,19 +183,138 @@ function JoinCard({ top }) {
         <Crown className="join-crown" />
         <h2>Think the crown should be yours?</h2>
         <p>Join in a few minutes and get your own code, voting link and dashboard.</p>
-        {faces.length ? (
-          <div className="join-faces" aria-hidden="true">
-            {faces.map((row) => <img key={row.code} src={row.photoUrl} alt="" loading="lazy" />)}
-            <span>You?</span>
-          </div>
-        ) : null}
-        <Link to="/register" className="btn btn-primary">Join the contest</Link>
+        <Link to={to} className="btn btn-primary">{label}</Link>
       </div>
     </section>
   );
 }
 
+function ShareInvite() {
+  const { competition } = useApp();
+  return registrationOpen(competition) ? (
+    <ShareCard
+      title="Know someone who should enter?"
+      text="Send this to a friend, a sister or anyone ready for the crown."
+      message="Over ₦10 million in cash prizes to be won on Most Beautiful Girl Online Nigeria. Registration is open:"
+    />
+  ) : (
+    <ShareCard
+      title="Tell people voting opens soon"
+      text="Over ₦10 million in cash prizes is at stake. Get your friends and family ready to vote."
+      message="Voting opens soon on Most Beautiful Girl Online Nigeria, with over ₦10 million in cash prizes to be won:"
+    />
+  );
+}
+
+// The first stage of the contest: everything here is about getting people to join.
+function RegistrationHome() {
+  const { user, competition } = useApp();
+  const open = registrationOpen(competition);
+  const endsAt = competition.registration?.endsAt;
+  const joined = Boolean(user?.contestant);
+  const joinTo = joined ? '/dashboard' : '/register';
+  const joinLabel = joined ? 'Open my dashboard' : 'Join the contest';
+
+  return (
+    <>
+      <section className="hero reg-hero">
+        <span className="hero-glow hero-glow-a" aria-hidden="true" />
+        <span className="hero-glow hero-glow-b" aria-hidden="true" />
+        {['a', 'b', 'c', 'd'].map((k) => <span key={k} className={`hero-star hero-star-${k}`} aria-hidden="true">✦</span>)}
+        <div className="wrap hero-grid">
+          <div className="hero-copy">
+            <p className="eyebrow">{open ? <><span className="reg-dot" aria-hidden="true" />Registration is open</> : 'Registration has closed'}</p>
+            <h1>
+              <span className="hero-word" style={{ '--i': 0 }}>Most</span>{' '}
+              <span className="hero-word" style={{ '--i': 1 }}>Beautiful</span>{' '}
+              <span className="hero-word" style={{ '--i': 2 }}>Girl</span>{' '}
+              <em className="hero-word" style={{ '--i': 3 }}>Online</em>{' '}
+              <span className="hero-word" style={{ '--i': 4 }}>Nigeria</span>
+            </h1>
+            <p className="reg-lead">{open
+              ? 'Nigeria is looking for its next queen. Join the contest today, or share it with someone who should.'
+              : 'Applications are closed and voting opens soon. Get ready to support your favourite.'}</p>
+            {open && endsAt ? <Timer target={endsAt} label="Registration closes in" /> : null}
+            <div className="reg-actions">
+              {open || joined ? <Link to={joinTo} className="btn btn-primary reg-join">{joinLabel}</Link> : null}
+              <a href="#share" className="btn reg-share-link">Share with someone</a>
+            </div>
+          </div>
+          <div className="prize">
+            <span className="prize-over">Over</span>
+            <strong className="prize-amount">₦10 Million</strong>
+            <span className="prize-rule" aria-hidden="true"><i>✦</i></span>
+            <span className="prize-note">in cash prizes to be won</span>
+          </div>
+        </div>
+      </section>
+
+      {open ? (
+        <section className="how">
+          <div className="wrap how-grid">
+            <div>
+              <h2>How to enter</h2>
+              <Link to={joinTo} className="btn btn-primary">{joinLabel}</Link>
+            </div>
+            <ol className="how-steps">
+              <li>
+                <h3>Join the contest</h3>
+                <p>Add your photo and a few details. It only takes a few minutes.</p>
+              </li>
+              <li>
+                <h3>Get approved</h3>
+                <p>Our team reviews your application, then you get your own code and voting link.</p>
+              </li>
+              <li>
+                <h3>Get your supporters ready</h3>
+                <p>Voting opens when registration closes. Verified votes decide the winners.</p>
+              </li>
+            </ol>
+          </div>
+        </section>
+      ) : null}
+
+      <ShareInvite />
+
+      {open ? <JoinCard to={joinTo} label={joinLabel} /> : null}
+    </>
+  );
+}
+
+// What the voting pages show until voting has started.
+function VotingSoon() {
+  const { user, competition } = useApp();
+  const open = registrationOpen(competition);
+  return (
+    <>
+      <div className="wrap page narrow voting-soon">
+        <Crown className="prize-crown" />
+        <h1>Voting hasn’t started yet</h1>
+        <p className="muted">{open
+          ? 'Voting opens when registration closes. Right now, over ₦10 million in cash prizes is waiting for the women who join.'
+          : 'Registration has closed and voting opens soon. Please check back shortly.'}</p>
+        {user?.contestant ? <Link to="/dashboard" className="btn btn-primary btn-wide">Open my dashboard</Link> : null}
+        {!user?.contestant && open ? <Link to="/register" className="btn btn-primary btn-wide">Join the contest</Link> : null}
+      </div>
+      <ShareInvite />
+    </>
+  );
+}
+
+// These pages wait for the first answer about the contest's stage, then show the right one.
+const whileVoting = (Page) => function WhileVoting() {
+  const { competition } = useApp();
+  if (!competition?.phase) return <PageSkeleton />;
+  return competition.phase === 'voting' ? <Page /> : <VotingSoon />;
+};
+
 export function Home() {
+  const { competition } = useApp();
+  if (!competition?.phase) return <PageSkeleton />;
+  return competition.phase === 'voting' ? <VotingHome /> : <RegistrationHome />;
+}
+
+function VotingHome() {
   const { competition } = useApp();
   const { data, error, reload } = useFetch('/leaderboard?limit=5');
   useLive('leaderboard', reload);
@@ -248,8 +366,6 @@ export function Home() {
       </section>
 
       <HowVoting competition={competition} />
-
-      <JoinCard top={top} />
     </>
   );
 }
@@ -344,7 +460,7 @@ function BoardFilters({ f, filters }) {
   );
 }
 
-export function Leaderboard() {
+export const Leaderboard = whileVoting(() => {
   const f = useBoardFilters();
   const { data, error, reload } = useFetch(`/leaderboard?${f.query}`);
   const previous = useRef(new Map());
@@ -390,9 +506,9 @@ export function Leaderboard() {
       <p className="muted small-note">Ranked by total verified votes. If two contestants tie, the one who reached that total first stays ahead. Movement compares with 24 hours ago.</p>
     </div>
   );
-}
+});
 
-export function Contestants() {
+export const Contestants = whileVoting(() => {
   const f = useBoardFilters();
   const { data, error, reload } = useFetch(`/leaderboard?${f.query}`);
   return (
@@ -426,7 +542,7 @@ export function Contestants() {
       )}
     </div>
   );
-}
+});
 
 function VotePanel({ contestant, viaLink }) {
   const { competition } = useApp();
@@ -496,6 +612,7 @@ function VotePanel({ contestant, viaLink }) {
 }
 
 export function Profile() {
+  const { competition } = useApp();
   const { code } = useParams();
   const [params] = useSearchParams();
   const { data, error, reload } = useFetch(`/contestants/${encodeURIComponent(code)}`);
@@ -541,11 +658,13 @@ export function Profile() {
       <div className="profile-main">
         <p className="eyebrow">{data.location}, {data.state}{data.category ? ` · ${data.category}` : ''}</p>
         <h1>{data.name}</h1>
-        <dl className="profile-stats">
-          <div><dt>Total votes</dt><dd><CountUp value={data.totalVotes} /></dd></div>
-          <div><dt>Position</dt><dd><CountUp value={data.position} /></dd></div>
-          <div><dt>24 hours</dt><dd className="profile-move"><Movement value={data.movement24h} /></dd></div>
-        </dl>
+        {competition?.phase === 'voting' ? (
+          <dl className="profile-stats">
+            <div><dt>Total votes</dt><dd><CountUp value={data.totalVotes} /></dd></div>
+            <div><dt>Position</dt><dd><CountUp value={data.position} /></dd></div>
+            <div><dt>24 hours</dt><dd className="profile-move"><Movement value={data.movement24h} /></dd></div>
+          </dl>
+        ) : null}
         <VotePanel contestant={data} viaLink={viaLink} />
         <p className="profile-bio">{data.bio}</p>
         <div className="social-links">

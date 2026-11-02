@@ -77,8 +77,41 @@ export function adminRouter(ctx) {
     });
   });
 
+  // ---- The contest's stage: taking applications, then voting ----
+  router.post('/phase/:phase(registration|voting)', async (req, res) => {
+    const { phase } = req.params;
+    if (await getSetting(db, 'competition_phase') === phase) throw new HttpError(409, `The contest is already in its ${phase} stage.`);
+    await tx(db, async () => {
+      await setSetting(db, 'competition_phase', phase);
+      if (phase === 'voting') {
+        await setSetting(db, 'voting_status', 'open');
+        await setSetting(db, 'results_published_at', '');
+      }
+      await audit(ctx, req.user.id, 'competition.phase', phase);
+    });
+
+    let notified = 0;
+    if (phase === 'voting') {
+      await publishActivity(ctx, { kind: 'announcement', message: 'Registration has closed. Voting is now open!' });
+      const recipients = await db.prepare("SELECT user_id, email, stage_name, code FROM contestants WHERE status = 'approved'").all();
+      for (const r of recipients) {
+        const link = `${config.publicUrl}/c/${r.code}`;
+        await notifyUser(ctx, r.user_id, 'announcement', `Voting is open! Share your link now: ${link}`);
+        await ctx.mailer.send({
+          to: r.email,
+          subject: 'Voting is open!',
+          text: `Hello ${r.stage_name},\n\nRegistration has closed and voting is now open. Share your voting link with your supporters now:\n\n${link}`,
+        });
+      }
+      notified = recipients.length;
+    }
+    ctx.bus.publish('competition', {});
+    changed();
+    res.json({ phase, notified });
+  });
+
   // ---- Contestants ----
-  router.get('/contestants', async (req, res) => {
+  router.get('/contestants',async (req, res) => {
     const status = clean(req.query.status, 20);
     const q = clean(req.query.q, 60);
     const where = [];
@@ -92,11 +125,12 @@ export function adminRouter(ctx) {
 
   async function sendApproval(c) {
     const link = `${config.publicUrl}/c/${c.code}`;
-    await notifyUser(ctx, c.user_id, 'approval', `You're in! Your contestant code is ${c.code}. Share your voting link: ${link}`);
+    const notYet = await getSetting(db, 'competition_phase') === 'registration' ? ' Voting opens when registration closes, so get your supporters ready.' : '';
+    await notifyUser(ctx, c.user_id, 'approval', `You're in! Your contestant code is ${c.code}. Share your voting link: ${link}.${notYet}`);
     await ctx.mailer.send({
       to: c.email,
       subject: `You're in! Your MBGN code is ${c.code}`,
-      text: `Congratulations ${c.stage_name},\n\nYour application has been approved.\n\nYour permanent contestant code: ${c.code}\nYour personal voting link: ${link}\n\nLog in to your dashboard to follow your votes and ranking: ${config.publicUrl}/dashboard`,
+      text: `Congratulations ${c.stage_name},\n\nYour application has been approved.\n\nYour permanent contestant code: ${c.code}\nYour personal voting link: ${link}\n${notYet ? `\n${notYet.trim()}\n` : ''}\nLog in to your dashboard to follow your votes and ranking: ${config.publicUrl}/dashboard`,
     });
   }
 
@@ -160,6 +194,15 @@ export function adminRouter(ctx) {
     res.json(contestantView(await getContestant(c.id)));
   });
 
+  // A blank date means no deadline. Moving it later reopens applications.
+  router.put('/registration', async (req, res) => {
+    const endsAt = isoOrEmpty(req.body?.endsAt, 'Closing date');
+    await setSetting(db, 'registration_ends_at', endsAt);
+    await audit(ctx, req.user.id, 'registration.deadline', endsAt || 'none');
+    ctx.bus.publish('competition', {});
+    res.json({ endsAt: endsAt || null });
+  });
+
   // ---- Money and votes ----
   router.get('/payments', async (req, res) => {
     const status = clean(req.query.status, 20);
@@ -209,12 +252,18 @@ export function adminRouter(ctx) {
 
   // ---- Competition settings ----
   router.get('/settings', async (_req, res) => {
-    const [settings, packages] = await Promise.all([
+    const [settings, packages, counts] = await Promise.all([
       db.prepare('SELECT key, value FROM settings').all(),
       db.prepare('SELECT * FROM packages ORDER BY votes').all(),
+      db.prepare(`SELECT COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+        COUNT(*) FILTER (WHERE status = 'approved') AS approved FROM contestants`).get(),
     ]);
     const setting = Object.fromEntries(settings.map((row) => [row.key, row.value]));
     res.json({
+      phase: setting.competition_phase,
+      registrationEndsAt: setting.registration_ends_at,
+      pendingApplications: counts.pending,
+      approvedContestants: counts.approved,
       name: setting.competition_name,
       votePrice: Number(setting.vote_price),
       votingStatus: setting.voting_status,
@@ -258,6 +307,7 @@ export function adminRouter(ctx) {
   });
 
   router.post('/voting/:status(open|paused|closed)', async (req, res) => {
+    if (await getSetting(db, 'competition_phase') === 'registration') throw new HttpError(409, 'End registration first to start voting.');
     await setSetting(db, 'voting_status', req.params.status);
     if (req.params.status === 'open') await setSetting(db, 'results_published_at', '');
     await audit(ctx, req.user.id, 'voting.status', req.params.status);
@@ -335,6 +385,7 @@ export function adminRouter(ctx) {
 
   // ---- Results ----
   router.post('/results/publish', async (req, res) => {
+    if (await getSetting(db, 'competition_phase') === 'registration') throw new HttpError(409, 'Voting has not happened yet.');
     if ((await votingState(db)).open) throw new HttpError(409, 'Close voting before publishing results.');
     if (await getSetting(db, 'results_published_at')) throw new HttpError(409, 'Results for this round are already published.');
     const standings = await db.prepare(`SELECT position, code, stage_name AS name, total_votes AS votes FROM contestants

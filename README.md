@@ -69,6 +69,20 @@ Remove `DEMO_MODE` from `next.config.mjs` first, then:
 5. Back up the database. Neon's free plan can only restore the last 6 hours, and a busy site can use up
    its monthly compute hours, so move to a paid plan for the live contest.
 
+## How a contest runs
+
+1. **Registration** is the starting stage. The home page promotes joining and the prize, with a countdown,
+   and voting pages are hidden. Approved contestants get their code and voting link, ready to share.
+   A new contest gets a 7-day deadline, which an admin can change or remove on the Competition tab. At the
+   deadline new applications stop by themselves. A later date reopens them.
+2. **Voting** only starts when an admin presses **End registration and start voting** on the Competition tab,
+   whether or not the deadline has passed, which leaves time to finish reviewing.
+   New applications stop, approved contestants are told by email, and the voting pages appear. Waiting
+   applications can still be approved afterwards. An admin can reopen registration, which stops voting
+   and keeps the votes.
+
+The prize amount on the registration page is set in [client/pages/public.jsx](client/pages/public.jsx).
+
 ## How the important guarantees work
 
 - **Pay to vote, no sign-in and no email.** A supporter picks a number of votes and pays. Paystack

@@ -9,6 +9,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { createApp, createContext } from '../server/app.js';
 import { formatCode } from '../server/competition.js';
 import { loadConfig } from '../server/config.js';
+import { setSetting } from '../server/db.js';
 
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000001e221bc330000000049454e44ae426082', 'hex');
 
@@ -26,7 +27,11 @@ function memoryPostgres() {
   };
 }
 
-async function boot(overrides = {}) {
+// Most tests are about voting, so these sites start in the voting stage, and joining
+// briefly reopens registration. `freshContest` keeps a new contest's real starting stage.
+const votingSites = new Map();
+
+async function boot(overrides = {}, { freshContest = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbgn-test-'));
   const config = loadConfig({
     nodeEnv: 'test',
@@ -47,6 +52,10 @@ async function boot(overrides = {}) {
   const server = createApp(ctx).listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
+  if (!freshContest) {
+    await setSetting(ctx.db, 'competition_phase', 'voting');
+    votingSites.set(base, ctx);
+  }
   return {
     ctx,
     base,
@@ -67,11 +76,14 @@ function client(base) {
   return {
     get cookie() { return cookie; },
     async req(method, url, { body, form, headers } = {}) {
+      const site = url === '/contestants/register' ? votingSites.get(base) : null;
+      if (site) await setSetting(site.db, 'competition_phase', 'registration');
       const res = await fetch(`${base}/api${url}`, {
         method,
         headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}), ...headers },
         body: form ?? (body ? JSON.stringify(body) : undefined),
       });
+      if (site) await setSetting(site.db, 'competition_phase', 'voting');
       const set = res.headers.get('set-cookie');
       if (set) cookie = set.split(';')[0];
       const text = await res.text();
@@ -699,6 +711,119 @@ describe('Paystack integration (against a local stand-in)', () => {
     paidAmount = 0;
     const { data: result } = await anon.post(`/payments/${data.reference}/verify`);
     assert.equal(result.status, 'failed');
+  });
+});
+
+describe('Contest stages', () => {
+  test('registration closes by itself at its deadline, which an admin can change', async () => {
+    const app = await boot({}, { freshContest: true });
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const anon = client(app.base);
+      const join = (name) => client(app.base).req('POST', '/contestants/register', { form: registrationForm(name) });
+
+      // A new contest gets about a week.
+      const { registration } = (await anon.get('/competition')).data;
+      assert.equal(registration.open, true);
+      const daysLeft = (new Date(registration.endsAt) - Date.now()) / 864e5;
+      assert.ok(daysLeft > 6.9 && daysLeft <= 7);
+      assert.equal((await admin.get('/admin/settings')).data.registrationEndsAt, registration.endsAt);
+      assert.equal((await join('InTime')).status, 201);
+
+      const setDeadline = (endsAt) => admin.req('PUT', '/admin/registration', { body: { endsAt } });
+      assert.equal((await anon.req('PUT', '/admin/registration', { body: { endsAt: '' } })).status, 401);
+      assert.equal((await setDeadline('not a date')).status, 400);
+
+      // Past the deadline: applications stop, voting has still not started.
+      const past = new Date(Date.now() - 60000).toISOString();
+      assert.equal((await setDeadline(past)).status, 200);
+      const closed = (await anon.get('/competition')).data;
+      assert.equal(closed.registration.open, false);
+      assert.equal(closed.phase, 'registration');
+      assert.equal(closed.voting.open, false);
+      assert.equal((await join('TooLateNow')).status, 409);
+
+      // A later date reopens applications, and no deadline at all stays open.
+      assert.equal((await setDeadline(new Date(Date.now() + 864e5).toISOString())).status, 200);
+      assert.equal((await join('ReopenedOne')).status, 201);
+      assert.equal((await setDeadline('')).status, 200);
+      const noDeadline = (await anon.get('/competition')).data.registration;
+      assert.deepEqual(noDeadline, { open: true, endsAt: null });
+
+      // The deadline being reached doesn't stop an admin from starting voting, and a restart keeps their date.
+      await setDeadline(past);
+      const restarted = await createContext(app.ctx.config);
+      assert.equal((await restarted.db.prepare("SELECT value FROM settings WHERE key = 'registration_ends_at'").get()).value, past);
+      assert.equal((await admin.post('/admin/phase/voting')).status, 200);
+      assert.equal((await anon.get('/competition')).data.voting.open, true);
+      assert.equal((await anon.get('/competition')).data.registration.open, false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('a contest takes applications first, then an admin ends registration and voting opens', async () => {
+    const app = await boot({}, { freshContest: true });
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const anon = client(app.base);
+
+      // Registration stage: joining works, and everything to do with voting is off.
+      const before = (await anon.get('/competition')).data;
+      assert.equal(before.phase, 'registration');
+      assert.equal(before.voting.open, false);
+      assert.equal(before.voting.status, 'registration');
+      const { code, person, id } = await makeContestant(app, admin, 'EarlyBird');
+      const earlyMail = (await app.ctx.db.prepare("SELECT body FROM outbox WHERE subject LIKE 'You''re in%'").get()).body;
+      assert.ok(earlyMail.includes('Voting opens when registration closes'));
+      const waiting = await client(app.base).req('POST', '/contestants/register', { form: registrationForm('StillWaiting') });
+      assert.equal(waiting.status, 201);
+
+      const vote = () => anon.post('/votes/pay', { code, quantity: 1 });
+      assert.equal((await vote()).status, 409);
+      assert.equal((await admin.post('/admin/voting/open')).status, 409);
+      assert.equal((await admin.post('/admin/results/publish')).status, 409);
+
+      // Only an admin can move the contest on.
+      assert.equal((await anon.post('/admin/phase/voting')).status, 401);
+      assert.equal((await person.post('/admin/phase/voting')).status, 403);
+      assert.equal((await admin.post('/admin/phase/registration')).status, 409);
+
+      const { data: stages } = await admin.get('/admin/settings');
+      assert.equal(stages.phase, 'registration');
+      assert.equal(stages.approvedContestants, 1);
+      assert.equal(stages.pendingApplications, 1);
+
+      // Ending registration: approved contestants hear about it, and voting is live.
+      const started = await admin.post('/admin/phase/voting');
+      assert.equal(started.status, 200);
+      assert.equal(started.data.notified, 1);
+      assert.equal((await admin.post('/admin/phase/voting')).status, 409);
+      const after = (await anon.get('/competition')).data;
+      assert.equal(after.phase, 'voting');
+      assert.equal(after.voting.open, true);
+      assert.ok((await person.get('/me/dashboard')).data.notifications.some((n) => n.message.startsWith('Voting is open!')));
+      assert.ok(await app.ctx.db.prepare("SELECT 1 FROM outbox WHERE subject = 'Voting is open!' AND to_addr = 'earlybird@test.local'").get());
+      assert.ok((await anon.get('/activity')).data.some((a) => a.message.includes('Voting is now open')));
+      assert.equal((await vote()).status, 201);
+      await payForVotes(anon, code, 3);
+      assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 3);
+
+      // Registration is closed to new people, though waiting applications can still be approved.
+      const late = await client(app.base).req('POST', '/contestants/register', { form: registrationForm('TooLate') });
+      assert.equal(late.status, 409);
+      const { data: [pending] } = await admin.get('/admin/contestants?q=StillWaiting');
+      assert.equal((await admin.post(`/admin/contestants/${pending.id}/approve`)).status, 200);
+
+      // Reopening stops voting and keeps the votes.
+      assert.equal((await admin.post('/admin/phase/registration')).status, 200);
+      assert.equal((await vote()).status, 409);
+      assert.equal((await admin.get(`/admin/contestants?q=EarlyBird`)).data.find((c) => c.id === id).totalVotes, 3);
+    } finally {
+      await app.close();
+    }
   });
 });
 

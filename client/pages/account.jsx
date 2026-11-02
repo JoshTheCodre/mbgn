@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { api, dateTime, naira, num, plural, useApp, useFetch } from '../lib.jsx';
+import {
+  api, dateTime, naira, num, plural, registrationOpen, useApp, useFetch,
+} from '../lib.jsx';
 import { ErrorNote, Field, Loading } from '../ui.jsx';
 
 export function AdminLogin() {
@@ -189,6 +191,17 @@ export function Register() {
   const errorRef = useRef(null);
 
   if (user?.contestant) return <Navigate to="/dashboard" replace />;
+  if (competition?.phase && !registrationOpen(competition)) {
+    const voting = competition.phase === 'voting';
+    return (
+      <div className="wrap page narrow">
+        <h1>Registration has closed</h1>
+        <p className="muted">{voting ? 'Voting is now open. Find a contestant and support her.' : 'New applications have stopped, and voting opens soon.'}</p>
+        <Link to={voting ? '/contestants' : '/'} className="btn btn-primary btn-wide">{voting ? 'Vote now' : 'Back to the home page'}</Link>
+        <p className="muted form-foot">Already in the contest? <Link to="/dashboard">Open your dashboard</Link></p>
+      </div>
+    );
+  }
 
   async function submit(e) {
     e.preventDefault();

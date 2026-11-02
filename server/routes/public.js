@@ -4,7 +4,7 @@ import {
   HttpError, asyncRouter, endSession, hashPassword, rateLimit, requireUser, sessionUser, sha256, startSession, verifyPassword,
 } from '../auth.js';
 import {
-  lastUpdated, movementBaseline, photoUrl, publicContestant, publicProfile, votingState,
+  lastUpdated, movementBaseline, photoUrl, publicContestant, publicProfile, registrationState, votingState,
 } from '../competition.js';
 import { getSetting, nowIso, tx } from '../db.js';
 import { handleWebhook } from '../payments.js';
@@ -23,8 +23,12 @@ const IMAGE_TYPES = [
 
 // Vercel's edge answers repeat requests for up to 5 seconds, worldwide and without touching the
 // database, and keeps answering while it fetches a fresh copy. None of these vary by visitor.
+// Browsers must not join in, or they would show a stale answer right after a change.
 const shortCache = (_req, res, next) => {
-  res.set('Cache-Control', 'public, max-age=0, s-maxage=5, stale-while-revalidate=30');
+  res.set({
+    'Cache-Control': 'public, max-age=0, must-revalidate',
+    'Vercel-CDN-Cache-Control': 's-maxage=5, stale-while-revalidate=10',
+  });
   next();
 };
 
@@ -104,7 +108,9 @@ export function publicRouter(ctx) {
 
   // ---- Competition facts ----
   router.get('/competition', shortCache, async (_req, res) => {
-    const [name, voting, startsAt, endsAt, votePrice, packages, resultsPublishedAt] = await Promise.all([
+    const [phase, registration, name, voting, startsAt, endsAt, votePrice, packages, resultsPublishedAt] = await Promise.all([
+      getSetting(db, 'competition_phase'),
+      registrationState(db),
       getSetting(db, 'competition_name'),
       votingState(db),
       getSetting(db, 'voting_starts_at'),
@@ -114,6 +120,8 @@ export function publicRouter(ctx) {
       getSetting(db, 'results_published_at'),
     ]);
     res.json({
+      phase,
+      registration,
       name,
       voting,
       startsAt: startsAt || null,
@@ -210,6 +218,7 @@ export function publicRouter(ctx) {
 
   // ---- Contestant registration ----
   router.post('/contestants/register', rateLimit({ windowMs: 3600000, max: scaled(40) }), upload.single('photo'), async (req, res) => {
+    if (!(await registrationState(db)).open) throw new HttpError(409, 'Registration has closed.');
     const b = req.body ?? {};
     const fullName = clean(b.fullName, 100);
     const stageName = clean(b.stageName, 60) || fullName;

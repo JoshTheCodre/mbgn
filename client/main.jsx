@@ -2,7 +2,9 @@ import {
   Component, Suspense, lazy, useEffect, useRef, useState,
 } from 'react';
 import { BrowserRouter, Link, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { AppProvider, api, useApp } from './lib.jsx';
+import {
+  AppProvider, api, registrationOpen, useApp,
+} from './lib.jsx';
 import {
   HeaderPulse, LivePopups, Loading, PageSkeleton, ThemePicker,
 } from './ui.jsx';
@@ -23,7 +25,8 @@ const Dashboard = lazy(() => import('./pages/dashboard.jsx').then((m) => ({ defa
 const Admin = lazy(() => import('./pages/admin.jsx').then((m) => ({ default: m.Admin })));
 
 function Header() {
-  const { user, setUser } = useApp();
+  const { user, setUser, competition } = useApp();
+  const phase = competition?.phase;
   const [menu, setMenu] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const header = useRef(null);
@@ -94,22 +97,24 @@ function Header() {
             onBlur={restGlide}
           >
             <span className="nav-glide" ref={glide} aria-hidden="true" />
-            <NavLink to="/contestants">Contestants</NavLink>
-            <NavLink to="/leaderboard">Leaderboard</NavLink>
+            {phase === 'voting' ? (
+              <>
+                <NavLink to="/contestants">Contestants</NavLink>
+                <NavLink to="/leaderboard">Leaderboard</NavLink>
+              </>
+            ) : null}
             <NavLink to="/results">Winners</NavLink>
           </div>
           <span className="nav-spacer" />
-          <HeaderPulse />
+          {phase === 'voting' ? <HeaderPulse /> : null}
           {user?.role === 'admin' ? (
             <>
               <NavLink to="/admin">Admin</NavLink>
               <button type="button" className="nav-link-btn" onClick={logout}>Log out</button>
             </>
-          ) : (
-            user?.contestant
-              ? <NavLink to="/dashboard">My dashboard</NavLink>
-              : <NavLink to="/register" className="btn btn-primary btn-small">Join the contest</NavLink>
-          )}
+          ) : user?.contestant ? <NavLink to="/dashboard">My dashboard</NavLink>
+            : registrationOpen(competition) ? <NavLink to="/register" className="btn btn-primary btn-small">Join the contest</NavLink>
+              : phase === 'voting' ? <NavLink to="/contestants" className="btn btn-primary btn-small">Vote now</NavLink> : null}
         </nav>
       </div>
     </header>
@@ -119,6 +124,7 @@ function Header() {
 function Footer() {
   const { competition } = useApp();
   const name = competition?.name ?? 'Most Beautiful Girl Online Nigeria';
+  const voting = competition?.phase === 'voting';
   return (
     <footer className="site-footer">
       <div className="wrap footer-top">
@@ -126,15 +132,15 @@ function Footer() {
           <Link to="/" className="logo">MBGN</Link>
           <p>{name}</p>
         </div>
-        <nav aria-label="Voting">
-          <h2>Vote</h2>
-          <Link to="/contestants">Contestants</Link>
-          <Link to="/leaderboard">Leaderboard</Link>
+        <nav aria-label={voting ? 'Voting' : 'The contest'}>
+          <h2>{voting ? 'Vote' : 'The contest'}</h2>
+          {voting ? <Link to="/contestants">Contestants</Link> : null}
+          {voting ? <Link to="/leaderboard">Leaderboard</Link> : null}
           <Link to="/results">Winners</Link>
         </nav>
         <nav aria-label="Contestants">
           <h2>Compete</h2>
-          <Link to="/register">Join the contest</Link>
+          {registrationOpen(competition) ? <Link to="/register">Join the contest</Link> : null}
           <Link to="/dashboard">Contestant dashboard</Link>
         </nav>
       </div>

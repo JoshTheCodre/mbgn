@@ -345,6 +345,11 @@ img.photo-loading { color: transparent; }
 .btn-danger:hover:not(:disabled) { background: #ad2a42; }
 .btn-whatsapp { background: #128c4b; color: #fff; }
 .btn-whatsapp:hover { background: #0d6e3a; }
+.btn-facebook { background: #1877f2; color: #fff; }
+.btn-facebook:hover { background: #1464cf; }
+.btn-x { background: #0f1419; color: #fff; border-color: rgb(255 255 255 / .22); }
+.btn-x:hover { background: #2a3038; }
+.brand-logo { flex: none; width: 19px; height: 19px; margin-right: 9px; }
 .btn-small { min-height: 38px; padding: 6px 16px; font-size: .9rem; }
 .btn-wide { width: 100%; }
 .icon-btn { width: 40px; height: 40px; background: var(--surface-2); border: 0; border-radius: 50%; font-size: 1.4rem; line-height: 1; cursor: pointer; flex: none; }
@@ -369,6 +374,8 @@ select option { background: var(--surface); }
 }
 .inline-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-top: 12px; }
 .inline-form .field { flex: 1 1 150px; }
+.stage-deadline { margin-block: 14px 18px; }
+.stage-deadline .field { flex-basis: 250px; }
 .check-line { display: flex; gap: 10px; align-items: center; accent-color: var(--accent); }
 .note { padding: 12px 16px; background: var(--surface-2); border-radius: var(--radius-s); font-size: .95rem; margin: 12px 0; }
 .note-error { background: var(--bad-bg); color: var(--bad-text); }
@@ -684,6 +691,75 @@ select option { background: var(--surface); }
   .how-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 56px; align-items: center; }
 }
 /* Join the contest */
+/* The registration home page */
+.reg-hero .hero-grid { grid-template-columns: minmax(0, 1fr); padding-block: 44px 56px; }
+@media (min-width: 880px) {
+  .reg-hero .hero-grid { grid-template-columns: minmax(0, 1.15fr) minmax(340px, .85fr); gap: 40px; }
+}
+.reg-hero h1 { font-size: clamp(2.5rem, 7.4vw, 4.6rem); margin-bottom: .4em; }
+.reg-dot { display: inline-block; width: 9px; height: 9px; margin-right: 8px; background: #5eea9a; border-radius: 50%; animation: reg-pulse 1.8s ease-in-out infinite; }
+@keyframes reg-pulse { 50% { box-shadow: 0 0 0 7px rgb(94 234 154 / 0); } 0%, 100% { box-shadow: 0 0 0 0 rgb(94 234 154 / .55); } }
+.reg-lead { max-width: 34em; margin-bottom: 1.4em; font-size: clamp(1.02rem, 2.4vw, 1.2rem); line-height: 1.5; color: var(--on-panel); animation: word-rise .7s cubic-bezier(.2, .9, .3, 1) .55s both; }
+.reg-actions { display: flex; flex-wrap: wrap; gap: 10px; animation: word-rise .7s cubic-bezier(.2, .9, .3, 1) .68s both; }
+.reg-join { min-height: 54px; padding-inline: 30px; font-size: 1.05rem; animation: btn-breathe 2.6s ease-in-out infinite; }
+.reg-share-link { min-height: 54px; padding-inline: 24px; background: rgb(255 255 255 / .12); color: var(--on-panel); border-color: rgb(255 255 255 / .34); }
+.reg-share-link:hover { background: rgb(255 255 255 / .2); }
+/* Set like an award rather than a sale: a fine gold frame, a serif figure and plenty of room. */
+.prize {
+  position: relative; display: grid; justify-items: center; width: 100%; max-width: 440px; justify-self: center;
+  /* The figure sizes itself from this box, so it fits whatever width the layout gives it. */
+  container-type: inline-size;
+  padding: clamp(34px, 5vw, 50px) clamp(22px, 3vw, 36px); text-align: center;
+  background: linear-gradient(160deg, rgb(12 4 22 / .5), rgb(12 4 22 / .28));
+  border: 1px solid rgb(224 188 92 / .55);
+  animation: prize-in 1.1s cubic-bezier(.2, .7, .2, 1) .35s both;
+}
+.prize::before { content: ''; position: absolute; inset: 7px; border: 1px solid rgb(224 188 92 / .22); pointer-events: none; }
+@keyframes prize-in { from { opacity: 0; transform: translateY(12px); } }
+.prize-over { font-family: 'Playfair Display', Georgia, serif; font-style: italic; font-size: clamp(1.15rem, 3.4vw, 1.4rem); color: #ecd9a4; }
+.prize-amount {
+  margin-block: 2px 16px; font-family: 'Playfair Display', Georgia, serif; font-weight: 600; font-size: 2.2rem; font-size: clamp(1.5rem, 18.4cqi, 3.9rem); line-height: 1.08; letter-spacing: -.005em; white-space: nowrap; font-variant-numeric: lining-nums;
+  background: linear-gradient(175deg, #fbeeb8 8%, #e6c261 48%, #b8862b 92%); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.prize-rule { display: flex; align-items: center; gap: 12px; width: min(210px, 72%); margin-bottom: 16px; color: #e0bc5c; font-size: .72rem; }
+.prize-rule::before, .prize-rule::after { content: ''; flex: 1; height: 1px; background: linear-gradient(90deg, transparent, rgb(224 188 92 / .7)); }
+.prize-rule::after { transform: scaleX(-1); }
+.prize-rule i { font-style: normal; }
+.prize-note { font-size: .78rem; font-weight: 500; letter-spacing: .2em; line-height: 1.7; text-transform: uppercase; color: #f1e7cf; }
+.prize-crown { width: 72px; height: auto; margin-bottom: 8px; }
+.reg-hero .countdown { margin-bottom: 22px; animation-delay: .62s; }
+/* The share panel: a card of its own, with the link on show. */
+.share-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 26px; padding: clamp(24px, 4vw, 44px); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.share-card-copy h2 { margin-bottom: .35em; font-size: clamp(1.7rem, 3.6vw, 2.5rem); }
+.share-card-copy p:last-child { max-width: 30em; margin: 0; font-size: 1.05rem; line-height: 1.5; }
+/* Share buttons always stay on one row. In a narrow space each becomes a logo with a small label below it. */
+.share-line { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; min-width: 0; container-type: inline-size; }
+.share-line .btn { min-width: 0; min-height: 48px; padding: 6px 10px; font-size: .92rem; white-space: nowrap; }
+@container (max-width: 400px) {
+  .share-line .btn { flex-direction: column; gap: 5px; min-height: 66px; padding: 8px 2px; border-radius: 14px; font-size: clamp(.68rem, 3.9cqi, .8rem); line-height: 1.1; }
+  .share-line .brand-logo { width: 21px; height: 21px; margin-right: 0; }
+}
+/* Four buttons need the stacked look sooner than three. */
+@container (max-width: 480px) {
+  .share-line-four .btn { flex-direction: column; gap: 5px; min-height: 66px; padding: 8px 2px; border-radius: 14px; font-size: clamp(.68rem, 3.9cqi, .8rem); line-height: 1.1; }
+  .share-line-four .brand-logo { width: 21px; height: 21px; margin-right: 0; }
+}
+@container (max-width: 250px) {
+  .share-line-four .btn { padding-inline: 0; font-size: .6rem; }
+}
+/* The very smallest screens */
+@media (max-width: 319px) {
+  .reg-hero h1 { font-size: 1.9rem; }
+  .reg-hero .countdown-parts { gap: 4px; }
+  .reg-hero .countdown-part { flex: 1 1 0; min-width: 0; padding-inline: 2px; }
+  .share-line-four { gap: 4px; }
+}
+.voting-soon { display: grid; justify-items: center; text-align: center; }
+.voting-soon h1 { margin-bottom: .3em; }
+@media (min-width: 860px) {
+  .share-card { grid-template-columns: minmax(0, 1.15fr) minmax(320px, 1fr); align-items: center; gap: 56px; }
+}
+
 .join-card {
   position: relative; display: grid; justify-items: center; gap: 14px;
   max-width: 560px; margin-inline: auto; padding: 34px 24px; overflow: hidden;

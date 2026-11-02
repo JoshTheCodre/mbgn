@@ -11,8 +11,9 @@ const EARLY = `(function(){
   var d=document,h=d.head;
   try{var t=localStorage.getItem('mbgn-theme');if(t)d.documentElement.dataset.theme=t}catch(e){}
   var f=d.createElement('link');f.rel='stylesheet';f.href=${JSON.stringify(FONTS)};h.appendChild(f);
-  var want=['/api/competition'];
-  if(location.pathname==='/')want.push('/api/leaderboard?limit=5','/api/activity?limit=5');
+  var want=['/api/competition'],voting=false;
+  try{voting=JSON.parse(localStorage.getItem('mbgn-cache:/competition')).data.phase==='voting'}catch(e){}
+  if(voting&&location.pathname==='/')want.push('/api/leaderboard?limit=5','/api/activity?limit=5');
   want.forEach(function(u){var l=d.createElement('link');l.rel='preload';l.as='fetch';l.crossOrigin='anonymous';l.href=u;h.appendChild(l)});
 })()`;
 

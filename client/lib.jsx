@@ -64,6 +64,13 @@ export function remember(path, data) {
   } catch { /* a convenience only */ }
 }
 
+// Checked against the clock too, so a page left open closes when the countdown ends.
+export const registrationOpen = (competition) => {
+  const registration = competition?.registration;
+  if (!registration?.open) return false;
+  return !registration.endsAt || Date.now() < new Date(registration.endsAt).getTime();
+};
+
 // ---- Formatting ----
 export const num = (n) => Number(n ?? 0).toLocaleString('en-NG');
 export const naira = (n) => `₦${num(n)}`;
@@ -114,6 +121,8 @@ function openStream() {
     if (document.hidden) return;
     notify('leaderboard', {});
     notify('activity_refresh', {});
+    // So every open page moves on when an admin starts voting.
+    notify('competition_check', {});
   }, REFRESH_MS);
   source?.close();
   source = new EventSource('/api/stream');
@@ -149,8 +158,9 @@ export function AppProvider({ children }) {
     setUser(next);
     return next;
   }, []);
-  const refreshCompetition = useCallback(async () => {
-    const next = await api('/competition');
+  // `fresh` skips the edge cache, for when the contest has just changed.
+  const refreshCompetition = useCallback(async ({ fresh = false } = {}) => {
+    const next = await api(fresh ? `/competition?fresh=${Date.now()}` : '/competition');
     remember('/competition', next);
     setCompetition(next);
   }, []);
@@ -168,7 +178,8 @@ export function AppProvider({ children }) {
     return () => source?.close();
   }, [userId]);
 
-  useLive('competition', () => refreshCompetition().catch(() => {}));
+  useLive('competition', () => refreshCompetition({ fresh: true }).catch(() => {}));
+  useLive('competition_check', () => refreshCompetition().catch(() => {}));
 
   return (
     <AppContext.Provider value={{ user, setUser, refreshUser, competition, refreshCompetition }}>
