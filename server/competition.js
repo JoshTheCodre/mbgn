@@ -18,8 +18,8 @@ export async function votingState(db) {
   return { open: true, status: 'open', message: 'Voting is open.' };
 }
 
-// Applications stop at the deadline, or once voting has started. Voting itself
-// only starts when an admin says so, which leaves time to finish reviewing.
+// Applications stop at the deadline, or once voting has started. Voting itself starts at the
+// deadline too unless an admin turned that off (see stages.js).
 export async function registrationState(db) {
   const rows = await db.prepare("SELECT key, value FROM settings WHERE key IN ('competition_phase', 'registration_ends_at')").all();
   const settings = Object.fromEntries(rows.map((row) => [row.key, row.value]));

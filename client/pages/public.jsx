@@ -3,8 +3,9 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   ApiError, ago, api, naira, num, plural, registrationOpen, useApp, useFetch, useLive,
 } from '../lib.jsx';
+import { bulkPrice, upsellOffers } from '../../shared/pricing.js';
 import {
-  ActivityFeed, CardsSkeleton, CodeTag, CoverSkeleton, Crown, Countdown, ErrorNote, Field, LoadFailed, Loading, Movement,
+  ActivityFeed, CardsSkeleton, CodeTag, CoverSkeleton, Crown, Countdown, Dialog, ErrorNote, Field, LoadFailed, Loading, Movement,
   PageSkeleton, Portrait, ProfileSkeleton, RankSkeleton, CountUp, ShareButtons, ShareCard, Timer,
 } from '../ui.jsx';
 
@@ -162,7 +163,7 @@ function HowVoting({ competition }) {
           </li>
           <li>
             <h3>Choose your votes</h3>
-            <p>Each vote is {naira(competition?.votePrice ?? 500)}.</p>
+            <p>Each vote is {naira(competition?.votePrice ?? 200)}, and bulk votes cost less.</p>
           </li>
           <li>
             <h3>Pay and it counts</h3>
@@ -208,8 +209,23 @@ function ShareInvite() {
 
 // The first stage of the contest: everything here is about getting people to join.
 function RegistrationHome() {
-  const { user, competition } = useApp();
-  const open = registrationOpen(competition);
+  const { user, competition, refreshCompetition } = useApp();
+  const [countdownOver, setCountdownOver] = useState(false);
+  const open = registrationOpen(competition) && !countdownOver;
+  const startsByItself = Boolean(competition.autoStartVoting);
+
+  // The server starts voting when the countdown ends. Ask until it has, then Home moves on.
+  useEffect(() => {
+    if (!countdownOver) return undefined;
+    let tries = 0;
+    const id = setInterval(() => {
+      tries += 1;
+      if (tries > 20) clearInterval(id);
+      refreshCompetition({ fresh: true }).catch(() => {});
+    }, 3000);
+    refreshCompetition({ fresh: true }).catch(() => {});
+    return () => clearInterval(id);
+  }, [countdownOver, refreshCompetition]);
   const endsAt = competition.registration?.endsAt;
   const joined = Boolean(user?.contestant);
   const joinTo = joined ? '/dashboard' : '/register';
@@ -233,10 +249,12 @@ function RegistrationHome() {
             </h1>
             <p className="reg-lead">{open
               ? 'Nigeria is looking for its next queen. Join the contest today, or share it with someone who should.'
-              : 'Applications are closed and voting opens soon. Get ready to support your favourite.'}</p>
-            {open && endsAt ? <Timer target={endsAt} label="Registration closes in" /> : null}
+              : countdownOver && startsByItself ? 'Registration has closed. Voting is opening now…'
+                : 'Applications are closed and voting opens soon. Get ready to support your favourite.'}</p>
+            {open && endsAt ? <Timer target={endsAt} label={startsByItself ? 'Registration closes and voting opens in' : 'Registration closes in'} onEnd={() => setCountdownOver(true)} /> : null}
             <div className="reg-actions">
               {open || joined ? <Link to={joinTo} className="btn btn-primary reg-join">{joinLabel}</Link> : null}
+              <Link to="/enquiry" className="btn reg-share-link">Sponsorship / Enquiry</Link>
               <a href="#share" className="btn reg-share-link">Share with someone</a>
             </div>
           </div>
@@ -310,6 +328,14 @@ const whileVoting = (Page) => function WhileVoting() {
 
 export function Home() {
   const { competition } = useApp();
+  const navigate = useNavigate();
+  const phase = competition?.phase;
+  const before = useRef(phase);
+  // Anyone on the home page when voting begins is taken straight to the contestants to vote.
+  useEffect(() => {
+    if (before.current === 'registration' && phase === 'voting') navigate('/contestants');
+    before.current = phase;
+  }, [phase, navigate]);
   if (!competition?.phase) return <PageSkeleton />;
   return competition.phase === 'voting' ? <VotingHome /> : <RegistrationHome />;
 }
@@ -544,18 +570,56 @@ export const Contestants = whileVoting(() => {
   );
 });
 
+// Shown every time someone goes to pay: a bigger amount is always one tap away, and saying no
+// is just as easy.
+function UpsellDialog({ open, votes, offers, votePrice, onPick, onClose }) {
+  const current = offers.length ? offers[0].price - offers[0].extra : 0;
+  return (
+    <Dialog open={open} onClose={onClose} title="Get more votes for your money">
+      <p className="muted">Bulk votes cost less each, and every vote moves her up the leaderboard.</p>
+      <ul className="upsell-offers">
+        {offers.map((o, i) => (
+          <li key={o.votes}>
+            <button type="button" className={`upsell-offer ${i === 0 ? 'best' : ''}`} onClick={() => onPick(o.votes)}>
+              {i === 0 ? <span className="upsell-tag">Most popular</span> : null}
+              <span className="upsell-votes"><b>{num(o.votes)}</b> votes</span>
+              <span className="upsell-price">{naira(o.price)}</span>
+              <small>
+                {naira(Math.round(o.price / o.votes))} a vote{o.saving > 0 ? ` · save ${naira(o.saving)}` : ''}
+                {o.extra > 0 ? ` · only ${naira(o.extra)} more` : ''}
+              </small>
+            </button>
+          </li>
+        ))}
+      </ul>
+      <button type="button" className="text-link as-button upsell-decline" onClick={() => onPick(votes)}>
+        No thanks, pay {naira(current)} for {plural(votes, 'vote')}
+      </button>
+      {votePrice ? <p className="muted small-note">Normal price: {naira(votePrice)} a vote.</p> : null}
+    </Dialog>
+  );
+}
+
 function VotePanel({ contestant, viaLink }) {
   const { competition } = useApp();
   const [quantity, setQuantity] = useState(5);
   const [custom, setCustom] = useState('');
+  const [voterName, setVoterName] = useState(() => {
+    try { return localStorage.getItem('mbgn-voter-name') ?? ''; } catch { return ''; }
+  });
+  const [offering, setOffering] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
   const packages = competition?.packages ?? [];
-  const priceOf = (n) => packages.find((p) => p.votes === n)?.price ?? n * (competition?.votePrice ?? 0);
+  const votePrice = competition?.votePrice ?? 0;
+  const priceOf = (n) => bulkPrice(n, votePrice, packages);
   const amount = custom !== '' ? Number(custom) : quantity;
   const valid = Number.isInteger(amount) && amount > 0;
   const voting = competition?.voting;
+  const deals = [...packages].sort((a, b) => a.votes - b.votes);
+  const offers = valid ? upsellOffers(amount, votePrice, packages) : [];
+  const rate = valid ? priceOf(amount) / amount : votePrice;
 
   function choose(n, typed) {
     setQuantity(n);
@@ -563,11 +627,23 @@ function VotePanel({ contestant, viaLink }) {
     setError(null);
   }
 
-  async function pay() {
+  function askFirst(e) {
+    e.preventDefault();
+    if (voterName.trim().length < 2) {
+      setError(new Error('Please enter your name. It goes on your proof of vote.'));
+      return;
+    }
+    setError(null);
+    setOffering(true);
+  }
+
+  async function pay(votes) {
+    setOffering(false);
     setBusy(true);
     setError(null);
+    try { localStorage.setItem('mbgn-voter-name', voterName.trim()); } catch { /* a convenience only */ }
     try {
-      const started = await api('/votes/pay', { body: { code: contestant.code, quantity: amount, viaLink } });
+      const started = await api('/votes/pay', { body: { code: contestant.code, quantity: votes, voterName, viaLink } });
       window.location.assign(started.checkoutUrl);
     } catch (err) {
       setError(err);
@@ -578,10 +654,25 @@ function VotePanel({ contestant, viaLink }) {
   if (voting && !voting.open) return <div className="vote-panel"><p className="note">{voting.message}</p></div>;
 
   return (
-    <div className="vote-panel">
+    <form className="vote-panel" onSubmit={askFirst}>
       <h2>Vote for {contestant.name}</h2>
+      {deals.length ? (
+        <div className="deal-cards" role="group" aria-label="Bulk deals">
+          {deals.map((d) => {
+            const saving = d.votes * votePrice - d.price;
+            const active = custom === '' && quantity === d.votes;
+            return (
+              <button key={d.id} type="button" className={`deal-card ${active ? 'active' : ''}`} aria-pressed={active} onClick={() => choose(d.votes, '')}>
+                {saving > 0 ? <span className="deal-save">Save {naira(saving)}</span> : null}
+                <b>{num(d.votes)} votes</b>
+                <span>{naira(d.price)}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
       <div className="qty-chips" role="group" aria-label="Number of votes">
-        {[1, 5, 10, 20, 50, 100].map((n) => (
+        {[1, 5, 10, 20].map((n) => (
           <button
             key={n}
             type="button"
@@ -602,12 +693,22 @@ function VotePanel({ contestant, viaLink }) {
           onChange={(e) => { setCustom(e.target.value); setError(null); }}
         />
       </div>
+      {valid ? (
+        <p className="vote-sum">
+          {plural(amount, 'vote')} · <b>{naira(priceOf(amount))}</b>
+          {rate < votePrice ? <span className="deal-save">Bulk price: {naira(Math.round(rate))} a vote</span> : null}
+        </p>
+      ) : null}
+      <Field label="Your name" hint="Shown on your proof of vote. Only you and the organisers see it.">
+        <input value={voterName} onChange={(e) => setVoterName(e.target.value)} maxLength={60} autoComplete="name" required />
+      </Field>
 
       {valid ? (
-        <button type="button" className="btn btn-vote btn-wide" disabled={busy} onClick={pay}>{busy ? 'Opening checkout…' : `Pay ${naira(priceOf(amount))} and vote`}</button>
+        <button className="btn btn-vote btn-wide" disabled={busy}>{busy ? 'Opening checkout…' : `Pay ${naira(priceOf(amount))} and vote`}</button>
       ) : null}
       <ErrorNote error={error} />
-    </div>
+      <UpsellDialog open={offering} votes={amount} offers={offers} votePrice={votePrice} onPick={pay} onClose={() => setOffering(false)} />
+    </form>
   );
 }
 

@@ -9,6 +9,7 @@ import { createMailer } from './mailer.js';
 import { createPhotoStore } from './photos.js';
 import { createPaystack, createSimulator, reconcilePending } from './payments.js';
 import { createBus } from './realtime.js';
+import { startVotingIfDue } from './stages.js';
 import { adminRouter } from './routes/admin.js';
 import { contestantRouter, votingRouter } from './routes/member.js';
 import { photoHandler, publicRouter } from './routes/public.js';
@@ -24,6 +25,9 @@ export async function createContext(config) {
     photos: createPhotoStore(config),
     provider: config.paystack ? createPaystack(config) : createSimulator(db),
     followers: createFollowerChecker(config),
+    // Work that can finish after the response. The Vercel runtime swaps in waitUntil, so the
+    // function stays alive for it.
+    background: (promise) => { promise.catch((err) => console.error('Background work failed:', err.message)); },
   };
   ctx.activity = createActivityAggregator(ctx);
   // A new contest gets a week to take applications. Only set once, so an admin's change stays.
@@ -59,6 +63,7 @@ export async function runDueJobs(ctx) {
   // Hourly rank snapshots drive the "movement within 24hrs" column.
   if (await claimJob(ctx.db, 'job_rank_snapshot', 3600000)) await takeRankSnapshot(ctx.db);
   if (await claimJob(ctx.db, 'job_reconcile', 5 * 60000)) await reconcilePending(ctx);
+  await startVotingIfDue(ctx);
 }
 
 export function createApp(ctx) {

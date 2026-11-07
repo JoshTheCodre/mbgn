@@ -228,13 +228,18 @@ function pad(n) {
   return String(n).padStart(2, '0');
 }
 
-export function Timer({ target, label, compact = false }) {
+export function Timer({ target, label, compact = false, onEnd }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
   const left = Math.max(0, new Date(target).getTime() - now);
+  const ended = left === 0;
+  useEffect(() => {
+    if (ended) onEnd?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ended]);
   const parts = [
     ['Days', Math.floor(left / 864e5)],
     ['Hrs', Math.floor(left / 36e5) % 24],

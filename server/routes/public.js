@@ -10,6 +10,9 @@ import { getSetting, nowIso, tx } from '../db.js';
 import { PLATFORMS } from '../followers.js';
 import { assignGroup } from '../groups.js';
 import { handleWebhook } from '../payments.js';
+import { startVotingIfDue } from '../stages.js';
+
+export const ENQUIRY_KINDS = ['Sponsorship', 'Partnership', 'Media and press', 'General enquiry'];
 
 export const NIGERIAN_STATES = [
   'Abia', 'Adamawa', 'Akwa Ibom', 'Anambra', 'Bauchi', 'Bayelsa', 'Benue', 'Borno', 'Cross River', 'Delta', 'Ebonyi',
@@ -117,7 +120,9 @@ export function publicRouter(ctx) {
 
   // ---- Competition facts ----
   router.get('/competition', shortCache, async (_req, res) => {
-    const [phase, registration, name, voting, startsAt, endsAt, votePrice, packages, resultsPublishedAt, minFollowers] = await Promise.all([
+    // Every page asks for this, so it is where the end of the registration countdown is noticed.
+    await startVotingIfDue(ctx);
+    const [phase, registration, name, voting, startsAt, endsAt, votePrice, packages, resultsPublishedAt, minFollowers, autoStart, contactPhone, contactEmail] = await Promise.all([
       getSetting(db, 'competition_phase'),
       registrationState(db),
       getSetting(db, 'competition_name'),
@@ -128,10 +133,15 @@ export function publicRouter(ctx) {
       db.prepare('SELECT id, votes, price FROM packages WHERE active = 1 ORDER BY votes').all(),
       getSetting(db, 'results_published_at'),
       getSetting(db, 'min_followers'),
+      getSetting(db, 'auto_start_voting'),
+      getSetting(db, 'contact_phone'),
+      getSetting(db, 'contact_email'),
     ]);
     res.json({
       phase,
       registration,
+      autoStartVoting: autoStart === '1',
+      contact: { phone: contactPhone || null, email: contactEmail || null },
       minFollowers: Number(minFollowers),
       followerCheckIsTest: ctx.followers.mode === 'test',
       name,
@@ -311,6 +321,36 @@ export function publicRouter(ctx) {
       email,
       whatsappGroup: group ? { name: group.name, url: group.invite_url } : null,
     });
+  });
+
+  // ---- Sponsorship and other enquiries ----
+  router.post('/enquiries', rateLimit({ windowMs: 3600000, max: scaled(10) }), async (req, res) => {
+    const b = req.body ?? {};
+    // A hidden field people never see. Bots fill it in, and get the same answer as everyone else.
+    if (clean(b.website)) return res.status(201).json({ ok: true });
+    const kind = ENQUIRY_KINDS.includes(b.kind) ? b.kind : 'General enquiry';
+    const name = clean(b.name, 100);
+    const organisation = clean(b.organisation, 120) || null;
+    const email = clean(b.email, 200).toLowerCase() || null;
+    const phone = clean(b.phone, 20);
+    const message = clean(b.message, 2000);
+    if (name.length < 2) throw new HttpError(400, 'Please enter your name.');
+    if (!validPhone(phone)) throw new HttpError(400, 'Please enter a phone or WhatsApp number we can reach you on.');
+    if (email && !validEmail(email)) throw new HttpError(400, 'That email address does not look right.');
+    if (message.length < 10) throw new HttpError(400, 'Please tell us a little more in your message.');
+
+    await db.prepare('INSERT INTO enquiries (kind, name, organisation, email, phone, message, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(kind, name, organisation, email, phone, message, nowIso());
+    const admins = await db.prepare("SELECT email FROM users WHERE role = 'admin'").all();
+    for (const admin of admins) {
+      await ctx.mailer.send({
+        to: admin.email,
+        subject: `New ${kind.toLowerCase()} enquiry from ${name}`,
+        text: `${name}${organisation ? ` (${organisation})` : ''}\nPhone: ${phone}${email ? `\nEmail: ${email}` : ''}\n\n${message}\n\nSee every enquiry on the Enquiries tab of the control panel.`,
+      });
+    }
+    ctx.bus.publish('admin', { type: 'enquiry' });
+    res.status(201).json({ ok: true });
   });
 
   // On a new device, the details given when joining bring back the dashboard. It is read-only.

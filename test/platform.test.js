@@ -12,6 +12,7 @@ import { loadConfig } from '../server/config.js';
 import { setSetting } from '../server/db.js';
 import { createFollowerChecker } from '../server/followers.js';
 import { socialLink } from '../server/routes/public.js';
+import { bulkPrice, upsellOffers } from '../shared/pricing.js';
 
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000001e221bc330000000049454e44ae426082', 'hex');
 
@@ -133,7 +134,7 @@ const emailFor = (name = 'sue') => `${name}${crypto.randomInt(1e9)}@test.local`;
 
 // Pays through the simulated checkout, the way a supporter's browser does.
 async function payForVotes(person, code, quantity) {
-  const { data: started } = await person.post('/votes/pay', { code, quantity });
+  const { data: started } = await person.post('/votes/pay', { voterName: 'Test Voter', code, quantity });
   await person.post(`/simulator/${started.reference}/pay`);
   const { data: verified } = await person.post(`/payments/${started.reference}/verify`);
   assert.equal(verified.status, 'paid');
@@ -275,9 +276,9 @@ describe('MBGN platform', () => {
   test('paying needs no details, creates no account and counts once', async () => {
     const { code } = await makeContestant(app, admin, 'DirectPay');
     const anon = client(app.base);
-    const { status, data: started } = await anon.post('/votes/pay', { code, quantity: 5 });
+    const { status, data: started } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 5 });
     assert.equal(status, 201);
-    assert.equal(started.amount, 2500);
+    assert.equal(started.amount, 1000);
     assert.equal(anon.cookie, '');
 
     // Nothing counts until the provider says so.
@@ -297,15 +298,15 @@ describe('MBGN platform', () => {
     const { code } = await makeContestant(app, admin, 'DirectRules');
     const anon = client(app.base);
     for (const quantity of [0, -3, 1.5, '2', null]) {
-      assert.equal((await anon.post('/votes/pay', { code, quantity })).status, 400);
+      assert.equal((await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity })).status, 400);
     }
-    assert.equal((await anon.post('/votes/pay', { code: 'NOPE9', quantity: 1 })).status, 404);
+    assert.equal((await anon.post('/votes/pay', { voterName: 'Test Voter', code: 'NOPE9', quantity: 1 })).status, 404);
     await admin.post('/admin/voting/paused');
-    assert.equal((await anon.post('/votes/pay', { code, quantity: 1 })).status, 409);
+    assert.equal((await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 1 })).status, 409);
     await admin.post('/admin/voting/open');
     // The client cannot set its own price, or plant an address for a receipt.
-    const { data: started } = await anon.post('/votes/pay', { code, quantity: 10, amount: 1, email: 'someone@test.local' });
-    assert.equal(started.amount, 5000);
+    const { data: started } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 10, amount: 1, email: 'someone@test.local' });
+    assert.equal(started.amount, 2000);
     assert.equal((await app.ctx.db.prepare('SELECT email FROM payments WHERE reference = ?').get(started.reference)).email, null);
   });
 
@@ -313,7 +314,7 @@ describe('MBGN platform', () => {
     const { code } = await makeContestant(app, admin, 'ReceiptMail');
     const anon = client(app.base);
     const email = emailFor('receiptfan');
-    const { data: started } = await anon.post('/votes/pay', { code, quantity: 5 });
+    const { data: started } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 5 });
     const send = (address) => anon.post(`/payments/${started.reference}/receipt-email`, { email: address });
 
     assert.equal((await send(email)).status, 409);
@@ -347,14 +348,14 @@ describe('MBGN platform', () => {
   test('a payment started before closing counts; one for a removed contestant is held', async () => {
     const late = await makeContestant(app, admin, 'LatePayer');
     const anon = client(app.base);
-    const { data: started } = await anon.post('/votes/pay', { code: late.code, quantity: 6 });
+    const { data: started } = await anon.post('/votes/pay', { voterName: 'Test Voter', code: late.code, quantity: 6 });
     await admin.post('/admin/voting/closed');
     await anon.post(`/simulator/${started.reference}/pay`);
     assert.equal((await anon.post(`/payments/${started.reference}/verify`)).data.votesStatus, 'counted');
     await admin.post('/admin/voting/open');
 
     const gone = await makeContestant(app, admin, 'GoneAway');
-    const { data: heldStart } = await anon.post('/votes/pay', { code: gone.code, quantity: 3 });
+    const { data: heldStart } = await anon.post('/votes/pay', { voterName: 'Test Voter', code: gone.code, quantity: 3 });
     await admin.post(`/admin/contestants/${gone.id}/disqualify`, { reason: 'Broke the rules' });
     await anon.post(`/simulator/${heldStart.reference}/pay`);
     const { data: held } = await anon.post(`/payments/${heldStart.reference}/verify`);
@@ -368,8 +369,8 @@ describe('MBGN platform', () => {
   test('a browser "success" alone never counts votes', async () => {
     const { code } = await makeContestant(app, admin, 'NoClaim');
     const anon = client(app.base);
-    const { data: started } = await anon.post('/votes/pay', { code, quantity: 3 });
-    assert.equal(started.amount, 1500);
+    const { data: started } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 3 });
+    assert.equal(started.amount, 600);
 
     // Unpaid at the provider: asking to verify changes nothing.
     const { data: check } = await anon.post(`/payments/${started.reference}/verify`, { paymentStatus: 'PAID', status: 'PAID' });
@@ -396,7 +397,7 @@ describe('MBGN platform', () => {
   test('paying to vote respects pause, close and the date window', async () => {
     const { code } = await makeContestant(app, admin, 'Window');
     const anon = client(app.base);
-    const vote = () => anon.post('/votes/pay', { code, quantity: 1 });
+    const vote = () => anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 1 });
 
     await admin.post('/admin/voting/paused');
     assert.equal((await vote()).status, 409);
@@ -423,7 +424,7 @@ describe('MBGN platform', () => {
     const bravo = await listen(app.base, b.person.cookie);
     await sleep(30);
 
-    const started = await Promise.all([5, 10].map((quantity) => anon.post('/votes/pay', { code: a.code, quantity })));
+    const started = await Promise.all([5, 10].map((quantity) => anon.post('/votes/pay', { voterName: 'Test Voter', code: a.code, quantity })));
     const references = started.map((r) => r.data.reference);
     await Promise.all(references.map((reference) => anon.post(`/simulator/${reference}/pay`)));
     await Promise.all(references.map((reference) => anon.post(`/payments/${reference}/verify`)));
@@ -618,7 +619,7 @@ describe('Paystack integration (against a local stand-in)', () => {
   test('a payment counts only what Paystack confirms', async () => {
     const { code } = await makeContestant(app, admin, 'PaystackDirect');
     const anon = client(app.base);
-    const { data } = await anon.post('/votes/pay', { code, quantity: 4 });
+    const { data } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 4 });
     assert.equal(data.checkoutUrl, 'https://checkout.paystack.com/abc');
 
     // A checkout nobody has finished stays open: it may still be paid.
@@ -641,8 +642,8 @@ describe('Paystack integration (against a local stand-in)', () => {
   test('starts a real checkout in kobo, and the simulator route does not exist', async () => {
     const { code } = await makeContestant(app, admin, 'PaystackStart');
     const anon = client(app.base);
-    const { data } = await anon.post('/votes/pay', { code, quantity: 2 });
-    assert.equal(sent.amount, 100000);
+    const { data } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 2 });
+    assert.equal(sent.amount, 40000);
     assert.equal(sent.reference, data.reference);
     assert.ok(sent.metadata.cancel_action.endsWith(`/pay/return/${data.reference}?cancelled=1`));
     // Paystack requires an email, so it gets the site's own mailbox with the reference added.
@@ -653,7 +654,7 @@ describe('Paystack integration (against a local stand-in)', () => {
   test('forged or unsigned webhooks are ignored, and flagged', async () => {
     const { code } = await makeContestant(app, admin, 'PaystackForged');
     const anon = client(app.base);
-    const { data } = await anon.post('/votes/pay', { code, quantity: 2 });
+    const { data } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 2 });
     status = 'success';
     paidAmount = 1000;
     const body = eventFor(data.reference);
@@ -667,7 +668,7 @@ describe('Paystack integration (against a local stand-in)', () => {
   test('a signed webhook counts once, using the amount Paystack reports rather than the webhook body', async () => {
     const { code } = await makeContestant(app, admin, 'PaystackSigned');
     const anon = client(app.base);
-    const { data } = await anon.post('/votes/pay', { code, quantity: 2 });
+    const { data } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 2 });
 
     // Signed webhook says paid, but Paystack's own answer is still pending: nothing counts.
     status = 'ongoing';
@@ -697,7 +698,7 @@ describe('Paystack integration (against a local stand-in)', () => {
   test('an underpayment counts no votes and goes to review', async () => {
     const { code } = await makeContestant(app, admin, 'PaystackShort');
     const anon = client(app.base);
-    const { data } = await anon.post('/votes/pay', { code, quantity: 10 });
+    const { data } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 10 });
     status = 'success';
     paidAmount = 100;
     const { data: result } = await anon.post(`/payments/${data.reference}/verify`);
@@ -709,7 +710,7 @@ describe('Paystack integration (against a local stand-in)', () => {
   test('failed payments are marked failed', async () => {
     const { code } = await makeContestant(app, admin, 'PaystackFailed');
     const anon = client(app.base);
-    const { data } = await anon.post('/votes/pay', { code, quantity: 1 });
+    const { data } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 1 });
     status = 'failed';
     paidAmount = 0;
     const { data: result } = await anon.post(`/payments/${data.reference}/verify`);
@@ -734,7 +735,8 @@ describe('Contest stages', () => {
       assert.equal((await admin.get('/admin/settings')).data.registrationEndsAt, registration.endsAt);
       assert.equal((await join('InTime')).status, 201);
 
-      const setDeadline = (endsAt) => admin.req('PUT', '/admin/registration', { body: { endsAt } });
+      // Starting voting by hand here: the automatic start has its own test.
+      const setDeadline = (endsAt) => admin.req('PUT', '/admin/registration', { body: { endsAt, autoStart: false } });
       assert.equal((await anon.req('PUT', '/admin/registration', { body: { endsAt: '' } })).status, 401);
       assert.equal((await setDeadline('not a date')).status, 400);
 
@@ -784,7 +786,7 @@ describe('Contest stages', () => {
       const waiting = await client(app.base).req('POST', '/contestants/register', { form: registrationForm('StillWaiting') });
       assert.equal(waiting.status, 201);
 
-      const vote = () => anon.post('/votes/pay', { code, quantity: 1 });
+      const vote = () => anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 1 });
       assert.equal((await vote()).status, 409);
       assert.equal((await admin.post('/admin/voting/open')).status, 409);
       assert.equal((await admin.post('/admin/results/publish')).status, 409);
@@ -1102,5 +1104,184 @@ describe('Follower check and WhatsApp groups', () => {
       ['https://vm.tiktok.com/ZMabc/', 'tiktok'], ['https://www.instagram.com/p/abc/', 'instagram'],
       ['https://www.instagram.com/', 'instagram'], ['https://notinstagram.com/ada', 'instagram'],
     ]) assert.throws(() => socialLink(value, host), /username|link/, value);
+  });
+});
+
+describe('Prices, proof of vote and admin controls', () => {
+  let app;
+  let admin;
+  let star;
+  const waitFor = async (check) => {
+    for (let i = 0; i < 40; i += 1) {
+      const value = await check();
+      if (value) return value;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return null;
+  };
+
+  before(async () => {
+    app = await boot();
+    admin = client(app.base);
+    await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+    star = await makeContestant(app, admin, 'Star');
+  });
+  after(() => app.close());
+
+  test('votes cost 200, and every amount from a deal upwards gets that deal rate', async () => {
+    const deals = [{ votes: 50, price: 8000 }, { votes: 100, price: 18000 }];
+    assert.deepEqual([1, 10, 49, 50, 70, 99, 100, 250].map((n) => bulkPrice(n, 200, deals)), [200, 2000, 9800, 8000, 11200, 15840, 18000, 45000]);
+    // An old deal is never dearer than the normal price.
+    assert.equal(bulkPrice(5, 200, [{ votes: 5, price: 2500 }]), 1000);
+
+    const { data } = await client(app.base).get('/competition');
+    assert.equal(data.votePrice, 200);
+    assert.deepEqual(data.packages.map((p) => [p.votes, p.price]), [[50, 8000], [100, 18000]]);
+    const anon = client(app.base);
+    for (const [quantity, amount] of [[10, 2000], [50, 8000], [70, 11200], [100, 18000]]) {
+      assert.equal((await anon.post('/votes/pay', { voterName: 'Ada', code: star.code, quantity })).data.amount, amount);
+    }
+  });
+
+  test('a bigger amount is always offered before paying', () => {
+    const deals = [{ votes: 50, price: 8000 }, { votes: 100, price: 18000 }];
+    assert.deepEqual(upsellOffers(10, 200, deals).map((o) => [o.votes, o.price, o.extra, o.saving]), [[50, 8000, 6000, 2000], [100, 18000, 16000, 2000]]);
+    assert.deepEqual(upsellOffers(60, 200, deals).map((o) => o.votes), [100]);
+    assert.deepEqual(upsellOffers(100, 200, deals).map((o) => o.votes), [200]);
+    assert.deepEqual(upsellOffers(3, 200, []).map((o) => o.votes), [10]);
+  });
+
+  test('a contest still on the old prices moves to the new ones, and one an admin priced does not', async () => {
+    const { db } = app.ctx;
+    const oldPrices = async (votePrice) => {
+      await db.prepare("DELETE FROM settings WHERE key = 'pricing_version'").run();
+      await setSetting(db, 'vote_price', votePrice);
+      await db.prepare('DELETE FROM packages').run();
+      for (const [votes, price] of [[1, 500], [5, 2500], [10, 5000], [20, 10000], [50, 25000], [100, 50000]]) {
+        await db.prepare('INSERT INTO packages (votes, price) VALUES (?, ?)').run(votes, price);
+      }
+    };
+    const onSale = () => db.prepare('SELECT votes, price FROM packages WHERE active = 1 ORDER BY votes').all();
+
+    await oldPrices('300');
+    await createContext(app.ctx.config);
+    assert.equal((await db.prepare("SELECT value FROM settings WHERE key = 'vote_price'").get()).value, '300');
+    assert.equal((await onSale()).length, 6);
+
+    await oldPrices('500');
+    await createContext(app.ctx.config);
+    assert.equal((await db.prepare("SELECT value FROM settings WHERE key = 'vote_price'").get()).value, '200');
+    assert.deepEqual((await onSale()).map((p) => [p.votes, p.price]), [[50, 8000], [100, 18000]]);
+  });
+
+  test('the voter name is required, and appears on their proof of vote and receipt', async () => {
+    const anon = client(app.base);
+    assert.equal((await anon.post('/votes/pay', { code: star.code, quantity: 5 })).status, 400);
+    assert.equal((await anon.post('/votes/pay', { voterName: ' ', code: star.code, quantity: 5 })).status, 400);
+    const { data: started } = await anon.post('/votes/pay', { voterName: '  Chioma   Obi ', code: star.code, quantity: 5 });
+    await anon.post(`/simulator/${started.reference}/pay`);
+    const { data: proof } = await anon.post(`/payments/${started.reference}/verify`);
+    assert.equal(proof.voterName, 'Chioma Obi');
+    assert.match(proof.receiptNo, /^VOTE-/);
+    assert.equal(proof.contestant.code, star.code);
+    assert.equal(proof.amount, 1000);
+    const { data: receipt } = await anon.get(`/receipts/payment/${started.reference}`);
+    assert.deepEqual(receipt.lines[0], ['Voter', 'Chioma Obi']);
+    const { data: payments } = await admin.get('/admin/payments');
+    assert.equal(payments.find((p) => p.reference === started.reference).voterName, 'Chioma Obi');
+  });
+
+  test('admins can add and remove votes, always with a reason that is logged', async () => {
+    const other = await makeContestant(app, admin, 'Other');
+    await payForVotes(client(app.base), other.code, 20);
+    const adjust = (id, body) => admin.post(`/admin/contestants/${id}/adjustments`, body);
+    const profileOf = async (code) => (await client(app.base).get(`/contestants/${code}`)).data;
+
+    const before = (await profileOf(star.code)).totalVotes;
+    assert.equal((await adjust(star.id, { quantity: 500 })).status, 400);
+    assert.equal((await adjust(star.id, { quantity: 0, reason: 'nothing' })).status, 400);
+    assert.equal((await client(app.base).post(`/admin/contestants/${star.id}/adjustments`, { quantity: 5, reason: 'sneaky' })).status, 401);
+
+    const added = await adjust(star.id, { quantity: 500, reason: 'Paid by bank transfer' });
+    assert.equal(added.status, 201);
+    assert.equal(added.data.totalVotes, before + 500);
+    assert.equal((await profileOf(star.code)).position, 1);
+    assert.equal((await adjust(star.id, { quantity: -(before + 501), reason: 'too many' })).status, 400);
+    assert.equal((await adjust(star.id, { quantity: -100, reason: 'Duplicate transfer' })).data.totalVotes, before + 400);
+
+    const { data: log } = await admin.get(`/admin/contestants/${star.id}/adjustments`);
+    assert.deepEqual(log.map((a) => [a.quantity, a.reason]), [[-100, 'Duplicate transfer'], [500, 'Paid by bank transfer']]);
+    assert.equal((await admin.get('/admin/contestants?q=Star')).data[0].adjustedVotes, 400);
+    assert.equal((await admin.get('/admin/overview')).data.adjustedVotes, 400);
+    assert.ok(await app.ctx.db.prepare("SELECT 1 FROM audit_log WHERE action = 'votes.adjust' AND details LIKE '%+500: Paid by bank transfer'").get());
+    assert.match((await admin.get('/admin/export/contestants.csv')).data, /Votes added by admins/);
+
+    const pending = await client(app.base).req('POST', '/contestants/register', { form: registrationForm('NotYet') });
+    assert.equal(pending.status, 201);
+    const { data: [waiting] } = await admin.get('/admin/contestants?q=NotYet');
+    assert.equal((await adjust(waiting.id, { quantity: 5, reason: 'early' })).status, 409);
+  });
+
+  test('sponsors can send an enquiry, which admins see and get by email', async () => {
+    const anon = client(app.base);
+    const good = { kind: 'Sponsorship', name: 'Bisi Ade', organisation: 'Glow Cosmetics', phone: '0803 555 0199', email: 'bisi@glow.test', message: 'We would like to sponsor the crown.' };
+    assert.equal((await anon.post('/enquiries', { ...good, phone: 'call me' })).status, 400);
+    assert.equal((await anon.post('/enquiries', { ...good, message: 'Hi' })).status, 400);
+    assert.equal((await anon.post('/enquiries', { ...good, website: 'spam.example' })).status, 201);
+    assert.equal((await anon.post('/enquiries', good)).status, 201);
+
+    const { data } = await admin.get('/admin/enquiries');
+    assert.equal(data.enquiries.length, 1);
+    assert.equal(data.enquiries[0].organisation, 'Glow Cosmetics');
+    assert.equal((await admin.get('/admin/overview')).data.newEnquiries, 1);
+    assert.ok(await app.ctx.db.prepare("SELECT 1 FROM outbox WHERE to_addr = 'admin@test.local' AND subject = 'New sponsorship enquiry from Bisi Ade'").get());
+    assert.equal((await anon.get('/admin/enquiries')).status, 401);
+
+    await admin.post(`/admin/enquiries/${data.enquiries[0].id}/done`);
+    assert.equal((await admin.get('/admin/overview')).data.newEnquiries, 0);
+
+    assert.equal((await admin.req('PUT', '/admin/contact', { body: { phone: 'nope', email: '' } })).status, 400);
+    await admin.req('PUT', '/admin/contact', { body: { phone: '+234 803 000 1111', email: 'Partners@MBGN.test' } });
+    assert.deepEqual((await anon.get('/competition')).data.contact, { phone: '+234 803 000 1111', email: 'partners@mbgn.test' });
+  });
+
+  test('when the registration countdown ends, voting starts by itself unless an admin turned that off', async () => {
+    const fresh = await boot({}, { freshContest: true });
+    try {
+      const boss = client(fresh.base);
+      await boss.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const early = await makeContestant(fresh, boss, 'Earlybird');
+      const anon = client(fresh.base);
+      const past = new Date(Date.now() - 1000).toISOString();
+
+      // Turned off: the deadline only stops applications.
+      await boss.req('PUT', '/admin/registration', { body: { endsAt: past, autoStart: false } });
+      assert.equal((await anon.get('/competition')).data.phase, 'registration');
+      assert.equal((await boss.get('/admin/settings')).data.autoStartVoting, false);
+
+      // Turned on, with a time still to come: nothing happens yet.
+      const soon = new Date(Date.now() + 400).toISOString();
+      const saved = await boss.req('PUT', '/admin/registration', { body: { endsAt: soon, autoStart: true } });
+      assert.equal(saved.data.started, false);
+      const waiting = (await anon.get('/competition')).data;
+      assert.equal(waiting.phase, 'registration');
+      assert.equal(waiting.autoStartVoting, true);
+
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const started = (await anon.get('/competition')).data;
+      assert.equal(started.phase, 'voting');
+      assert.equal(started.voting.open, true);
+      assert.ok(await waitFor(() => fresh.ctx.db.prepare("SELECT 1 FROM outbox WHERE subject = 'Voting is open!' AND to_addr = 'earlybird@test.local'").get()));
+      assert.equal((await anon.post('/votes/pay', { voterName: 'Fan', code: early.code, quantity: 1 })).status, 201);
+      assert.ok(await fresh.ctx.db.prepare("SELECT 1 FROM audit_log WHERE action = 'competition.phase' AND details = 'voting (countdown ended)'").get());
+
+      // Later visits change nothing, and a date in the past starts voting as soon as it is saved.
+      assert.equal((await anon.get('/competition')).data.phase, 'voting');
+      assert.equal((await fresh.ctx.db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE subject = 'Voting is open!'").get()).n, 1);
+      await boss.post('/admin/phase/registration');
+      assert.equal((await boss.req('PUT', '/admin/registration', { body: { endsAt: past, autoStart: true } })).data.started, true);
+    } finally {
+      await fresh.close();
+    }
   });
 });

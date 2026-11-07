@@ -29,9 +29,9 @@ export function votingRouter(ctx) {
 
   // ---- Voting ----
   router.post('/votes/pay', rateLimit({ windowMs: 60000, max: scaled(60) }), async (req, res) => {
-    const { code, quantity, viaLink } = req.body ?? {};
+    const { code, quantity, voterName, viaLink } = req.body ?? {};
     res.status(201).json(await startPayment(ctx, {
-      code: normalizeCode(code), quantity, email: req.user?.email, viaLink: Boolean(viaLink), ip: req.ip,
+      code: normalizeCode(code), quantity, voterName, email: req.user?.email, viaLink: Boolean(viaLink), ip: req.ip,
     }));
   });
 
@@ -66,6 +66,7 @@ export function votingRouter(ctx) {
       date: payment.paid_at,
       customer: maskEmail(payment.email),
       lines: [
+        ...(payment.voter_name ? [['Voter', payment.voter_name]] : []),
         ['Contestant', `${contestant.stage_name} (${contestant.code})`],
         ['Votes', String(payment.vote_quantity)],
         ['Status', outcomes[payment.votes_status] ?? 'Pending'],

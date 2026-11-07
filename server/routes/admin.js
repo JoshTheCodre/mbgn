@@ -6,6 +6,7 @@ import { getSetting, nowIso, setSetting, tx } from '../db.js';
 import {
   assignGroup, countWaiting, groupById, placeWaiting,
 } from '../groups.js';
+import { changeStage, startVotingIfDue, tellContestantsVotingOpened } from '../stages.js';
 import { voidVote } from '../votes.js';
 
 const clean = (value, max = 500) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
@@ -41,6 +42,7 @@ const contestantView = (c) => ({
   verification: c.verification,
   followerResults: c.follower_results ? JSON.parse(c.follower_results) : [],
   whatsappGroupName: c.group_name ?? null,
+  adjustedVotes: c.adjusted_votes ?? 0,
   category: c.category,
   status: c.status,
   statusReason: c.status_reason,
@@ -89,7 +91,7 @@ export function adminRouter(ctx) {
   router.get('/overview', async (_req, res) => {
     const one = async (sql, ...args) => (await db.prepare(sql).get(...args)).n;
     const dayAgo = new Date(Date.now() - 864e5).toISOString();
-    const [voting, totalVotes, votes24h, revenue, revenue24h, votesHeld, contestants, pending, openFlags, paymentsInReview, waitingForGroup] = await Promise.all([
+    const [voting, totalVotes, votes24h, revenue, revenue24h, votesHeld, contestants, pending, openFlags, paymentsInReview, waitingForGroup, newEnquiries, adjustedVotes] = await Promise.all([
       votingState(db),
       one("SELECT COALESCE(SUM(quantity), 0) AS n FROM votes WHERE status = 'valid'"),
       one("SELECT COALESCE(SUM(quantity), 0) AS n FROM votes WHERE status = 'valid' AND created_at >= ?", dayAgo),
@@ -101,42 +103,19 @@ export function adminRouter(ctx) {
       one("SELECT COUNT(*) AS n FROM flags WHERE status = 'open'"),
       one("SELECT COUNT(*) AS n FROM payments WHERE status = 'review'"),
       countWaiting(db),
+      one("SELECT COUNT(*) AS n FROM enquiries WHERE status = 'new'"),
+      one("SELECT COALESCE(SUM(quantity), 0) AS n FROM vote_adjustments"),
     ]);
     res.json({
-      voting, totalVotes, votes24h, revenue, revenue24h, votesHeld, contestants, pending, openFlags, paymentsInReview, waitingForGroup,
+      voting, totalVotes, votes24h, revenue, revenue24h, votesHeld, contestants, pending, openFlags, paymentsInReview, waitingForGroup, newEnquiries, adjustedVotes,
     });
   });
 
   // ---- The contest's stage: taking applications, then voting ----
   router.post('/phase/:phase(registration|voting)', async (req, res) => {
     const { phase } = req.params;
-    if (await getSetting(db, 'competition_phase') === phase) throw new HttpError(409, `The contest is already in its ${phase} stage.`);
-    await tx(db, async () => {
-      await setSetting(db, 'competition_phase', phase);
-      if (phase === 'voting') {
-        await setSetting(db, 'voting_status', 'open');
-        await setSetting(db, 'results_published_at', '');
-      }
-      await audit(ctx, req.user.id, 'competition.phase', phase);
-    });
-
-    let notified = 0;
-    if (phase === 'voting') {
-      await publishActivity(ctx, { kind: 'announcement', message: 'Registration has closed. Voting is now open!' });
-      const recipients = await db.prepare("SELECT user_id, email, stage_name, code FROM contestants WHERE status = 'approved'").all();
-      for (const r of recipients) {
-        const link = `${config.publicUrl}/c/${r.code}`;
-        await notifyUser(ctx, r.user_id, 'announcement', `Voting is open! Share your link now: ${link}`);
-        await ctx.mailer.send({
-          to: r.email,
-          subject: 'Voting is open!',
-          text: `Hello ${r.stage_name},\n\nRegistration has closed and voting is now open. Share your voting link with your supporters now:\n\n${link}`,
-        });
-      }
-      notified = recipients.length;
-    }
-    ctx.bus.publish('competition', {});
-    changed();
+    if (!(await changeStage(ctx, phase, req.user.id))) throw new HttpError(409, `The contest is already in its ${phase} stage.`);
+    const notified = phase === 'voting' ? await tellContestantsVotingOpened(ctx) : 0;
     res.json({ phase, notified });
   });
 
@@ -148,7 +127,8 @@ export function adminRouter(ctx) {
     const params = [];
     if (status) { where.push('status = ?'); params.push(status); }
     if (q) { where.push('(stage_name ILIKE ? OR full_name ILIKE ? OR code ILIKE ? OR email ILIKE ?)'); params.push(...Array(4).fill(`%${q}%`)); }
-    const rows = await db.prepare(`SELECT *, (SELECT name FROM whatsapp_groups g WHERE g.id = contestants.whatsapp_group_id) AS group_name
+    const rows = await db.prepare(`SELECT *, (SELECT name FROM whatsapp_groups g WHERE g.id = contestants.whatsapp_group_id) AS group_name,
+      (SELECT COALESCE(SUM(quantity), 0) FROM vote_adjustments a WHERE a.contestant_id = contestants.id) AS adjusted_votes
       FROM contestants ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, COALESCE(position, 999999), id DESC LIMIT 500`).all(...params);
     res.json(rows.map(contestantView));
@@ -227,13 +207,82 @@ export function adminRouter(ctx) {
     res.json(contestantView(await getContestant(c.id)));
   });
 
-  // A blank date means no deadline. Moving it later reopens applications.
+  // A blank date means no deadline. Moving it later reopens applications. With autoStart on,
+  // voting begins by itself when this countdown ends.
   router.put('/registration', async (req, res) => {
     const endsAt = isoOrEmpty(req.body?.endsAt, 'Closing date');
+    const autoStart = req.body?.autoStart === undefined ? await getSetting(db, 'auto_start_voting') === '1' : Boolean(req.body.autoStart);
     await setSetting(db, 'registration_ends_at', endsAt);
-    await audit(ctx, req.user.id, 'registration.deadline', endsAt || 'none');
+    await setSetting(db, 'auto_start_voting', autoStart ? '1' : '0');
+    await audit(ctx, req.user.id, 'registration.deadline', `${endsAt || 'none'}, voting starts ${autoStart ? 'automatically' : 'by hand'}`);
+    // A date already in the past starts voting straight away.
+    const started = await startVotingIfDue(ctx);
     ctx.bus.publish('competition', {});
-    res.json({ endsAt: endsAt || null });
+    res.json({ endsAt: endsAt || null, autoStart, started });
+  });
+
+  // ---- Votes added or taken away by hand ----
+  router.get('/contestants/:id/adjustments', async (req, res) => {
+    const rows = await db.prepare(`SELECT a.*, u.name AS admin_name FROM vote_adjustments a
+      LEFT JOIN users u ON u.id = a.admin_id WHERE a.contestant_id = ? ORDER BY a.id DESC LIMIT 100`).all(req.params.id);
+    res.json(rows.map((a) => ({ id: a.id, quantity: a.quantity, reason: a.reason, admin: a.admin_name, createdAt: a.created_at })));
+  });
+
+  router.post('/contestants/:id/adjustments', async (req, res) => {
+    const quantity = Number(req.body?.quantity);
+    const reason = clean(req.body?.reason, 300);
+    if (!Number.isInteger(quantity) || quantity === 0 || Math.abs(quantity) > 1000000) throw new HttpError(400, 'Enter a whole number of votes to add, or a minus number to take away.');
+    if (reason.length < 3) throw new HttpError(400, 'Please give a reason. It is kept in the log.');
+    const updated = await tx(db, async () => {
+      const c = await getContestant(req.params.id);
+      if (c.status !== 'approved') throw new HttpError(409, 'Votes can only be changed for approved contestants.');
+      if (c.total_votes + quantity < 0) throw new HttpError(400, `${c.stage_name} only has ${c.total_votes.toLocaleString('en-NG')} votes to take away.`);
+      const at = nowIso();
+      await db.prepare('INSERT INTO vote_adjustments (contestant_id, quantity, reason, admin_id, created_at) VALUES (?, ?, ?, ?, ?)')
+        .run(c.id, quantity, reason, req.user.id, at);
+      // Added votes count as reaching the new total now, which decides ties.
+      await db.prepare(`UPDATE contestants SET total_votes = total_votes + ?, last_vote_at = CASE WHEN ? > 0 THEN ? ELSE last_vote_at END WHERE id = ?`)
+        .run(quantity, quantity, at, c.id);
+      await recomputeRanks(db);
+      await audit(ctx, req.user.id, 'votes.adjust', `${c.code} ${quantity > 0 ? '+' : ''}${quantity}: ${reason}`);
+      return getContestant(c.id);
+    });
+    changed();
+    res.status(201).json(contestantView(updated));
+  });
+
+  // ---- Sponsorship and other enquiries ----
+  router.get('/enquiries', async (_req, res) => {
+    const [rows, phone, email] = await Promise.all([
+      db.prepare("SELECT * FROM enquiries ORDER BY CASE status WHEN 'new' THEN 0 ELSE 1 END, id DESC LIMIT 300").all(),
+      getSetting(db, 'contact_phone'),
+      getSetting(db, 'contact_email'),
+    ]);
+    res.json({
+      contact: { phone, email },
+      enquiries: rows.map((e) => ({
+        id: e.id, kind: e.kind, name: e.name, organisation: e.organisation, email: e.email, phone: e.phone, message: e.message, status: e.status, createdAt: e.created_at,
+      })),
+    });
+  });
+
+  router.post('/enquiries/:id/:status(new|done)', async (req, res) => {
+    const { changes } = await db.prepare('UPDATE enquiries SET status = ? WHERE id = ?').run(req.params.status, req.params.id);
+    if (!changes) throw new HttpError(404, 'Enquiry not found.');
+    ctx.bus.publish('admin', { type: 'enquiry' });
+    res.json({ ok: true });
+  });
+
+  router.put('/contact', async (req, res) => {
+    const phone = clean(req.body?.phone, 30);
+    const email = clean(req.body?.email, 200).toLowerCase();
+    if (phone && !/^\+?[0-9 ()-]{7,20}$/.test(phone)) throw new HttpError(400, 'That phone number does not look right.');
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'That email address does not look right.');
+    await setSetting(db, 'contact_phone', phone);
+    await setSetting(db, 'contact_email', email);
+    await audit(ctx, req.user.id, 'contact.update', `${phone || 'no phone'}, ${email || 'no email'}`);
+    ctx.bus.publish('competition', {});
+    res.json({ phone, email });
   });
 
   // ---- Who can join: the follower check and the WhatsApp groups ----
@@ -294,7 +343,7 @@ export function adminRouter(ctx) {
     const rows = await db.prepare(`SELECT p.* FROM payments p
       ${status ? 'WHERE p.status = ?' : ''} ORDER BY p.id DESC LIMIT 300`).all(...(status ? [status] : []));
     res.json(rows.map((p) => ({
-      reference: p.reference, email: p.email, votes: p.vote_quantity, votesStatus: p.votes_status, amount: p.amount, status: p.status,
+      reference: p.reference, voterName: p.voter_name, email: p.email, votes: p.vote_quantity, votesStatus: p.votes_status, amount: p.amount, status: p.status,
       provider: p.provider, providerRef: p.provider_ref, paidAmount: p.paid_amount, createdAt: p.created_at, paidAt: p.paid_at,
     })));
   });
@@ -347,6 +396,7 @@ export function adminRouter(ctx) {
     res.json({
       phase: setting.competition_phase,
       registrationEndsAt: setting.registration_ends_at,
+      autoStartVoting: setting.auto_start_voting === '1',
       pendingApplications: counts.pending,
       approvedContestants: counts.approved,
       name: setting.competition_name,
@@ -509,11 +559,12 @@ export function adminRouter(ctx) {
 
   // ---- Reports ----
   router.get('/export/contestants.csv', async (req, res) => {
-    const rows = await db.prepare('SELECT * FROM contestants ORDER BY COALESCE(position, 999999), id').all();
+    const rows = await db.prepare(`SELECT *, (SELECT COALESCE(SUM(quantity), 0) FROM vote_adjustments a WHERE a.contestant_id = contestants.id) AS adjusted_votes
+      FROM contestants ORDER BY COALESCE(position, 999999), id`).all();
     await audit(ctx, req.user.id, 'export.contestants');
     sendCsv(res, 'mbgn-contestants.csv',
-      ['Position', 'Code', 'Stage name', 'Full name', 'Status', 'Total votes', 'Email', 'Phone', 'WhatsApp', 'State', 'Location', 'Category', 'Registered', 'Approved'],
-      rows.map((c) => [c.position, c.code, c.stage_name, c.full_name, c.status, c.total_votes, c.email, c.phone, c.whatsapp, c.state, c.location, c.category, c.created_at, c.approved_at]));
+      ['Position', 'Code', 'Stage name', 'Full name', 'Status', 'Total votes', 'Votes added by admins', 'Email', 'Phone', 'WhatsApp', 'State', 'Location', 'Category', 'Registered', 'Approved'],
+      rows.map((c) => [c.position, c.code, c.stage_name, c.full_name, c.status, c.total_votes, c.adjusted_votes, c.email, c.phone, c.whatsapp, c.state, c.location, c.category, c.created_at, c.approved_at]));
   });
 
   router.get('/export/votes.csv', async (req, res) => {
@@ -530,8 +581,8 @@ export function adminRouter(ctx) {
     const rows = await db.prepare('SELECT p.* FROM payments p ORDER BY p.id').all();
     await audit(ctx, req.user.id, 'export.payments');
     sendCsv(res, 'mbgn-payments.csv',
-      ['Reference', 'Created', 'Paid', 'Receipt email', 'Votes', 'Amount (NGN)', 'Status', 'Votes counted', 'Provider', 'Provider reference'],
-      rows.map((p) => [p.reference, p.created_at, p.paid_at, p.email, p.vote_quantity, p.amount, p.status, p.votes_status, p.provider, p.provider_ref]));
+      ['Reference', 'Created', 'Paid', 'Voter name', 'Receipt email', 'Votes', 'Amount (NGN)', 'Status', 'Votes counted', 'Provider', 'Provider reference'],
+      rows.map((p) => [p.reference, p.created_at, p.paid_at, p.voter_name, p.email, p.vote_quantity, p.amount, p.status, p.votes_status, p.provider, p.provider_ref]));
   });
 
   router.get('/outbox', async (_req, res) => {

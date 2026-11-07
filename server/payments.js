@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
 import { HttpError, hashIp } from './auth.js';
-import { raiseFlag, votingState } from './competition.js';
+import { photoUrl, raiseFlag, votingState } from './competition.js';
 import { getSetting, nowIso, tx } from './db.js';
 import { recordPaidVotes } from './votes.js';
+import { bulkPrice } from '../shared/pricing.js';
 
 export const MAX_VOTES_PER_PAYMENT = 100000;
 
@@ -95,13 +96,13 @@ export function createSimulator(db) {
 
 // ---- Starting a payment ----
 
-// A package's price if one matches exactly, otherwise the price per vote.
+// Bulk deals apply to every amount from their size upwards. See shared/pricing.js.
 export async function priceFor(db, votes) {
   if (!Number.isInteger(votes) || votes < 1 || votes > MAX_VOTES_PER_PAYMENT) {
     throw new HttpError(400, `Enter between 1 and ${MAX_VOTES_PER_PAYMENT.toLocaleString('en-NG')} votes.`);
   }
-  const pack = await db.prepare('SELECT price FROM packages WHERE votes = ? AND active = 1').get(votes);
-  return pack ? pack.price : votes * Number(await getSetting(db, 'vote_price'));
+  const packages = await db.prepare('SELECT votes, price FROM packages WHERE active = 1').all();
+  return bulkPrice(votes, Number(await getSetting(db, 'vote_price')), packages);
 }
 
 // Paystack requires a customer email, and supporters aren't asked for one.
@@ -111,8 +112,10 @@ function checkoutEmail(config, reference) {
 }
 
 // The votes count as soon as the provider confirms the payment.
-export async function startPayment(ctx, { code, quantity, email = null, viaLink, ip }) {
+export async function startPayment(ctx, { code, quantity, voterName, email = null, viaLink, ip }) {
   const { db, config, provider } = ctx;
+  const name = typeof voterName === 'string' ? voterName.trim().replace(/\s+/g, ' ').slice(0, 60) : '';
+  if (name.length < 2) throw new HttpError(400, 'Please enter your name. It goes on your proof of vote.');
   const state = await votingState(db);
   if (!state.open) throw new HttpError(409, state.message);
   const contestant = await db.prepare("SELECT id, code FROM contestants WHERE code = ? AND status = 'approved'").get(code);
@@ -124,9 +127,9 @@ export async function startPayment(ctx, { code, quantity, email = null, viaLink,
 
   const ipHash = hashIp(config, ip);
   const { lastInsertRowid: paymentId } = await db.prepare(`
-    INSERT INTO payments (reference, email, vote_contestant_id, vote_quantity, via_link, ip_hash, amount, provider, return_to, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
-    .run(reference, email, contestant.id, quantity, viaLink ? 1 : 0, ipHash, amount, provider.name, `/c/${contestant.code}`, nowIso());
+    INSERT INTO payments (reference, email, voter_name, vote_contestant_id, vote_quantity, via_link, ip_hash, amount, provider, return_to, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
+    .run(reference, email, name, contestant.id, quantity, viaLink ? 1 : 0, ipHash, amount, provider.name, `/c/${contestant.code}`, nowIso());
 
   const tenMinutesAgo = new Date(Date.now() - 600000).toISOString();
   const attempts = (await db.prepare(`SELECT COUNT(*) AS n FROM payments
@@ -154,9 +157,14 @@ export async function startPayment(ctx, { code, quantity, email = null, viaLink,
 
 // What anyone holding the reference may see.
 export async function paymentView(db, payment) {
-  const contestant = await db.prepare('SELECT code, stage_name, status, total_votes, position FROM contestants WHERE id = ?').get(payment.vote_contestant_id);
+  const contestant = await db.prepare('SELECT code, stage_name, status, total_votes, position, photo_file FROM contestants WHERE id = ?').get(payment.vote_contestant_id);
+  const receipt = payment.status === 'paid'
+    ? await db.prepare('SELECT receipt_no FROM votes WHERE payment_id = ?').get(payment.id)
+    : null;
   return {
     reference: payment.reference,
+    voterName: payment.voter_name,
+    receiptNo: receipt?.receipt_no ?? null,
     amount: payment.amount,
     status: payment.status,
     votes: payment.vote_quantity,
@@ -172,6 +180,7 @@ export async function paymentView(db, payment) {
       name: contestant.stage_name,
       totalVotes: contestant.status === 'approved' ? contestant.total_votes : null,
       position: contestant.position,
+      photoUrl: contestant.status === 'approved' ? photoUrl(contestant) : null,
     },
   };
 }

@@ -9,6 +9,7 @@ async function start() {
   const demo = process.env.DEMO_MODE === '1';
   const config = loadConfig(demo ? DEMO_ADMIN : {});
   const ctx = await createContext(config);
+  ctx.background = (promise) => waitUntil(promise.catch((err) => console.error('Background work failed:', err.message)));
   if (demo) await seedDemoData(ctx);
   return { ctx, app: createApp(ctx), lastJobCheck: 0 };
 }

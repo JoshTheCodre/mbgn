@@ -90,19 +90,41 @@ Remove `DEMO_MODE` from `next.config.mjs` first, then:
    so the next group takes over when one fills up, or when an admin marks it as full. If none has room,
    people wait and get the link by email as soon as an admin adds a group. WhatsApp does not report who
    actually joined, so a group's count is the number of people given its link.
-2. **Voting** only starts when an admin presses **End registration and start voting** on the Competition tab,
-   whether or not the deadline has passed, which leaves time to finish reviewing.
+2. **Voting** starts by itself when the registration countdown ends, and anyone on the home page is taken
+   to the contestants. An admin can untick **Start voting automatically when the countdown ends** on the
+   Competition tab, to keep time to finish reviewing, and press **End registration and start voting** instead.
    New applications stop, approved contestants are told by email, and the voting pages appear. Waiting
    applications can still be approved afterwards. An admin can reopen registration, which stops voting
-   and keeps the votes.
+   and keeps the votes. Voting stops by itself at the **Voting closes** time, if one is set.
 
 The prize amount on the registration page is set in [client/pages/public.jsx](client/pages/public.jsx).
 
+## What admins control
+
+Everything below is on the control panel at `/admin`, so nobody needs to change code.
+
+- **Countdowns:** the Competition tab sets when registration closes (the home page countdown) and when
+  voting opens and closes.
+- **Prices:** the normal price per vote (₦200 to begin with) and the bulk deals. From a deal's number of
+  votes upwards, every vote costs that deal's rate: with 50 votes for ₦8,000, 70 votes cost ₦160 each.
+  The panel warns when a bigger deal costs more per vote than a smaller one. Before paying, every
+  supporter is offered the next deal up, and can say no.
+- **Votes by hand:** on a contestant's details, admins can add or remove votes, for example for a bank
+  transfer paid outside Paystack, or a correction. Each change needs a reason, and stays in that
+  contestant's log, the audit log and the contestants export. These votes have no payment behind them.
+- **Enquiries:** the Sponsorship / Enquiry page sends messages to the Enquiries tab and to every admin by
+  email. Admins can add a phone number and email to show on that page.
+
+A contest still on the old ₦500 prices moves to ₦200 with the 50 and 100 vote deals the first time the
+new version starts. A contest whose prices an admin has already changed is left as it is.
+
 ## How the important guarantees work
 
-- **Pay to vote, no sign-in and no email.** A supporter picks a number of votes and pays. Paystack
-  requires a customer email, so each payment sends `PAYMENT_EMAIL` with its reference added. An
-  optional "Email me this receipt" on the confirmation page sends one receipt per payment.
+- **Pay to vote, with a name and no email.** A supporter types their name, picks a number of votes and
+  pays. The name goes on the proof of vote that pops up once the payment is confirmed, which they can
+  save as a picture or share. Only they and the admins see it. Paystack requires a customer email, so
+  each payment sends `PAYMENT_EMAIL` with its reference added. An optional "Email me this receipt" on
+  the confirmation page sends one receipt per payment.
 - **Fraud checks lean on the network.** Without supporter emails, the flags for rapid or repeated
   payments compare hashed IP addresses. Mobile carriers share these, so limits are high and flags only
   ask for review. A self-vote is only spotted from the browser a contestant joined on, or if they
@@ -112,7 +134,8 @@ The prize amount on the registration page is set in [client/pages/public.jsx](cl
 - **Late payments.** A payment started while voting was open still counts if Paystack confirms it after
   closing. Leave some time between closing and publishing final results, so open checkouts can finish.
   If votes can no longer be counted, the payment is flagged for a refund.
-- **Votes count only after server-to-server verification.** `settlePayment` in
+- **Paid votes count only after server-to-server verification.** The one exception is votes an admin
+  adds by hand, which are logged with a reason. `settlePayment` in
   [server/payments.js](server/payments.js) is the only path to votes. It asks Paystack directly
   and checks status, amount and currency. Browser redirects and webhooks only trigger that check.
 - **No double votes.** One atomic status change decides who records a payment's votes, and the

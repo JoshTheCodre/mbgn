@@ -4,7 +4,7 @@ import {
   api, dateTime, naira, num, plural, registrationOpen, useApp, useFetch,
 } from '../lib.jsx';
 import {
-  BrandLogo, ErrorNote, Field, FollowerRow, Loading, PLATFORM_NAMES, WhatsAppGroup,
+  BrandLogo, Dialog, ErrorNote, Field, FollowerRow, Loading, PLATFORM_NAMES, WhatsAppGroup,
 } from '../ui.jsx';
 
 export function AdminLogin() {
@@ -401,6 +401,79 @@ export function Register() {
   );
 }
 
+const ENQUIRY_KINDS = ['Sponsorship', 'Partnership', 'Media and press', 'General enquiry'];
+
+export function Enquiry() {
+  const { competition } = useApp();
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const contact = competition?.contact;
+
+  async function submit(e) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api('/enquiries', { body: Object.fromEntries(new FormData(e.currentTarget)) });
+      setSent(true);
+      window.scrollTo(0, 0);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="wrap page narrow-wide enquiry">
+      <header className="register-head">
+        <p className="eyebrow">Sponsorship and enquiries</p>
+        <h1>Partner with MBGN</h1>
+        <p className="muted">Put your brand in front of contestants and their supporters across Nigeria, or ask us anything. Our team will get back to you.</p>
+      </header>
+      {sent ? (
+        <div className="check-card">
+          <div className="check-seal" aria-hidden="true">✓</div>
+          <h2>Thank you, we have your message</h2>
+          <p className="muted">Our team will reach you on the number you gave us.</p>
+          <Link to="/" className="btn btn-ghost btn-wide">Back to the home page</Link>
+        </div>
+      ) : (
+        <form className="register-form" onSubmit={submit}>
+          <fieldset>
+            <legend>Your enquiry</legend>
+            <Field label="What is it about?">
+              <select name="kind" defaultValue="Sponsorship">
+                {ENQUIRY_KINDS.map((kind) => <option key={kind}>{kind}</option>)}
+              </select>
+            </Field>
+            <div className="form-grid">
+              <Field label="Your name"><input name="name" autoComplete="name" required /></Field>
+              <Field label="Company or brand" hint="Optional"><input name="organisation" autoComplete="organization" /></Field>
+              <Field label="Phone or WhatsApp number"><input name="phone" type="tel" autoComplete="tel" required /></Field>
+              <Field label="Email address" hint="Optional"><input name="email" type="email" autoComplete="email" /></Field>
+            </div>
+            <Field label="Message"><textarea name="message" rows={5} minLength={10} maxLength={2000} required /></Field>
+            {/* Left empty by people. Bots fill it in. */}
+            <div className="visually-hidden" aria-hidden="true"><input name="website" tabIndex={-1} autoComplete="off" /></div>
+          </fieldset>
+          <ErrorNote error={error} />
+          <button className="btn btn-primary btn-wide" disabled={busy}>{busy ? 'Sending…' : 'Send enquiry'}</button>
+        </form>
+      )}
+      {contact?.phone || contact?.email ? (
+        <p className="muted form-foot">
+          Prefer to talk?{' '}
+          {contact.phone ? <>Call or WhatsApp <a href={`tel:${contact.phone.replace(/[^\d+]/g, '')}`}>{contact.phone}</a></> : null}
+          {contact.phone && contact.email ? ' or email ' : contact.email ? 'Email ' : ''}
+          {contact.email ? <a href={`mailto:${contact.email}`}>{contact.email}</a> : null}.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 // Voting never asks for an email, so this is how a supporter can keep a copy.
 function EmailReceipt({ reference }) {
   const [sent, setSent] = useState(false);
@@ -433,14 +506,135 @@ function EmailReceipt({ reference }) {
   );
 }
 
+const loadImage = (src) => new Promise((resolve) => {
+  const img = new Image();
+  img.onload = () => resolve(img);
+  img.onerror = () => resolve(null);
+  img.src = src;
+});
+
+// The proof as a picture, for WhatsApp status and the like. Drawn here, so it needs no server.
+async function proofImage(payment) {
+  const W = 1080;
+  const H = 1350;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const g = canvas.getContext('2d');
+  const css = getComputedStyle(document.documentElement);
+  const accent = css.getPropertyValue('--accent').trim() || '#c2185b';
+  const font = css.getPropertyValue('--font').trim() || 'sans-serif';
+  const bg = g.createLinearGradient(0, 0, W, H);
+  bg.addColorStop(0, '#17111f');
+  bg.addColorStop(1, '#2b1534');
+  g.fillStyle = bg;
+  g.fillRect(0, 0, W, H);
+  g.strokeStyle = '#d9b45a';
+  g.lineWidth = 4;
+  g.strokeRect(40, 40, W - 80, H - 80);
+  g.textAlign = 'center';
+  const text = (value, y, size, color = '#fff', weight = 600) => {
+    g.font = `${weight} ${size}px ${font}`;
+    g.fillStyle = color;
+    let shown = value;
+    while (g.measureText(shown).width > W - 160 && shown.length > 4) shown = `${shown.slice(0, -2)}…`;
+    g.fillText(shown, W / 2, y);
+  };
+  text('MBGN · PROOF OF VOTE', 140, 38, '#d9b45a', 700);
+  const photo = payment.contestant.photoUrl ? await loadImage(payment.contestant.photoUrl) : null;
+  if (photo) {
+    const size = 340;
+    const side = Math.min(photo.width, photo.height);
+    g.save();
+    g.beginPath();
+    g.arc(W / 2, 400, size / 2, 0, Math.PI * 2);
+    g.clip();
+    g.drawImage(photo, (photo.width - side) / 2, (photo.height - side) / 3, side, side, W / 2 - size / 2, 400 - size / 2, size, size);
+    g.restore();
+    g.beginPath();
+    g.arc(W / 2, 400, size / 2 + 6, 0, Math.PI * 2);
+    g.lineWidth = 8;
+    g.strokeStyle = accent;
+    g.stroke();
+  }
+  const top = photo ? 680 : 420;
+  text(payment.voterName ?? 'A supporter', top, 64, '#fff', 700);
+  text('voted for', top + 70, 40, '#cbbfd6', 500);
+  text(payment.contestant.name, top + 170, 92, '#fff', 800);
+  text(payment.contestant.code, top + 240, 44, '#d9b45a', 700);
+  text(`${payment.votes.toLocaleString('en-NG')} vote${payment.votes === 1 ? '' : 's'} · ₦${payment.amount.toLocaleString('en-NG')}`, top + 340, 52, '#fff', 700);
+  text(new Date(payment.paidAt ?? Date.now()).toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' }), top + 410, 34, '#cbbfd6', 500);
+  if (payment.receiptNo) text(`Receipt ${payment.receiptNo}`, top + 460, 30, '#cbbfd6', 500);
+  text(`Vote too at ${window.location.host}/c/${payment.contestant.code}`, H - 90, 32, '#d9b45a', 600);
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+}
+
+function ProofOfVote({ payment }) {
+  const [busy, setBusy] = useState(false);
+  const { contestant } = payment;
+  const link = `${window.location.origin}/c/${contestant.code}`;
+  const message = `I just voted for ${contestant.name} (${contestant.code}) in Most Beautiful Girl Online Nigeria! Vote for her too: ${link}`;
+
+  async function save() {
+    setBusy(true);
+    try {
+      const blob = await proofImage(payment);
+      const file = new File([blob], `mbgn-proof-of-vote-${contestant.code}.png`, { type: 'image/png' });
+      if (navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], text: message }).catch(() => {});
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = Object.assign(document.createElement('a'), { href: url, download: file.name });
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="proof">
+      <div className="proof-card">
+        <p className="proof-eyebrow">Proof of vote</p>
+        {contestant.photoUrl ? <img className="proof-photo" src={contestant.photoUrl} alt="" /> : null}
+        <p className="proof-voter"><b>{payment.voterName ?? 'A supporter'}</b> voted for</p>
+        <p className="proof-name">{contestant.name}</p>
+        <p className="proof-code">{contestant.code}</p>
+        <p className="proof-votes">{plural(payment.votes, 'vote')} · {naira(payment.amount)}</p>
+        <p className="proof-meta">
+          {dateTime(payment.paidAt)}
+          {payment.receiptNo ? <><br />Receipt {payment.receiptNo}</> : null}
+        </p>
+        <p className="proof-verified">✓ {payment.provider === 'simulator' ? 'Test payment' : 'Payment confirmed'}</p>
+      </div>
+      <div className="pay-actions">
+        <button type="button" className="btn btn-primary btn-wide" disabled={busy} onClick={save}>{busy ? 'Preparing…' : 'Save or share as a picture'}</button>
+        <a className="btn btn-whatsapp btn-wide" href={`https://wa.me/?text=${encodeURIComponent(message)}`} target="_blank" rel="noreferrer noopener"><BrandLogo name="whatsapp" />Share on WhatsApp</a>
+      </div>
+    </div>
+  );
+}
+
 export function PayReturn() {
   const { reference } = useParams();
   const [payment, setPayment] = useState(null);
   const [error, setError] = useState(null);
   const [attempts, setAttempts] = useState(0);
+  const [proofOpen, setProofOpen] = useState(false);
+  const proofShown = useRef(false);
   const [params] = useSearchParams();
   // Only changes the wording and stops the checking. What counts is still what the provider says.
   const cancelled = params.get('cancelled') === '1';
+  const counted = payment?.status === 'paid' && payment?.votesStatus === 'counted';
+
+  // Pops up once, as soon as the votes count.
+  useEffect(() => {
+    if (counted && !proofShown.current) {
+      proofShown.current = true;
+      setProofOpen(true);
+    }
+  }, [counted]);
 
   useEffect(() => {
     let stop = false;
@@ -493,10 +687,14 @@ export function PayReturn() {
           <h1>{plural(payment.votes, 'vote')} counted for {contestant.name}</h1>
           <p className="muted">Now in position {contestant.position} with {num(contestant.totalVotes)} votes.</p>
           <div className="pay-actions">
+            <button type="button" className="btn btn-primary btn-wide" onClick={() => setProofOpen(true)}>Show my proof of vote</button>
             <Link to={back} className="btn btn-vote btn-wide">Vote again</Link>
             <Link to="/leaderboard" className="btn btn-ghost btn-wide">See the leaderboard</Link>
           </div>
           {receipt}
+          <Dialog open={proofOpen} onClose={() => setProofOpen(false)} title="Thank you for voting!">
+            <ProofOfVote payment={payment} />
+          </Dialog>
         </>
       ) : null}
       {status === 'paid' && votesStatus === 'held' ? (

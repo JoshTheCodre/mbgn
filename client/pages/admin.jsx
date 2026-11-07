@@ -12,6 +12,7 @@ const TABS = [
   ['review', 'Review'],
   ['competition', 'Competition'],
   ['messages', 'Messages'],
+  ['enquiries', 'Enquiries'],
   ['reports', 'Reports'],
 ];
 
@@ -29,6 +30,7 @@ export function Admin() {
             {label}
             {key === 'contestants' && overview?.pending ? <span className="badge">{overview.pending}</span> : null}
             {key === 'review' && overview?.openFlags ? <span className="badge">{overview.openFlags}</span> : null}
+            {key === 'enquiries' && overview?.newEnquiries ? <span className="badge">{overview.newEnquiries}</span> : null}
           </button>
         ))}
       </div>
@@ -38,6 +40,7 @@ export function Admin() {
       {tab === 'review' ? <ReviewTab onChange={reload} /> : null}
       {tab === 'competition' ? <CompetitionTab onChange={reload} /> : null}
       {tab === 'messages' ? <MessagesTab /> : null}
+      {tab === 'enquiries' ? <EnquiriesTab onChange={reload} /> : null}
       {tab === 'reports' ? <ReportsTab /> : null}
     </div>
   );
@@ -49,7 +52,7 @@ function Overview({ data, go }) {
     <>
       <dl className="tiles tiles-3">
         <div><dt>Revenue</dt><dd>{naira(data.revenue)}</dd><small>{naira(data.revenue24h)} in 24 hrs</small></div>
-        <div><dt>Valid votes</dt><dd>{num(data.totalVotes)}</dd><small>{num(data.votes24h)} in 24 hrs</small></div>
+        <div><dt>Paid votes</dt><dd>{num(data.totalVotes)}</dd><small>{num(data.votes24h)} in 24 hrs{data.adjustedVotes ? ` · ${data.adjustedVotes > 0 ? '+' : ''}${num(data.adjustedVotes)} by admins` : ''}</small></div>
         <div><dt>Active contestants</dt><dd>{num(data.contestants)}</dd><small>{num(data.pending)} waiting for review</small></div>
       </dl>
       <section className="panel">
@@ -57,6 +60,7 @@ function Overview({ data, go }) {
         <ul className="todo">
           <li><button type="button" className="text-link as-button" onClick={() => go('contestants')}>{num(data.pending)} applications waiting for review</button></li>
           {data.waitingForGroup ? <li><button type="button" className="text-link as-button" onClick={() => go('competition')}>{plural(data.waitingForGroup, 'contestant')} waiting for a WhatsApp group</button></li> : null}
+          {data.newEnquiries ? <li><button type="button" className="text-link as-button" onClick={() => go('enquiries')}>{num(data.newEnquiries)} new {data.newEnquiries === 1 ? 'enquiry' : 'enquiries'}</button></li> : null}
           <li><button type="button" className="text-link as-button" onClick={() => go('review')}>{num(data.openFlags)} open fraud flags</button></li>
           <li><button type="button" className="text-link as-button" onClick={() => go('money')}>{num(data.paymentsInReview)} payments in review, {num(data.votesHeld)} held for refund</button></li>
           <li>Voting status: <b>{data.voting.status}</b>. <button type="button" className="text-link as-button" onClick={() => go('competition')}>Change</button></li>
@@ -198,6 +202,7 @@ function ContestantsTab({ onChange }) {
                       <div><dt>Followers</dt><dd>{c.followerResults.map((r) => `${PLATFORM_NAMES[r.platform]}: ${r.status === 'found' ? num(r.followers) : r.status === 'missing' ? 'not found' : 'could not be read'}`).join(' · ')}</dd></div>
                     ) : null}
                     {c.whatsappGroupName ? <div><dt>WhatsApp group</dt><dd>{c.whatsappGroupName}</dd></div> : null}
+                    {c.adjustedVotes ? <div><dt>Votes changed by admins</dt><dd>{c.adjustedVotes > 0 ? '+' : ''}{num(c.adjustedVotes)} of {num(c.totalVotes)}</dd></div> : null}
                     {c.statusReason ? <div><dt>Reason</dt><dd>{c.statusReason}</dd></div> : null}
                   </dl>
                   <p className="admin-bio">{c.bio}</p>
@@ -206,6 +211,7 @@ function ContestantsTab({ onChange }) {
                     {c.status === 'approved' ? <button type="button" className="btn btn-ghost" onClick={() => resend(c)}>Resend code &amp; link</button> : null}
                     {c.status === 'approved' ? <Link className="btn btn-ghost" to={`/c/${c.code}`}>Public profile</Link> : null}
                   </div>
+                  {c.status === 'approved' ? <VoteAdjuster contestant={c} onDone={refresh} /> : null}
                 </div>
               ) : null}
             </li>
@@ -232,19 +238,20 @@ function MoneyTab({ onChange }) {
         !payments.data ? <Loading /> : (
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>Date</th><th>Reference</th><th>Receipt email</th><th className="num">Votes</th><th className="num">Amount</th><th>Status</th></tr></thead>
+              <thead><tr><th>Date</th><th>Reference</th><th>Voter</th><th>Receipt email</th><th className="num">Votes</th><th className="num">Amount</th><th>Status</th></tr></thead>
               <tbody>
                 {payments.data.map((p) => (
                   <tr key={p.reference}>
                     <td>{dateTime(p.createdAt)}</td>
                     <td>{p.status === 'paid' ? <Link to={`/receipt/payment/${p.reference}`}>{p.reference}</Link> : p.reference}</td>
+                    <td>{p.voterName ?? '—'}</td>
                     <td>{p.email ?? '—'}</td>
                     <td className="num">{num(p.votes)}</td>
                     <td className="num">{naira(p.amount)}</td>
                     <td><em className={`tag tag-${p.status}`}>{p.status}</em>{p.votesStatus === 'held' ? <em className="tag tag-review">refund due</em> : null}</td>
                   </tr>
                 ))}
-                {payments.data.length === 0 ? <tr><td colSpan="6" className="muted">No payments yet.</td></tr> : null}
+                {payments.data.length === 0 ? <tr><td colSpan="7" className="muted">No payments yet.</td></tr> : null}
               </tbody>
             </table>
           </div>
@@ -345,8 +352,156 @@ function PackageRow({ pack, reload, setError }) {
     <tr>
       <td><input aria-label="Votes" type="number" min="1" defaultValue={pack.votes} onBlur={(e) => { const v = Number(e.target.value); if (v !== pack.votes) save({ votes: v }); }} /></td>
       <td><input aria-label="Price in naira" type="number" min="1" defaultValue={pack.price} onBlur={(e) => { const v = Number(e.target.value); if (v !== pack.price) save({ price: v }); }} /></td>
+      <td className="num">{naira(Math.round(pack.price / pack.votes))}</td>
       <td><button type="button" className="text-link as-button" onClick={() => save({ active: !pack.active })}>{pack.active ? 'Hide' : 'Show'}</button> <small className="muted">{pack.active ? 'on sale' : 'hidden'}</small></td>
     </tr>
+  );
+}
+
+// A bigger deal should never cost more per vote than a smaller one, or it is a worse deal.
+function dealProblems(packages, votePrice) {
+  const deals = packages.filter((p) => p.active).sort((a, b) => a.votes - b.votes);
+  const notes = [];
+  deals.forEach((d, i) => {
+    const rate = d.price / d.votes;
+    if (rate >= votePrice) notes.push(`${num(d.votes)} votes for ${naira(d.price)} is no cheaper than the normal ${naira(votePrice)} a vote, so it gives no discount.`);
+    const smaller = deals.slice(0, i).find((s) => s.price / s.votes < rate);
+    if (smaller) {
+      notes.push(`${num(d.votes)} votes for ${naira(d.price)} costs ${naira(Math.round(rate))} a vote, more than the ${naira(Math.round(smaller.price / smaller.votes))} a vote on ${num(smaller.votes)} votes. Buying ${num(d.votes)} costs more than buying ${num(d.votes - 1)}.`);
+    }
+  });
+  return notes;
+}
+
+// Votes an admin adds or takes away, for example for an offline payment or a correction.
+// Every change needs a reason and stays in the log.
+function VoteAdjuster({ contestant, onDone }) {
+  const { data, reload } = useFetch(`/admin/contestants/${contestant.id}/adjustments`);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const f = new FormData(form);
+    const sign = f.get('direction') === 'remove' ? -1 : 1;
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/admin/contestants/${contestant.id}/adjustments`, { body: { quantity: sign * Number(f.get('quantity')), reason: f.get('reason') } });
+      form.reset();
+      reload();
+      onDone();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="vote-adjuster">
+      <h3>Add or remove votes</h3>
+      <p className="muted small-note">Changes the total straight away, without a payment. Each change is logged with your reason.</p>
+      <form className="inline-form" onSubmit={submit}>
+        <Field label="Change">
+          <select name="direction" defaultValue="add">
+            <option value="add">Add votes</option>
+            <option value="remove">Remove votes</option>
+          </select>
+        </Field>
+        <Field label="Votes"><input name="quantity" type="number" min="1" step="1" required /></Field>
+        <Field label="Reason"><input name="reason" placeholder="e.g. paid by bank transfer" minLength={3} required /></Field>
+        <button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
+      </form>
+      <ErrorNote error={error} />
+      {data?.length ? (
+        <ul className="adjustment-log">
+          {data.map((a) => (
+            <li key={a.id}>
+              <b className={a.quantity > 0 ? 'up' : 'down'}>{a.quantity > 0 ? '+' : ''}{num(a.quantity)}</b>
+              <span>{a.reason}</span>
+              <small>{a.admin ?? 'Admin'} · {dateTime(a.createdAt)}</small>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function EnquiriesTab({ onChange }) {
+  const { data, reload } = useFetch('/admin/enquiries');
+  const [error, setError] = useState(null);
+  const [saved, setSaved] = useState(false);
+  useLive('admin', reload);
+
+  async function mark(enquiry, status) {
+    setError(null);
+    try {
+      await api(`/admin/enquiries/${enquiry.id}/${status}`, { method: 'POST' });
+      reload();
+      onChange();
+    } catch (err) {
+      setError(err);
+    }
+  }
+
+  async function saveContact(e) {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    setError(null);
+    setSaved(false);
+    try {
+      await api('/admin/contact', { method: 'PUT', body: { phone: f.get('phone'), email: f.get('email') } });
+      setSaved(true);
+      reload();
+    } catch (err) {
+      setError(err);
+    }
+  }
+
+  if (!data) return <Loading />;
+  return (
+    <div className="admin-columns">
+      <ErrorNote error={error} />
+      <section className="panel">
+        <h2>Sponsorship and enquiries</h2>
+        <p className="muted">Messages sent from the Sponsorship / Enquiry page. Each one is also emailed to the admins.</p>
+        {data.enquiries.length === 0 ? <p className="muted empty">No enquiries yet.</p> : (
+          <ul className="admin-list">
+            {data.enquiries.map((q) => (
+              <li key={q.id} className={`admin-card enquiry-card ${q.status}`}>
+                <div className="enquiry-head">
+                  <div>
+                    <strong>{q.name}</strong>{q.organisation ? ` · ${q.organisation}` : ''}
+                    <em className={`tag ${q.status === 'new' ? 'tag-review' : ''}`}>{q.status === 'new' ? 'New' : 'Done'}</em>
+                    <small>{q.kind} · {dateTime(q.createdAt)}</small>
+                  </div>
+                  <button type="button" className="btn btn-ghost btn-small" onClick={() => mark(q, q.status === 'new' ? 'done' : 'new')}>{q.status === 'new' ? 'Mark as done' : 'Mark as new'}</button>
+                </div>
+                <p className="enquiry-message">{q.message}</p>
+                <p className="enquiry-contact">
+                  <a href={`tel:${q.phone.replace(/[^\d+]/g, '')}`}>{q.phone}</a>
+                  {' · '}<a href={`https://wa.me/${q.phone.replace(/\D/g, '').replace(/^0/, '234')}`} target="_blank" rel="noreferrer noopener">WhatsApp</a>
+                  {q.email ? <>{' · '}<a href={`mailto:${q.email}`}>{q.email}</a></> : null}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      <section className="panel">
+        <h2>Contact details on the page</h2>
+        <p className="muted">Optional. Shown under the enquiry form for people who would rather call or email.</p>
+        <form className="inline-form" onSubmit={saveContact}>
+          <Field label="Phone or WhatsApp"><input name="phone" type="tel" defaultValue={data.contact.phone} /></Field>
+          <Field label="Email"><input name="email" type="email" defaultValue={data.contact.email} /></Field>
+          <button className="btn btn-ghost">Save</button>
+        </form>
+        {saved ? <p className="note note-good">Saved.</p> : null}
+      </section>
+    </div>
   );
 }
 
@@ -517,13 +672,18 @@ function CompetitionTab({ onChange }) {
 
   async function saveDeadline(e) {
     e.preventDefault();
-    const value = new FormData(e.currentTarget).get('registrationEndsAt');
+    const f = new FormData(e.currentTarget);
+    const value = f.get('registrationEndsAt');
     setError(null);
     setDeadlineSaved(false);
     try {
-      await api('/admin/registration', { method: 'PUT', body: { endsAt: value ? new Date(value).toISOString() : '' } });
-      setDeadlineSaved(true);
+      const { started } = await api('/admin/registration', {
+        method: 'PUT',
+        body: { endsAt: value ? new Date(value).toISOString() : '', autoStart: f.get('autoStart') === 'on' },
+      });
+      setDeadlineSaved(started ? 'That time has passed, so voting has started.' : 'Saved. The countdown has been updated.');
       reload();
+      onChange();
       refreshCompetition({ fresh: true });
     } catch (err) {
       setError(err);
@@ -583,15 +743,21 @@ function CompetitionTab({ onChange }) {
           <>
             {deadlinePassed
               ? <p><b>Applications have closed.</b> The deadline has passed. Voting starts when you press the button below, or set a later date to reopen applications.</p>
-              : <p><b>Registration is open.</b> The home page promotes joining, and voting is off.</p>}
+              : <p><b>Registration is open.</b> The home page promotes joining, and voting is off. {data.autoStartVoting && data.registrationEndsAt ? 'When the countdown ends, voting starts by itself and visitors are taken to the contestants.' : ''}</p>}
             <p className="muted">{num(data.approvedContestants)} approved · {num(waiting)} waiting for review</p>
-            <form className="inline-form stage-deadline" onSubmit={saveDeadline}>
-              <Field label="Registration closes" hint="Blank means no deadline. Applications stop at this time.">
-                <input key={data.registrationEndsAt} name="registrationEndsAt" type="datetime-local" defaultValue={toLocalInput(data.registrationEndsAt)} />
-              </Field>
-              <button className="btn btn-ghost">Save date</button>
+            <form className="stage-deadline" onSubmit={saveDeadline}>
+              <div className="inline-form">
+                <Field label="Countdown ends (registration closes)" hint="Blank means no deadline. Applications stop at this time.">
+                  <input key={data.registrationEndsAt} name="registrationEndsAt" type="datetime-local" defaultValue={toLocalInput(data.registrationEndsAt)} />
+                </Field>
+                <button className="btn btn-ghost">Save</button>
+              </div>
+              <label className="check-line">
+                <input key={String(data.autoStartVoting)} type="checkbox" name="autoStart" defaultChecked={data.autoStartVoting} />
+                Start voting automatically when the countdown ends
+              </label>
             </form>
-            {deadlineSaved ? <p className="note note-good">Date saved. The countdown has been updated.</p> : null}
+            {deadlineSaved ? <p className="note note-good">{deadlineSaved}</p> : null}
             <button
               type="button"
               className="btn btn-primary btn-small"
@@ -669,8 +835,8 @@ function CompetitionTab({ onChange }) {
           <Field label="Competition name"><input name="name" defaultValue={data.name} required /></Field>
           <div className="form-grid">
             <Field label="Voting opens" hint="Blank means open now."><input name="startsAt" type="datetime-local" defaultValue={toLocalInput(data.startsAt)} /></Field>
-            <Field label="Voting closes" hint="Drives the countdown."><input name="endsAt" type="datetime-local" defaultValue={toLocalInput(data.endsAt)} /></Field>
-            <Field label="Price per vote (₦)" hint="Used for custom amounts."><input name="votePrice" type="number" min="1" defaultValue={data.votePrice} required /></Field>
+            <Field label="Voting closes" hint="Drives the voting countdown. Voting stops by itself at this time."><input name="endsAt" type="datetime-local" defaultValue={toLocalInput(data.endsAt)} /></Field>
+            <Field label="Price per vote (₦)" hint="The normal price, below the first bulk deal."><input name="votePrice" type="number" min="1" defaultValue={data.votePrice} required /></Field>
             <Field label="Flag single votes of at least" hint="0 turns this off."><input name="largeVoteThreshold" type="number" min="0" defaultValue={data.largeVoteThreshold} required /></Field>
           </div>
           {saved ? <p className="note note-good">Saved.</p> : null}
@@ -679,17 +845,19 @@ function CompetitionTab({ onChange }) {
       </section>
 
       <section className="panel">
-        <h2>Voting packages</h2>
+        <h2>Bulk deals</h2>
+        <p className="muted">From each deal’s number of votes upwards, every vote costs that deal’s rate. With 50 votes for {naira(8000)}, someone buying 70 votes pays {naira(160)} a vote. Every supporter is offered the next deal up before they pay.</p>
+        {dealProblems(data.packages, data.votePrice).map((note) => <p key={note} className="note note-error">{note}</p>)}
         <div className="table-wrap">
           <table className="data-table packages-table">
-            <thead><tr><th>Votes</th><th>Price (₦)</th><th>On sale</th></tr></thead>
+            <thead><tr><th>Votes</th><th>Price (₦)</th><th className="num">Each</th><th>On sale</th></tr></thead>
             <tbody>{data.packages.map((p) => <PackageRow key={`${p.id}-${p.votes}-${p.price}`} pack={p} reload={reload} setError={setError} />)}</tbody>
           </table>
         </div>
         <form className="inline-form" onSubmit={addPackage}>
           <Field label="Votes"><input name="votes" type="number" min="1" required /></Field>
           <Field label="Price (₦)"><input name="price" type="number" min="1" required /></Field>
-          <button className="btn btn-ghost">Add package</button>
+          <button className="btn btn-ghost">Add deal</button>
         </form>
       </section>
 
