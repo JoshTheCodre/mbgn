@@ -1285,3 +1285,37 @@ describe('Prices, proof of vote and admin controls', () => {
     }
   });
 });
+
+describe('Admin login settings', () => {
+  test('an admin can change their own email and password, which signs out their other browsers', async () => {
+    const app = await boot();
+    try {
+      const desk = client(app.base);
+      const phone = client(app.base);
+      for (const c of [desk, phone]) await c.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const change = (body) => desk.req('PUT', '/admin/account', { body });
+
+      assert.equal((await change({ email: 'boss@test.local', newPassword: 'a-new-password', currentPassword: 'wrong' })).status, 400);
+      assert.equal((await change({ email: 'not an email', currentPassword: 'admin-password' })).status, 400);
+      assert.equal((await change({ email: 'boss@test.local', newPassword: 'short', currentPassword: 'admin-password' })).status, 400);
+      await makeContestant(app, desk, 'Taken');
+      assert.equal((await change({ email: 'taken@test.local', currentPassword: 'admin-password' })).status, 409);
+      assert.equal((await client(app.base).req('PUT', '/admin/account', { body: { email: 'x@test.local', currentPassword: 'admin-password' } })).status, 401);
+
+      const done = await change({ email: 'Boss@Test.local', newPassword: 'a-new-password', currentPassword: 'admin-password' });
+      assert.equal(done.status, 200);
+      assert.equal(done.data.email, 'boss@test.local');
+      assert.equal((await desk.get('/admin/overview')).status, 200);
+      assert.equal((await phone.get('/admin/overview')).status, 401);
+
+      const fresh = client(app.base);
+      assert.equal((await fresh.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' })).status, 401);
+      assert.equal((await fresh.post('/auth/login', { email: 'boss@test.local', password: 'admin-password' })).status, 401);
+      assert.equal((await fresh.post('/auth/login', { email: 'boss@test.local', password: 'a-new-password' })).status, 200);
+      const logged = await app.ctx.db.prepare("SELECT details FROM audit_log WHERE action = 'account.update' ORDER BY id DESC").get();
+      assert.equal(logged.details, 'email changed to boss@test.local, password changed');
+    } finally {
+      await app.close();
+    }
+  });
+});

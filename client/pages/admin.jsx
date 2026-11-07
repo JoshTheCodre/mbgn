@@ -14,6 +14,7 @@ const TABS = [
   ['messages', 'Messages'],
   ['enquiries', 'Enquiries'],
   ['reports', 'Reports'],
+  ['account', 'Your login'],
 ];
 
 export function Admin() {
@@ -42,6 +43,7 @@ export function Admin() {
       {tab === 'messages' ? <MessagesTab /> : null}
       {tab === 'enquiries' ? <EnquiriesTab onChange={reload} /> : null}
       {tab === 'reports' ? <ReportsTab /> : null}
+      {tab === 'account' ? <AccountTab /> : null}
     </div>
   );
 }
@@ -974,6 +976,61 @@ function MessagesTab() {
             ))}
           </ul>
         )}
+      </section>
+    </div>
+  );
+}
+
+function AccountTab() {
+  const { user, setUser } = useApp();
+  const [error, setError] = useState(null);
+  const [saved, setSaved] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function save(e) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const f = new FormData(form);
+    setError(null);
+    setSaved(null);
+    if (f.get('newPassword') !== f.get('confirmPassword')) {
+      setError(new Error('The two new passwords do not match.'));
+      return;
+    }
+    setBusy(true);
+    try {
+      const { email } = await api('/admin/account', {
+        method: 'PUT',
+        body: { email: f.get('email'), newPassword: f.get('newPassword'), currentPassword: f.get('currentPassword') },
+      });
+      setUser({ ...user, email });
+      setSaved(f.get('newPassword') ? 'Saved. Use the new password next time. Other browsers signed in as you have been signed out.' : 'Saved.');
+      form.querySelector('[name=newPassword]').value = '';
+      form.querySelector('[name=confirmPassword]').value = '';
+      form.querySelector('[name=currentPassword]').value = '';
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="admin-columns">
+      <section className="panel">
+        <h2>Your login</h2>
+        <p className="muted">The email and password you use to open this control panel. Anyone with them can change votes, prices and the contest, so choose a password nobody could guess.</p>
+        <form className="stack" onSubmit={save}>
+          <Field label="Email address"><input name="email" type="email" autoComplete="username" defaultValue={user?.email ?? ''} required /></Field>
+          <div className="form-grid">
+            <Field label="New password" hint="Leave blank to keep your password. At least 8 characters."><input name="newPassword" type="password" autoComplete="new-password" minLength={8} /></Field>
+            <Field label="New password again"><input name="confirmPassword" type="password" autoComplete="new-password" /></Field>
+          </div>
+          <Field label="Current password" hint="Needed to save any change."><input name="currentPassword" type="password" autoComplete="current-password" required /></Field>
+          <ErrorNote error={error} />
+          {saved ? <p className="note note-good">{saved}</p> : null}
+          <button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
+        </form>
       </section>
     </div>
   );

@@ -1,4 +1,6 @@
-import { HttpError, asyncRouter, requireAdmin } from '../auth.js';
+import {
+  HttpError, asyncRouter, hashPassword, requireAdmin, sessionHash, verifyPassword,
+} from '../auth.js';
 import {
   allocateCode, audit, notifyUser, photoUrl, publishActivity, recomputeRanks, votingState,
 } from '../competition.js';
@@ -587,6 +589,26 @@ export function adminRouter(ctx) {
 
   router.get('/outbox', async (_req, res) => {
     res.json(await db.prepare('SELECT * FROM outbox ORDER BY id DESC LIMIT 100').all());
+  });
+
+  // ---- The signed-in admin's own login ----
+  router.put('/account', async (req, res) => {
+    const email = clean(req.body?.email, 200).toLowerCase();
+    const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+    const current = String(req.body?.currentPassword ?? '').slice(0, 200);
+    const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+    if (!verifyPassword(current, user.password_hash)) throw new HttpError(400, 'Your current password is not right.');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'Please enter a valid email address.');
+    if (newPassword && (newPassword.length < 8 || newPassword.length > 200)) throw new HttpError(400, 'Choose a password of at least 8 characters.');
+
+    await db.prepare('UPDATE users SET email = ?, password_hash = ? WHERE id = ?')
+      .run(email, newPassword ? hashPassword(newPassword) : user.password_hash, user.id)
+      .catch((err) => { throw err.code === '23505' ? new HttpError(409, 'Another account already uses that email address.') : err; });
+    // A new password signs out every other browser, in case the old one had leaked.
+    if (newPassword) await db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').run(user.id, sessionHash(req));
+    const changes = [email !== user.email ? `email changed to ${email}` : null, newPassword ? 'password changed' : null].filter(Boolean);
+    await audit(ctx, user.id, 'account.update', changes.join(', ') || 'no change');
+    res.json({ email });
   });
 
   router.get('/audit', async (_req, res) => {

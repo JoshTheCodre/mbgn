@@ -68,6 +68,11 @@ export async function startSession(ctx, res, userId) {
   });
 }
 
+export function sessionHash(req) {
+  const token = parseCookies(req.headers.cookie)[COOKIE];
+  return token ? sha256(token) : null;
+}
+
 export async function endSession(ctx, req, res) {
   const token = parseCookies(req.headers.cookie)[COOKIE];
   if (token) await ctx.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256(token));

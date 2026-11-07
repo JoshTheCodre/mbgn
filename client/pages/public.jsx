@@ -255,7 +255,6 @@ function RegistrationHome() {
             <div className="reg-actions">
               {open || joined ? <Link to={joinTo} className="btn btn-primary reg-join">{joinLabel}</Link> : null}
               <Link to="/enquiry" className="btn reg-share-link">Sponsorship / Enquiry</Link>
-              <a href="#share" className="btn reg-share-link">Share with someone</a>
             </div>
           </div>
           <div className="prize">
