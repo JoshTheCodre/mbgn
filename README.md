@@ -66,8 +66,9 @@ Remove `DEMO_MODE` from `next.config.mjs` first, then:
 3. In the Paystack dashboard (Settings > API Keys & Webhooks), set the webhook URL to
    `https://your-domain/api/webhooks/paystack`. An account has one webhook URL for each mode.
 4. Set `SMTP_URL` so emails are delivered. Without it they only reach the admin email log.
-5. Set `SCRAPECREATORS_API_KEY` so follower counts are read automatically. Without it, every application
-   waits for an admin to check the accounts by hand. Add the first WhatsApp group on the Competition tab.
+5. Set one or more follower-count service keys (see below) so counts are read automatically. Without any,
+   every application waits for an admin to check the accounts by hand. Add the first WhatsApp group on
+   the Competition tab.
 6. Back up the database. Neon's free plan can only restore the last 6 hours, and a busy site can use up
    its monthly compute hours, so move to a paid plan for the live contest.
 
@@ -83,8 +84,25 @@ Remove `DEMO_MODE` from `next.config.mjs` first, then:
    - *Passed:* the application goes to the review team, and they get their WhatsApp group link on screen,
      on their dashboard and by email.
    - *Not enough:* nothing is saved, and they can try again.
-   - *Could not be read* (a private page, or the data service is down): the application goes through
+   - *Could not be read* (a private page, or no service could answer): the application goes through
      marked "Check followers by hand". They get the group link once approved.
+
+   The networks block sites from reading follower counts themselves, so data services do it. These are
+   tried in order, each only if its key is set on Vercel, and each has a free plan:
+
+   | Service | Key | Reads | Free plan |
+   | --- | --- | --- | --- |
+   | ScrapeCreators | `SCRAPECREATORS_API_KEY` | Instagram, TikTok, Facebook | about 100 credits, once |
+   | SocialCrawl | `SOCIALCRAWL_API_KEY` | Instagram, TikTok | 100 credits, once |
+   | SociaVault | `SOCIAVAULT_API_KEY` | Instagram, TikTok | 50 credits, once |
+   | HikerAPI | `HIKERAPI_KEY` | Instagram | 100 requests, once |
+   | Apify | `APIFY_TOKEN` | Instagram, TikTok, Facebook | $5 of use a month (slower) |
+
+   When a service has no answer, the next one is asked. When it runs out of credits or refuses its key,
+   it is skipped for 6 hours. A count read in the last 24 hours is reused, so retries cost nothing. The
+   Competition tab shows each service's status and use, has a **Test an account** tool, and lets an admin
+   choose to check every application by hand instead. Free plans and their prices change, so check each
+   service's site.
 
    **WhatsApp groups** are added on the Competition tab. Links go out from the oldest open group with room,
    so the next group takes over when one fills up, or when an admin marks it as full. If none has room,

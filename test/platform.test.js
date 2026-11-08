@@ -10,7 +10,7 @@ import { createApp, createContext } from '../server/app.js';
 import { formatCode } from '../server/competition.js';
 import { loadConfig } from '../server/config.js';
 import { setSetting } from '../server/db.js';
-import { createFollowerChecker } from '../server/followers.js';
+import { createFollowerChecker, findFollowers } from '../server/followers.js';
 import { socialLink } from '../server/routes/public.js';
 import { bulkPrice, upsellOffers } from '../shared/pricing.js';
 
@@ -48,7 +48,7 @@ async function boot(overrides = {}, { freshContest = false } = {}) {
     appSecret: 'test-secret',
     smtpUrl: null,
     paystack: null,
-    followers: null,
+    followerKeys: {},
     rateLimitScale: 1000,
     ...overrides,
   });
@@ -959,6 +959,9 @@ describe('Follower check and WhatsApp groups', () => {
   test('one account with enough is a pass, and an account that does not exist is not', async () => {
     const pass = await join(client(app.base), 'OneEnough', { instagram: '@oneenough_3', tiktok: '@oneenough_notfound', facebook: 'oneenough_900' });
     assert.equal(pass.data.outcome, 'passed');
+    assert.deepEqual(pass.data.results.map((r) => r.status), ['found', 'missing', 'found']);
+    const early = await join(client(app.base), 'EarlyPass', { instagram: '@earlypass_900', tiktok: '@earlypass_5000', facebook: 'earlypass_1' });
+    assert.deepEqual(early.data.results.map((r) => [r.platform, r.status]), [['instagram', 'found'], ['tiktok', 'skipped'], ['facebook', 'skipped']]);
     const missing = await join(client(app.base), 'Ghost', { instagram: '@ghost_notfound' });
     assert.equal(missing.status, 200);
     assert.equal(missing.data.outcome, 'failed');
@@ -1062,13 +1065,14 @@ describe('Follower check and WhatsApp groups', () => {
       return reply(200, { isPrivate: who.includes('private'), followerCount: who.includes('private') ? undefined : 950 });
     }).listen(0);
     await new Promise((resolve) => service.once('listening', resolve));
-    const checker = createFollowerChecker({ followers: { apiKey: 'key', baseUrl: `http://127.0.0.1:${service.address().port}` } });
+    const checker = createFollowerChecker({ followerKeys: { scrapecreators: 'key' }, followerBaseUrls: { scrapecreators: `http://127.0.0.1:${service.address().port}` } });
     assert.equal(checker.mode, 'live');
     try {
       const all = await checker.check({
         instagram: 'https://www.instagram.com/ada', tiktok: 'https://www.tiktok.com/@ada', facebook: 'https://www.facebook.com/ada',
-      }, 800);
-      assert.equal(all.outcome, 'passed');
+      }, 2000);
+      // Nobody reaches 2,000, so every account is read.
+      assert.equal(all.outcome, 'failed');
       assert.deepEqual(all.results.map((r) => r.followers), [1500, 700, 950]);
       assert.deepEqual(seen.map((s) => s.query.handle ?? s.query.url), ['ada', 'ada', 'https://www.facebook.com/ada']);
       assert.ok(seen.every((s) => s.key === 'key'));
@@ -1084,12 +1088,12 @@ describe('Follower check and WhatsApp groups', () => {
       service.close();
     }
     // A provider that cannot be reached must not fail anyone.
-    const down = createFollowerChecker({ followers: { apiKey: 'key', baseUrl: 'http://127.0.0.1:1' } });
+    const down = createFollowerChecker({ followerKeys: { scrapecreators: 'key' }, followerBaseUrls: { scrapecreators: 'http://127.0.0.1:1' } });
     assert.equal((await down.check({ tiktok: 'https://www.tiktok.com/@ada' }, 800)).outcome, 'review');
   });
 
   test('production never invents follower counts', async () => {
-    const checker = createFollowerChecker({ followers: null, production: true });
+    const checker = createFollowerChecker({ followerKeys: {}, production: true });
     assert.equal(checker.mode, 'manual');
     assert.equal((await checker.check({ instagram: 'https://www.instagram.com/ada_5000' }, 800)).outcome, 'review');
   });
@@ -1316,6 +1320,144 @@ describe('Admin login settings', () => {
       assert.equal(logged.details, 'email changed to boss@test.local, password changed');
     } finally {
       await app.close();
+    }
+  });
+});
+
+describe('Follower services as fallbacks', () => {
+  test('when one service runs out or has no answer, the next takes over, and answers are saved', async () => {
+    const calls = [];
+    const service = http.createServer((req, res) => {
+      const url = new URL(req.url, 'http://x');
+      const [, provider] = url.pathname.split('/');
+      calls.push(`${provider} ${url.pathname.split('/').slice(2).join('/')}`);
+      const reply = (status, body) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+      // ScrapeCreators has used up its free credits.
+      if (provider === 'sc') return reply(402, { success: false, message: 'Out of credits' });
+      // SocialCrawl is having a bad day.
+      if (provider === 'scl') return reply(500, {});
+      // SociaVault answers in a slightly different shape than expected.
+      if (provider === 'sv' && url.pathname.includes('instagram')) return reply(200, { success: true, data: { private: true } });
+      if (provider === 'sv') return reply(200, { success: true, data: { profile: { stats: { followers_count: '2400' } } } });
+      if (provider === 'hk') return reply(200, { user: { username: 'ada', follower_count: 1300 } });
+      if (provider === 'ap') {
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', () => reply(200, [{ ...JSON.parse(body), followers: 777, likes: 5000 }]));
+        return undefined;
+      }
+      return reply(404, {});
+    }).listen(0);
+    await new Promise((resolve) => service.once('listening', resolve));
+    const base = `http://127.0.0.1:${service.address().port}`;
+    const app = await boot({
+      followerKeys: { scrapecreators: 'k1', socialcrawl: 'k2', sociavault: 'k3', hikerapi: 'k4', apify: 'k5' },
+      followerBaseUrls: { scrapecreators: `${base}/sc`, socialcrawl: `${base}/scl`, sociavault: `${base}/sv`, hikerapi: `${base}/hk`, apify: `${base}/ap` },
+    }, { freshContest: true });
+    try {
+      const { ctx } = app;
+      assert.equal(ctx.followers.mode, 'live');
+
+      const tiktok = await ctx.followers.lookupAccount('tiktok', 'https://www.tiktok.com/@ada');
+      assert.deepEqual([tiktok.status, tiktok.followers, tiktok.source], ['found', 2400, 'sociavault']);
+      assert.deepEqual(tiktok.attempts.map((a) => [a.provider, a.status]), [['scrapecreators', 'spent'], ['socialcrawl', 'unavailable'], ['sociavault', 'found']]);
+
+      // ScrapeCreators is now skipped for a while, so its last credits are not wasted on failures.
+      calls.length = 0;
+      const facebook = await ctx.followers.lookupAccount('facebook', 'https://www.facebook.com/adapage');
+      assert.deepEqual([facebook.status, facebook.followers, facebook.source], ['found', 777, 'apify']);
+      assert.equal(facebook.attempts[0].status, 'skipped');
+      assert.ok(!calls.some((c) => c.startsWith('sc ')));
+
+      // A saved answer is reused instead of asking again.
+      calls.length = 0;
+      const again = await ctx.followers.lookupAccount('tiktok', 'https://www.tiktok.com/@ADA');
+      assert.equal(again.saved, true);
+      assert.equal(again.followers, 2400);
+      assert.equal(calls.length, 0);
+
+      // The admin sees the chain, and can test an account and bring a paused service back.
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const { data } = await admin.get('/admin/joining');
+      const sc = data.providers.find((p) => p.name === 'scrapecreators');
+      assert.equal(sc.configured, true);
+      assert.ok(sc.pausedUntil);
+      assert.ok(data.providers.find((p) => p.name === 'sociavault').used30d >= 1);
+      const trial = await admin.post('/admin/followers/test', { platform: 'instagram', account: '@ada' });
+      assert.deepEqual([trial.data.status, trial.data.followers, trial.data.source], ['found', 1300, 'hikerapi']);
+      assert.equal((await admin.post('/admin/followers/test', { platform: 'myspace', account: 'ada' })).status, 400);
+      await admin.post('/admin/followers/providers/scrapecreators/resume');
+      assert.equal((await admin.get('/admin/joining')).data.providers.find((p) => p.name === 'scrapecreators').pausedUntil, null);
+      assert.equal((await client(app.base).post('/admin/followers/test', { platform: 'instagram', account: '@ada' })).status, 401);
+
+      // Joining uses the same chain, and an admin can choose to check every application by hand.
+      calls.length = 0;
+      const joined = await client(app.base).req('POST', '/contestants/register', { form: registrationForm('Chained', { instagram: '@chained', tiktok: '@chainedtoo' }) });
+      assert.equal(joined.data.results[1].status, 'skipped');
+      assert.ok(!calls.some((c) => c.includes('tiktok')));
+      assert.equal(joined.data.outcome, 'passed');
+      assert.equal(joined.data.results[0].source, 'hikerapi');
+      await admin.req('PUT', '/admin/joining', { body: { minFollowers: 800, checkMode: 'manual' } });
+      const byHand = await client(app.base).req('POST', '/contestants/register', { form: registrationForm('ByHand', { instagram: '@byhand' }) });
+      assert.equal(byHand.data.outcome, 'review');
+      assert.equal((await admin.get('/admin/joining')).data.checkSetting, 'manual');
+    } finally {
+      await app.close();
+      service.close();
+    }
+  });
+
+  test('finds a follower count in answers shaped differently from what was expected', () => {
+    assert.equal(findFollowers({ data: { user: { edge_followed_by: { count: 12 } } } }), 12);
+    assert.equal(findFollowers([{ authorMeta: { fans: 99 } }]), 99);
+    assert.equal(findFollowers({ data: { followers: [{ name: 'x' }], stats: { followerCount: '45' } } }), 45);
+    assert.equal(findFollowers({ data: { name: 'nobody' } }), undefined);
+  });
+});
+
+describe('Several keys for one service', () => {
+  test('a second key takes over when the first runs out, and each shows on its own', async () => {
+    const keysSeen = [];
+    const service = http.createServer((req, res) => {
+      const key = req.headers['x-api-key'];
+      keysSeen.push(key);
+      res.writeHead(key === 'first' ? 402 : 200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(key === 'first' ? { success: false } : { success: true, credits_remaining: 99, stats: { followerCount: 4321 } }));
+    }).listen(0);
+    await new Promise((resolve) => service.once('listening', resolve));
+    const app = await boot({
+      followerKeys: { scrapecreators: ['first', 'second'] },
+      followerBaseUrls: { scrapecreators: `http://127.0.0.1:${service.address().port}` },
+    }, { freshContest: true });
+    try {
+      const result = await app.ctx.followers.lookupAccount('tiktok', 'https://www.tiktok.com/@ada');
+      assert.deepEqual([result.status, result.followers, result.source], ['found', 4321, 'scrapecreators_2']);
+      assert.deepEqual(keysSeen, ['first', 'second']);
+
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const rows = (await admin.get('/admin/joining')).data.providers.filter((p) => p.name.startsWith('scrapecreators'));
+      assert.deepEqual(rows.map((p) => [p.label, Boolean(p.pausedUntil), p.credits]), [['ScrapeCreators', true, null], ['ScrapeCreators (key 2)', false, 99]]);
+      assert.equal((await admin.post('/admin/followers/providers/scrapecreators_2/resume')).status, 200);
+      assert.equal((await admin.post('/admin/followers/providers/nonsense/resume')).status, 404);
+    } finally {
+      await app.close();
+      service.close();
+    }
+  });
+
+  test('extra keys can be set as NAME_2 or as a comma-separated list', () => {
+    const keep = { ...process.env };
+    try {
+      process.env.SCRAPECREATORS_API_KEY = 'one, two';
+      process.env.SCRAPECREATORS_API_KEY_2 = 'three';
+      delete process.env.APIFY_TOKEN;
+      const config = loadConfig({ nodeEnv: 'test', dbDriver: {} });
+      assert.deepEqual(config.followerKeys.scrapecreators, ['one', 'two', 'three']);
+      assert.deepEqual(config.followerKeys.apify, []);
+    } finally {
+      process.env = keep;
     }
   });
 });

@@ -50,13 +50,23 @@ export function loadConfig(overrides = {}) {
   // Vercel has no permanent disk, so uploaded photos would vanish.
   if (env.VERCEL && !r2) throw new Error('The R2_ settings are required on Vercel: photos need permanent storage.');
 
-  const followers = overrides.followers !== undefined ? overrides.followers : env.SCRAPECREATORS_API_KEY
-    ? { apiKey: env.SCRAPECREATORS_API_KEY, baseUrl: 'https://api.scrapecreators.com' }
-    : null;
+  // Keys for the follower-count services, tried in order. Each has a free plan. See server/followers.js.
+  // A service can have several keys: NAME, NAME_2, NAME_3, or a comma-separated list. The next key
+  // takes over when one runs out.
+  const keysFor = (name) => [env[name], env[`${name}_2`], env[`${name}_3`]]
+    .flatMap((value) => (value ?? '').split(',')).map((key) => key.trim()).filter(Boolean);
+  const followerKeys = overrides.followerKeys ?? {
+    scrapecreators: keysFor('SCRAPECREATORS_API_KEY'),
+    socialcrawl: keysFor('SOCIALCRAWL_API_KEY'),
+    sociavault: keysFor('SOCIAVAULT_API_KEY'),
+    hikerapi: keysFor('HIKERAPI_KEY'),
+    apify: keysFor('APIFY_TOKEN'),
+  };
 
   return {
     production,
-    followers,
+    followerKeys,
+    followerBaseUrls: overrides.followerBaseUrls ?? null,
     port: Number(overrides.port ?? env.PORT ?? 3000),
     publicUrl: (overrides.publicUrl ?? env.PUBLIC_URL ?? vercelUrl ?? `http://localhost:${env.PORT ?? 3000}`).replace(/\/$/, ''),
     dataDir,

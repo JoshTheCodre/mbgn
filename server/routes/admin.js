@@ -5,11 +5,13 @@ import {
   allocateCode, audit, notifyUser, photoUrl, publishActivity, recomputeRanks, votingState,
 } from '../competition.js';
 import { getSetting, nowIso, setSetting, tx } from '../db.js';
+import { PLATFORMS, PROVIDERS } from '../followers.js';
 import {
   assignGroup, countWaiting, groupById, placeWaiting,
 } from '../groups.js';
 import { changeStage, startVotingIfDue, tellContestantsVotingOpened } from '../stages.js';
 import { voidVote } from '../votes.js';
+import { socialLink } from './public.js';
 
 const clean = (value, max = 500) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
 
@@ -289,17 +291,41 @@ export function adminRouter(ctx) {
 
   // ---- Who can join: the follower check and the WhatsApp groups ----
   router.get('/joining', async (_req, res) => {
-    const [minFollowers, groups, waiting] = await Promise.all([
+    const monthAgo = new Date(Date.now() - 30 * 864e5).toISOString();
+    const [minFollowers, groups, waiting, followerSettings, usage] = await Promise.all([
       getSetting(db, 'min_followers'),
       db.prepare(`SELECT g.*, (SELECT COUNT(*) FROM contestants c WHERE c.whatsapp_group_id = g.id) AS used
         FROM whatsapp_groups g ORDER BY g.id`).all(),
       countWaiting(db),
+      db.prepare("SELECT key, value FROM settings WHERE key LIKE 'follower\\_%'").all(),
+      db.prepare('SELECT source, COUNT(*) AS n FROM follower_lookups WHERE checked_at > ? GROUP BY source').all(monthAgo),
     ]);
+    const setting = Object.fromEntries(followerSettings.map((s) => [s.key, s.value]));
+    const used = Object.fromEntries(usage.map((u) => [u.source, u.n]));
+    // Every key that is set, in the order tried, then the services with no key yet.
+    const slots = PROVIDERS.flatMap((p) => {
+      const keyed = ctx.followers.providers.filter((k) => k.service === p.name);
+      return keyed.length ? keyed.map((k) => ({ ...k, configured: true })) : [{ ...p, configured: false }];
+    });
     // The same rule that decides who is placed next: the oldest open group with room.
     const current = groups.find((g) => !g.closed && g.used < g.capacity);
     res.json({
       minFollowers: Number(minFollowers),
       checkMode: ctx.followers.mode,
+      checkSetting: setting.follower_check_mode || 'auto',
+      providers: slots.map((p) => {
+        const until = setting[`follower_pause_${p.name}`];
+        return {
+          name: p.name,
+          label: p.label,
+          env: p.env,
+          platforms: Object.keys(p.requests),
+          configured: p.configured,
+          pausedUntil: until && new Date(until) > new Date() ? until : null,
+          credits: setting[`follower_credits_${p.name}`] ? Number(setting[`follower_credits_${p.name}`]) : null,
+          used30d: used[p.name] ?? 0,
+        };
+      }),
       waiting,
       groups: groups.map((g) => ({
         id: g.id, name: g.name, url: g.invite_url, capacity: g.capacity, used: g.used, closed: Boolean(g.closed), current: g.id === current?.id,
@@ -310,10 +336,29 @@ export function adminRouter(ctx) {
   router.put('/joining', async (req, res) => {
     const minFollowers = Number(req.body?.minFollowers);
     if (!Number.isInteger(minFollowers) || minFollowers < 0) throw new HttpError(400, 'Followers needed must be a whole number.');
+    const checkMode = req.body?.checkMode === 'manual' ? 'manual' : 'auto';
     await setSetting(db, 'min_followers', minFollowers);
-    await audit(ctx, req.user.id, 'joining.min_followers', String(minFollowers));
+    await setSetting(db, 'follower_check_mode', checkMode);
+    await audit(ctx, req.user.id, 'joining.follower_check', `${minFollowers} followers, checked ${checkMode === 'manual' ? 'by hand' : 'automatically'}`);
     ctx.bus.publish('competition', {});
-    res.json({ minFollowers });
+    res.json({ minFollowers, checkMode });
+  });
+
+  // Tries one account through the services, ignoring saved answers, and shows what each said.
+  router.post('/followers/test', async (req, res) => {
+    const platform = PLATFORMS.includes(req.body?.platform) ? req.body.platform : null;
+    if (!platform) throw new HttpError(400, 'Choose Instagram, TikTok or Facebook.');
+    const link = socialLink(req.body?.account, platform);
+    if (!link) throw new HttpError(400, 'Enter a username or link to test.');
+    const result = await ctx.followers.lookupAccount(platform, link, { fresh: true });
+    res.json({ platform, link, mode: ctx.followers.mode, ...result });
+  });
+
+  router.post('/followers/providers/:name/resume', async (req, res) => {
+    if (!ctx.followers.providers.some((p) => p.name === req.params.name)) throw new HttpError(404, 'Unknown service.');
+    await setSetting(db, `follower_pause_${req.params.name}`, '');
+    await audit(ctx, req.user.id, 'followers.resume', req.params.name);
+    res.json({ ok: true });
   });
 
   router.post('/whatsapp-groups', async (req, res) => {

@@ -379,6 +379,7 @@ export function FollowerRow({ platform, account, result, minFollowers }) {
         {result?.status === 'found' ? <><b>{num(result.followers)}</b> {result.followers === 1 ? 'follower' : 'followers'}</> : null}
         {result?.status === 'missing' ? 'Account not found' : null}
         {result?.status === 'unavailable' ? 'Could not be read' : null}
+        {result?.status === 'skipped' ? 'Not needed' : null}
       </span>
       {passed ? <span className="follower-tick" aria-label="Enough followers">✓</span> : null}
     </li>

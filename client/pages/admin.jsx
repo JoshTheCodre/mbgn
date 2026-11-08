@@ -201,7 +201,7 @@ function ContestantsTab({ onChange }) {
                       {!c.tiktok && !c.instagram && !c.facebook ? 'None given' : null}
                     </dd></div>
                     {c.followerResults.length ? (
-                      <div><dt>Followers</dt><dd>{c.followerResults.map((r) => `${PLATFORM_NAMES[r.platform]}: ${r.status === 'found' ? num(r.followers) : r.status === 'missing' ? 'not found' : 'could not be read'}`).join(' · ')}</dd></div>
+                      <div><dt>Followers</dt><dd>{c.followerResults.map((r) => `${PLATFORM_NAMES[r.platform]}: ${r.status === 'found' ? num(r.followers) : r.status === 'missing' ? 'not found' : r.status === 'skipped' ? 'not checked, another account passed' : 'could not be read'}`).join(' · ')}</dd></div>
                     ) : null}
                     {c.whatsappGroupName ? <div><dt>WhatsApp group</dt><dd>{c.whatsappGroupName}</dd></div> : null}
                     {c.adjustedVotes ? <div><dt>Votes changed by admins</dt><dd>{c.adjustedVotes > 0 ? '+' : ''}{num(c.adjustedVotes)} of {num(c.totalVotes)}</dd></div> : null}
@@ -508,10 +508,130 @@ function EnquiriesTab({ onChange }) {
 }
 
 const CHECK_MODES = {
-  live: 'Follower counts are read automatically when someone applies.',
-  test: 'Test mode: follower counts are made up until the data service key is added.',
-  manual: 'No data service is connected, so every application waits for you to check the accounts by hand.',
+  live: 'Follower counts are read automatically when someone applies, by the services below in order. When one has no answer or runs out of free credits, the next takes over. If none can read an account, the application comes to you marked “Check followers by hand”.',
+  test: 'Test mode: follower counts are made up, because no service key has been added yet. Add at least one key below to read real counts.',
+  manual: 'No service key has been added, so every application waits for you to check the accounts by hand.',
 };
+
+const PLATFORM_SHORT = { instagram: 'Instagram', tiktok: 'TikTok', facebook: 'Facebook' };
+
+// How follower counts are read: the chain of services, choosing to check by hand, and a test.
+function FollowerCheckPanel({ data, reload }) {
+  const { refreshCompetition } = useApp();
+  const [error, setError] = useState(null);
+  const [saved, setSaved] = useState(false);
+  const [trial, setTrial] = useState(null);
+  const [testing, setTesting] = useState(false);
+
+  async function save(e) {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    setError(null);
+    setSaved(false);
+    try {
+      await api('/admin/joining', { method: 'PUT', body: { minFollowers: Number(f.get('minFollowers')), checkMode: f.get('checkMode') } });
+      setSaved(true);
+      reload();
+      refreshCompetition({ fresh: true });
+    } catch (err) {
+      setError(err);
+    }
+  }
+
+  async function test(e) {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    setError(null);
+    setTrial(null);
+    setTesting(true);
+    try {
+      setTrial(await api('/admin/followers/test', { body: { platform: f.get('platform'), account: f.get('account') } }));
+      reload();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  async function resume(name) {
+    await api(`/admin/followers/providers/${name}/resume`, { method: 'POST' }).catch(setError);
+    reload();
+  }
+
+  const label = (name) => data.providers.find((p) => p.name === name)?.label ?? name;
+  return (
+    <>
+      <h2>Follower check</h2>
+      <p className="muted">{data.checkSetting === 'manual' ? 'You chose to check every application by hand.' : CHECK_MODES[data.checkMode]}</p>
+      <form className="stack" onSubmit={save}>
+        <div className="form-grid">
+          <Field label="Followers needed" hint="On at least one of Instagram, TikTok or Facebook.">
+            <input key={data.minFollowers} name="minFollowers" type="number" min="0" defaultValue={data.minFollowers} required />
+          </Field>
+          <Field label="How followers are checked">
+            <select key={data.checkSetting} name="checkMode" defaultValue={data.checkSetting}>
+              <option value="auto">Automatically, with the services below</option>
+              <option value="manual">By hand, by an admin</option>
+            </select>
+          </Field>
+        </div>
+        <button className="btn btn-ghost">Save</button>
+      </form>
+      {saved ? <p className="note note-good">Saved.</p> : null}
+      <ErrorNote error={error} />
+
+      <h3>Services, in the order they are tried</h3>
+      <div className="table-wrap">
+        <table className="data-table services-table">
+          <thead><tr><th>Service</th><th>Reads</th><th>Status</th><th className="num">Checks (30 days)</th></tr></thead>
+          <tbody>
+            {data.providers.map((p) => (
+              <tr key={p.name}>
+                <td><b>{p.label}</b></td>
+                <td>{p.platforms.map((x) => PLATFORM_SHORT[x]).join(', ')}</td>
+                <td>
+                  {!p.configured ? <span className="muted">Not set up. Add <code>{p.env}</code> on Vercel.</span> : null}
+                  {p.configured && p.pausedUntil ? <><em className="tag tag-review">Out of credits</em> <small className="muted">skipped until {dateTime(p.pausedUntil)}</small> <button type="button" className="text-link as-button" onClick={() => resume(p.name)}>Try again now</button></> : null}
+                  {p.configured && !p.pausedUntil ? <em className="tag tag-approved">Ready</em> : null}
+                  {p.configured && p.credits !== null ? <small className="muted"> {num(p.credits)} credits left</small> : null}
+                </td>
+                <td className="num">{num(p.used30d)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Test an account</h3>
+      <form className="inline-form" onSubmit={test}>
+        <Field label="Network">
+          <select name="platform" defaultValue="instagram">
+            {Object.entries(PLATFORM_SHORT).map(([value, name]) => <option key={value} value={value}>{name}</option>)}
+          </select>
+        </Field>
+        <Field label="Username or link"><input name="account" placeholder="@username" required /></Field>
+        <button className="btn btn-primary" disabled={testing}>{testing ? 'Checking…' : 'Check'}</button>
+      </form>
+      {trial ? (
+        <div className="note follower-trial">
+          <p>
+            <b>{trial.status === 'found' ? `${num(trial.followers)} followers` : trial.status === 'missing' ? 'Account not found' : 'Could not be read'}</b>
+            {trial.source && trial.source !== 'test' ? ` · read by ${label(trial.source)}` : ''}
+            {trial.source === 'test' ? ' · test mode, made-up count' : ''}
+          </p>
+          {trial.attempts?.length ? (
+            <ul>
+              {trial.attempts.map((a) => (
+                <li key={a.provider}>{label(a.provider)}: {a.status === 'found' ? `${num(a.followers)} followers` : a.detail ?? a.status}{a.ms ? ` (${(a.ms / 1000).toFixed(1)}s)` : ''}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+    </>
+  );
+}
 
 function GroupRow({ group, onSave }) {
   const [editing, setEditing] = useState(false);
@@ -551,26 +671,11 @@ function GroupRow({ group, onSave }) {
 }
 
 function JoiningPanels() {
-  const { refreshCompetition } = useApp();
   const { data, reload } = useFetch('/admin/joining');
   const [error, setError] = useState(null);
   const [message, setMessage] = useState(null);
 
   const placedNote = (placed) => (placed ? `Sent the link to ${plural(placed, 'waiting contestant')}.` : null);
-
-  async function saveMinimum(e) {
-    e.preventDefault();
-    setError(null);
-    setMessage(null);
-    try {
-      await api('/admin/joining', { method: 'PUT', body: { minFollowers: Number(new FormData(e.currentTarget).get('minFollowers')) } });
-      setMessage('Followers needed has been saved.');
-      reload();
-      refreshCompetition({ fresh: true });
-    } catch (err) {
-      setError(err);
-    }
-  }
 
   async function addGroup(e) {
     e.preventDefault();
@@ -609,14 +714,7 @@ function JoiningPanels() {
   return (
     <>
       <section className="panel">
-        <h2>Follower check</h2>
-        <p className="muted">{CHECK_MODES[data.checkMode]}</p>
-        <form className="inline-form" onSubmit={saveMinimum}>
-          <Field label="Followers needed" hint="On at least one of Instagram, TikTok or Facebook.">
-            <input key={data.minFollowers} name="minFollowers" type="number" min="0" defaultValue={data.minFollowers} required />
-          </Field>
-          <button className="btn btn-ghost">Save</button>
-        </form>
+        <FollowerCheckPanel data={data} reload={reload} />
       </section>
       <section className="panel">
         <h2>WhatsApp groups</h2>

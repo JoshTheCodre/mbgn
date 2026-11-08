@@ -571,17 +571,18 @@ export const Contestants = whileVoting(() => {
 
 // Shown every time someone goes to pay: a bigger amount is always one tap away, and saying no
 // is just as easy.
-function UpsellDialog({ open, votes, offers, votePrice, onPick, onClose }) {
+function UpsellDialog({ open, votes, offers, votePrice, contestant, onPick, onClose }) {
   const current = offers.length ? offers[0].price - offers[0].extra : 0;
+  const best = offers[0];
   return (
-    <Dialog open={open} onClose={onClose} title="Get more votes for your money">
-      <p className="muted">Bulk votes cost less each, and every vote moves her up the leaderboard.</p>
+    <Dialog open={open} onClose={onClose} title={best ? `Give ${contestant.name} ${num(best.votes)} votes for ${naira(best.price)}` : 'Get more votes for your money'}>
+      <p className="muted">Bulk votes cost less each, and every vote moves {contestant.name} ({contestant.code}) up the leaderboard.</p>
       <ul className="upsell-offers">
         {offers.map((o, i) => (
           <li key={o.votes}>
             <button type="button" className={`upsell-offer ${i === 0 ? 'best' : ''}`} onClick={() => onPick(o.votes)}>
               {i === 0 ? <span className="upsell-tag">Most popular</span> : null}
-              <span className="upsell-votes"><b>{num(o.votes)}</b> votes</span>
+              <span className="upsell-votes"><b>{num(o.votes)}</b> votes for {contestant.name}</span>
               <span className="upsell-price">{naira(o.price)}</span>
               <small>
                 {naira(Math.round(o.price / o.votes))} a vote{o.saving > 0 ? ` · save ${naira(o.saving)}` : ''}
@@ -706,7 +707,7 @@ function VotePanel({ contestant, viaLink }) {
         <button className="btn btn-vote btn-wide" disabled={busy}>{busy ? 'Opening checkout…' : `Pay ${naira(priceOf(amount))} and vote`}</button>
       ) : null}
       <ErrorNote error={error} />
-      <UpsellDialog open={offering} votes={amount} offers={offers} votePrice={votePrice} onPick={pay} onClose={() => setOffering(false)} />
+      <UpsellDialog open={offering} votes={amount} offers={offers} votePrice={votePrice} contestant={contestant} onPick={pay} onClose={() => setOffering(false)} />
     </form>
   );
 }

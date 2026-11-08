@@ -24,7 +24,7 @@ export async function createContext(config) {
     mailer: createMailer(config, db),
     photos: createPhotoStore(config),
     provider: config.paystack ? createPaystack(config) : createSimulator(db),
-    followers: createFollowerChecker(config),
+    followers: createFollowerChecker(config, db),
     // Work that can finish after the response. The Vercel runtime swaps in waitUntil, so the
     // function stays alive for it.
     background: (promise) => { promise.catch((err) => console.error('Background work failed:', err.message)); },
