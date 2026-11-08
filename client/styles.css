@@ -893,6 +893,38 @@ select option { background: var(--surface); }
 .proof-verified { margin-top: 8px !important; color: #9be3b4; font-size: .85rem; font-weight: 600; }
 .proof .pay-actions { margin-top: 0; }
 
+/* Contestant login, profile and rounds */
+.register-login, .reg-login { margin: 10px 0 0; font-size: .92rem; }
+.reg-login { color: var(--on-panel); opacity: .9; }
+.reg-login a { color: inherit; font-weight: 600; }
+.pin-input { letter-spacing: .4em; font-size: 1.2rem; max-width: 180px; }
+.no-pin { margin-top: 20px; padding: 14px 16px; background: var(--surface); border-radius: var(--radius-s); }
+.no-pin summary { cursor: pointer; font-weight: 600; }
+.no-pin .stack { margin-top: 10px; }
+.profile-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px 18px; margin: 10px 0; }
+.profile-list .wide { grid-column: 1 / -1; }
+.profile-list dt { color: var(--muted); font-size: .82rem; }
+.profile-list dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.pin-panel.needs-pin { border: 2px solid var(--accent); }
+.round-panel { display: grid; gap: 6px; }
+.round-panel h2 { margin: 0; }
+.round-panel.safe { border-left: 4px solid var(--good-text); }
+.round-panel.at-risk { border-left: 4px solid var(--bad-text); }
+.round-note { margin: 10px 0; font-size: .92rem; }
+.round-note.light { color: var(--on-panel); opacity: .92; }
+.probation-tag { vertical-align: middle; font-size: .8rem; }
+.round-list { display: grid; gap: 10px; margin: 14px 0; padding: 0; list-style: none; }
+.round-list li { padding: 12px 14px; background: var(--bg); border-radius: var(--radius-s); }
+.round-list li.current { box-shadow: inset 3px 0 0 var(--accent); }
+.round-list li.closed { opacity: .75; }
+.round-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; }
+.round-head small { display: block; color: var(--muted); }
+.round-preview { margin: 12px 0; padding: 12px 14px; background: var(--surface-2); border-radius: var(--radius-s); }
+.round-preview h3 { margin: 0 0 4px; font-size: 1rem; }
+.profile-change { margin-top: 14px; padding: 12px 14px; background: var(--warn-bg); color: var(--warn-text); border-radius: var(--radius-s); }
+.profile-change h3 { margin: 0 0 6px; font-size: 1rem; }
+.profile-change img { width: 96px; height: 96px; object-fit: cover; border-radius: 12px; }
+
 /* Admin: follower-count services */
 .services-table { min-width: 560px; }
 .services-table code { font-size: .82rem; }

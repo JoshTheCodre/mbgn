@@ -4,7 +4,7 @@ import {
   api, dateTime, naira, num, plural, registrationOpen, useApp, useFetch,
 } from '../lib.jsx';
 import {
-  BrandLogo, Dialog, ErrorNote, Field, FollowerRow, Loading, PLATFORM_NAMES, WhatsAppGroup,
+  BrandLogo, Dialog, ErrorNote, Field, FollowerRow, Loading, PLATFORM_NAMES, PinInput, WhatsAppGroup,
 } from '../ui.jsx';
 
 export function AdminLogin() {
@@ -119,7 +119,8 @@ async function shrinkPhoto(file) {
   }
 }
 
-function PhotoPicker() {
+// `current` shows the photo already on file, for someone changing it.
+export function PhotoPicker({ required = true, current = null, hint = 'JPG, PNG or WebP, up to 5 MB. Only the review team sees it until you are approved.' }) {
   const [photo, setPhoto] = useState(null);
   const [dragging, setDragging] = useState(false);
   const [problem, setProblem] = useState(null);
@@ -153,9 +154,9 @@ function PhotoPicker() {
 
   return (
     <>
-      <label className={`photo-pick ${photo ? 'has-photo' : ''} ${dragging ? 'dragging' : ''}`}>
+      <label className={`photo-pick ${photo || current ? 'has-photo' : ''} ${dragging ? 'dragging' : ''}`}>
         <span className="photo-pick-frame">
-          {photo ? <img src={photo.url} alt="Your selected photo" /> : (
+          {photo || current ? <img src={photo?.url ?? current} alt="Your selected photo" /> : (
             <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
               <circle cx="12" cy="8" r="4.2" />
               <path d="M3.8 21c.6-4.6 4-7.2 8.2-7.2s7.6 2.6 8.2 7.2c0 .4-.3.7-.7.7H4.5c-.4 0-.7-.3-.7-.7Z" />
@@ -163,9 +164,9 @@ function PhotoPicker() {
           )}
         </span>
         <span className="photo-pick-text">
-          <strong>{photo ? photo.name : 'Add your photo'}</strong>
+          <strong>{photo ? photo.name : current ? 'Your photo' : 'Add your photo'}</strong>
           <small>{photo ? photo.size : 'A clear, recent photo of your face.'}</small>
-          <span className="btn btn-ghost btn-small">{photo ? 'Change photo' : 'Choose photo'}</span>
+          <span className="btn btn-ghost btn-small">{photo || current ? 'Change photo' : 'Choose photo'}</span>
         </span>
         <input
           name="photo"
@@ -173,14 +174,14 @@ function PhotoPicker() {
           accept={PHOTO_TYPES.join(',')}
           title=" "
           aria-label="Profile photo"
-          required
+          required={required}
           onChange={choose}
           onDragEnter={() => setDragging(true)}
           onDragLeave={() => setDragging(false)}
         />
       </label>
       {problem ? <p className="note note-error" role="alert">{problem}</p> : null}
-      <p className="field-hint">JPG, PNG or WebP, up to 5 MB. Only the review team sees it until you are approved.</p>
+      <p className="field-hint">{hint}</p>
     </>
   );
 }
@@ -316,6 +317,10 @@ export function Register() {
       showError(new Error('Please add at least one of your Instagram, TikTok or Facebook accounts.'));
       return;
     }
+    if (form.get('pin') !== form.get('pinAgain')) {
+      showError(new Error('The two PINs do not match.'));
+      return;
+    }
     setError(null);
     setResponse(null);
     setAccounts(given);
@@ -348,6 +353,7 @@ export function Register() {
         <p className="eyebrow">Contestant application</p>
         <h1>Join the contest</h1>
         <p className="muted">You need at least {minFollowers} followers on Instagram, TikTok or Facebook. One account is enough, and we check it as soon as you send this form.</p>
+        <p className="register-login">Already registered? <Link to="/dashboard">Log in with your phone number and PIN</Link></p>
       </header>
       <form className="register-form" onSubmit={submit}>
         <fieldset>
@@ -388,11 +394,18 @@ export function Register() {
             <Field label="Phone number"><input name="phone" type="tel" autoComplete="tel" required /></Field>
             <Field label="WhatsApp number"><input name="whatsapp" type="tel" required /></Field>
           </div>
-          <p className="field-hint">Your email and WhatsApp number also bring back your dashboard on a new phone.</p>
+        </fieldset>
+        <fieldset>
+          <legend>Your login PIN</legend>
+          <p className="field-hint">With your phone or WhatsApp number, this PIN opens your dashboard on any phone. Keep it to yourself.</p>
+          <div className="form-grid">
+            <Field label="Choose a 4-digit PIN"><PinInput name="pin" autoComplete="new-password" required /></Field>
+            <Field label="Type it again"><PinInput name="pinAgain" autoComplete="new-password" required /></Field>
+          </div>
         </fieldset>
         <div ref={errorRef}>
           <ErrorNote error={error} />
-          {error?.status === 409 ? <p><Link to="/dashboard">Open your dashboard</Link></p> : null}
+          {error?.status === 409 ? <p><Link to="/dashboard">Log in to your dashboard</Link></p> : null}
         </div>
         <button className="btn btn-primary btn-wide">Check my followers and join</button>
       </form>

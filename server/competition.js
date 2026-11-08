@@ -91,6 +91,7 @@ export function publicContestant(row, baseline) {
     position: row.position,
     previousPosition: row.previous_position,
     movement24h: before == null || row.position == null ? null : before - row.position,
+    onProbation: Boolean(row.on_probation),
   };
 }
 

@@ -111,6 +111,7 @@ function registrationForm(name, overrides = {}) {
     state: 'Lagos',
     location: 'Ikeja',
     bio: 'A short biography that is certainly long enough.',
+    pin: '2468',
     instagram: `@${name.toLowerCase()}`,
     ...overrides,
   };
@@ -252,19 +253,21 @@ describe('MBGN platform', () => {
     assert.equal((await anon.post('/votes/fund', { code: 'MBG001', quantity: 1, fund: 1 })).status, 404);
     assert.equal((await anon.post('/votes', { code: 'MBG001', quantity: 1 })).status, 404);
   });
-  test('joining is what identifies a contestant, with no password', async () => {
+  test('joining is what identifies a contestant, and a phone number and PIN bring it back anywhere', async () => {
     const person = client(app.base);
     const form = registrationForm('Joiner', { whatsapp: '+234 803 555 0101' });
     assert.equal((await person.req('POST', '/contestants/register', { form })).status, 201);
     assert.equal((await person.get('/me/dashboard')).data.status, 'pending');
 
-    // A new device: wrong details are refused, the right ones bring the dashboard back.
+    // A new device: wrong details are refused, the right phone number and PIN bring the dashboard back.
     const phone = client(app.base);
     assert.equal((await phone.get('/me/dashboard')).status, 401);
-    assert.equal((await phone.post('/contestants/recognise', { email: 'joiner@test.local', whatsapp: '08000000000' })).status, 401);
-    assert.equal((await phone.post('/contestants/recognise', { email: 'nobody@test.local', whatsapp: '08035550101' })).status, 401);
-    assert.equal((await phone.post('/contestants/recognise', { email: 'joiner@test.local', whatsapp: '' })).status, 401);
-    const back = await phone.post('/contestants/recognise', { email: 'JOINER@test.local', whatsapp: '08035550101' });
+    assert.equal((await phone.post('/contestants/login', { phone: '08035550101', pin: '9999' })).status, 401);
+    assert.equal((await phone.post('/contestants/login', { phone: '08000000000', pin: '2468' })).status, 401);
+    assert.equal((await phone.post('/contestants/login', { phone: '08035550101', pin: '24' })).status, 401);
+    // Email and WhatsApp number only work for someone without a PIN.
+    assert.equal((await phone.post('/contestants/recognise', { email: 'joiner@test.local', whatsapp: '08035550101' })).status, 401);
+    const back = await phone.post('/contestants/login', { phone: '+234 (0) 803 555 0101', pin: '2468' });
     assert.equal(back.status, 200);
     assert.equal((await phone.get('/me/dashboard')).data.name, 'Joiner');
 
@@ -1458,6 +1461,165 @@ describe('Several keys for one service', () => {
       assert.deepEqual(config.followerKeys.apify, []);
     } finally {
       process.env = keep;
+    }
+  });
+});
+
+describe('Contestant PIN, profile and rounds', () => {
+  let app;
+  let admin;
+  before(async () => {
+    app = await boot();
+    admin = client(app.base);
+    await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+  });
+  after(() => app.close());
+
+  test('a PIN must be 4 digits and not obvious, and a WhatsApp number joins only once', async () => {
+    const join = (name, overrides) => client(app.base).req('POST', '/contestants/register', { form: registrationForm(name, overrides) });
+    assert.equal((await join('ShortPin', { pin: '12' })).status, 400);
+    assert.equal((await join('EasyPin', { pin: '1234' })).status, 400);
+    assert.equal((await join('NoPin', { pin: '' })).status, 400);
+    assert.equal((await join('FirstNumber', { whatsapp: '0809 111 2222' })).status, 201);
+    const again = await join('SecondNumber', { whatsapp: '+2348091112222' });
+    assert.equal(again.status, 409);
+    assert.match(again.data.error, /already registered/);
+  });
+
+  test('five wrong PINs lock the account for a while, and an admin can reset a forgotten PIN', async () => {
+    const { person, id } = await makeContestant(app, admin, 'Locky');
+    const { whatsapp } = (await person.get('/me/dashboard')).data.profile;
+    const thief = client(app.base);
+    for (let i = 0; i < 5; i += 1) assert.equal((await thief.post('/contestants/login', { phone: whatsapp, pin: '9753' })).status, 401);
+    const locked = await thief.post('/contestants/login', { phone: whatsapp, pin: '2468' });
+    assert.equal(locked.status, 429);
+    assert.match(locked.data.error, /Too many wrong PINs/);
+
+    // The admin resets it: the old PIN stops working, and email and WhatsApp number open the dashboard once.
+    assert.equal((await admin.post(`/admin/contestants/${id}/reset-pin`)).data.hasPin, false);
+    assert.equal((await person.get('/me/dashboard')).status, 401);
+    const returning = client(app.base);
+    assert.equal((await returning.post('/contestants/login', { phone: whatsapp, pin: '2468' })).status, 401);
+    assert.equal((await returning.post('/contestants/recognise', { email: 'locky@test.local', whatsapp })).status, 200);
+    assert.equal((await returning.get('/me/dashboard')).data.profile.hasPin, false);
+    assert.equal((await returning.req('PUT', '/me/pin', { body: { pin: '0000' } })).status, 400);
+    assert.equal((await returning.req('PUT', '/me/pin', { body: { pin: '8642' } })).status, 200);
+    assert.equal((await client(app.base).post('/contestants/login', { phone: whatsapp, pin: '8642' })).status, 200);
+
+    // Changing it needs the current PIN, and signs out other phones.
+    const second = client(app.base);
+    await second.post('/contestants/login', { phone: whatsapp, pin: '8642' });
+    assert.equal((await returning.req('PUT', '/me/pin', { body: { currentPin: '1111', pin: '7531' } })).status, 400);
+    assert.equal((await returning.req('PUT', '/me/pin', { body: { currentPin: '8642', pin: '7531' } })).status, 200);
+    assert.equal((await second.get('/me/dashboard')).status, 401);
+    assert.equal((await returning.get('/me/dashboard')).status, 200);
+  });
+
+  test('contestants can correct their registration, and a new public name or photo waits for an admin', async () => {
+    const person = client(app.base);
+    assert.equal((await person.req('POST', '/contestants/register', { form: registrationForm('Editor') })).status, 201);
+    const edit = (person, overrides = {}) => {
+      const form = new FormData();
+      const fields = {
+        fullName: 'Editor Real-Name', stageName: 'Editor', email: 'editor@test.local', phone: '08030000999', whatsapp: '08050000999',
+        state: 'Oyo', location: 'Ibadan', bio: 'A corrected biography that is long enough to pass.', ...overrides,
+      };
+      for (const [k, v] of Object.entries(fields)) if (k !== 'photo') form.set(k, v);
+      if (overrides.photo) form.set('photo', new Blob([PNG], { type: 'image/png' }), 'new.png');
+      return person.req('PUT', '/me/profile', { form });
+    };
+
+    // Before approval, everything changes straight away.
+    const early = await edit(person, { stageName: 'Editora', photo: true });
+    assert.equal(early.status, 200);
+    assert.equal(early.data.profile.stageName, 'Editora');
+    assert.equal(early.data.profile.location, 'Ibadan');
+    assert.equal(early.data.waiting, false);
+    assert.equal((await edit(person, { state: 'Atlantis' })).status, 400);
+
+    const { data: [row] } = await admin.get('/admin/contestants?q=Editora');
+    const { data: approved } = await admin.post(`/admin/contestants/${row.id}/approve`);
+
+    // After approval, a new name and photo wait, and the public keeps seeing the old ones.
+    const later = await edit(person, { stageName: 'Queen Editora', bio: 'An even better biography for the public profile.', photo: true });
+    assert.equal(later.data.waiting, true);
+    assert.equal(later.data.profile.pendingStageName, 'Queen Editora');
+    const publicNow = (await client(app.base).get(`/contestants/${approved.code}`)).data;
+    assert.equal(publicNow.name, 'Editora');
+    assert.equal(publicNow.bio, 'An even better biography for the public profile.');
+    const pendingPhoto = later.data.profile.pendingPhotoUrl;
+    assert.equal((await fetch(`${app.base}${pendingPhoto}`)).status, 404);
+    assert.equal((await fetch(`${app.base}${pendingPhoto}`, { headers: { Cookie: person.cookie } })).status, 200);
+
+    const { data: [waiting] } = await admin.get('/admin/contestants?q=Editora');
+    assert.equal(waiting.pendingStageName, 'Queen Editora');
+    await admin.post(`/admin/contestants/${row.id}/profile-changes/approve`);
+    const publicAfter = (await client(app.base).get(`/contestants/${approved.code}`)).data;
+    assert.equal(publicAfter.name, 'Queen Editora');
+    assert.equal(publicAfter.photoUrl, pendingPhoto);
+    assert.equal((await admin.post(`/admin/contestants/${row.id}/profile-changes/approve`)).status, 409);
+
+    // Someone else's email or WhatsApp number is refused.
+    assert.equal((await edit(person, { stageName: 'Queen Editora', email: 'locky@test.local' })).status, 409);
+  });
+
+  test('rounds eliminate whoever misses the rules, put the next few on probation, and a second miss is final', async () => {
+    const fresh = await boot();
+    try {
+      const boss = client(fresh.base);
+      await boss.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const people = [];
+      for (const [name, votes] of [['Alpha', 50], ['Bravo', 40], ['Charlie', 30], ['Delta', 20], ['Echo', 10]]) {
+        const c = await makeContestant(fresh, boss, name);
+        await payForVotes(client(fresh.base), c.code, votes);
+        people.push({ ...c, name });
+      }
+      const later = new Date(Date.now() + 864e5).toISOString();
+      assert.equal((await boss.post('/admin/rounds', { name: 'Round 1', endsAt: later })).status, 400);
+      assert.equal((await boss.post('/admin/rounds', { name: 'Round 1', endsAt: later, keepTop: 2, probation: 1 })).status, 201);
+      assert.equal((await client(fresh.base).get('/competition')).data.round.name, 'Round 1');
+
+      // The dashboard and the admin preview agree on who is at risk.
+      const charlie = people[2].person;
+      assert.equal((await charlie.get('/me/dashboard')).data.round.safe, false);
+      assert.equal((await people[0].person.get('/me/dashboard')).data.round.safe, true);
+      const { data: { preview } } = await boss.get('/admin/rounds');
+      assert.deepEqual([preview.safe, preview.probation.map((c) => c.name), preview.eliminated.map((c) => c.name)], [2, ['Charlie'], ['Delta', 'Echo']]);
+
+      const { data: { rounds: [round1] } } = await boss.get('/admin/rounds');
+      const closed = await boss.post(`/admin/rounds/${round1.id}/close`);
+      assert.equal(closed.status, 200);
+      assert.equal(closed.data.result.eliminated.length, 2);
+      assert.equal((await boss.post(`/admin/rounds/${round1.id}/close`)).status, 409);
+
+      // Eliminated contestants leave the leaderboard, their link explains why, and votes are refused.
+      const board = (await client(fresh.base).get('/leaderboard')).data.rows.map((r) => r.name);
+      assert.deepEqual(board, ['Alpha', 'Bravo', 'Charlie']);
+      const gone = await client(fresh.base).get(`/contestants/${people[3].code}`);
+      assert.equal(gone.status, 410);
+      assert.match(gone.data.error, /eliminated at the end of Round 1/);
+      assert.equal((await client(fresh.base).post('/votes/pay', { voterName: 'Fan', code: people[3].code, quantity: 1 })).status, 404);
+      assert.equal((await client(fresh.base).get(`/contestants/${people[2].code}`)).data.onProbation, true);
+      assert.equal((await people[3].person.get('/me/dashboard')).data.status, 'eliminated');
+      assert.ok(await fresh.ctx.db.prepare("SELECT 1 FROM notifications WHERE kind = 'round' AND message LIKE 'You are on probation%'").get());
+
+      // Round 2 ends by time. Charlie misses again, so probation does not save her twice.
+      const soon = new Date(Date.now() + 300).toISOString();
+      await boss.post('/admin/rounds', { name: 'Round 2', endsAt: soon, minVotes: 5, probation: 3 });
+      await payForVotes(client(fresh.base), people[0].code, 6);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      assert.equal((await client(fresh.base).get('/competition')).data.round, null);
+      const left = (await client(fresh.base).get('/leaderboard')).data.rows.map((r) => [r.name, r.onProbation]);
+      assert.deepEqual(left, [['Alpha', false], ['Bravo', true]]);
+      const { data: { rounds } } = await boss.get('/admin/rounds');
+      assert.deepEqual(rounds[1].result.eliminated.map((c) => c.name), ['Charlie']);
+
+      // An admin can bring an eliminated contestant back.
+      const { data: [delta] } = await boss.get('/admin/contestants?q=Delta');
+      assert.equal((await boss.post(`/admin/contestants/${delta.id}/reinstate`)).data.status, 'approved');
+      assert.equal((await boss.post(`/admin/contestants/${delta.id}/probation`, { on: true })).data.onProbation, true);
+    } finally {
+      await fresh.close();
     }
   });
 });

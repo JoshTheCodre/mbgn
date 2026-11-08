@@ -9,6 +9,7 @@ import { createMailer } from './mailer.js';
 import { createPhotoStore } from './photos.js';
 import { createPaystack, createSimulator, reconcilePending } from './payments.js';
 import { createBus } from './realtime.js';
+import { closeRoundsIfDue } from './rounds.js';
 import { startVotingIfDue } from './stages.js';
 import { adminRouter } from './routes/admin.js';
 import { contestantRouter, votingRouter } from './routes/member.js';
@@ -64,6 +65,7 @@ export async function runDueJobs(ctx) {
   if (await claimJob(ctx.db, 'job_rank_snapshot', 3600000)) await takeRankSnapshot(ctx.db);
   if (await claimJob(ctx.db, 'job_reconcile', 5 * 60000)) await reconcilePending(ctx);
   await startVotingIfDue(ctx);
+  await closeRoundsIfDue(ctx);
 }
 
 export function createApp(ctx) {

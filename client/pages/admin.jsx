@@ -140,6 +140,15 @@ function ContestantsTab({ onChange }) {
       setActionError(err);
     }
   }
+  async function simple(c, path, body = {}) {
+    setActionError(null);
+    try {
+      await api(`/admin/contestants/${c.id}/${path}`, { body });
+      refresh();
+    } catch (err) {
+      setActionError(err);
+    }
+  }
   async function setCategory(c, category) {
     await api(`/admin/contestants/${c.id}`, { method: 'PATCH', body: { category } }).catch(setActionError);
     reload();
@@ -159,7 +168,7 @@ function ContestantsTab({ onChange }) {
         <Field label="Status">
           <select value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">All</option>
-            {['pending', 'approved', 'rejected', 'suspended', 'disqualified'].map((s) => <option key={s}>{s}</option>)}
+            {['pending', 'approved', 'rejected', 'suspended', 'disqualified', 'eliminated'].map((s) => <option key={s}>{s}</option>)}
           </select>
         </Field>
         <Field label="Search name, code or email"><input type="search" value={q} onChange={(e) => setQ(e.target.value)} /></Field>
@@ -175,6 +184,8 @@ function ContestantsTab({ onChange }) {
                   <strong>{c.stageName}</strong> <em className={`tag tag-${c.status}`}>{c.status}</em>
                   {c.verification === 'passed' ? <em className="tag tag-approved">Followers passed</em> : null}
                   {c.verification === 'review' ? <em className="tag tag-review">Check followers by hand</em> : null}
+                  {c.onProbation ? <em className="tag tag-review">On probation</em> : null}
+                  {c.pendingStageName || c.pendingPhotoUrl ? <em className="tag tag-review">Profile change waiting</em> : null}
                   <small>{c.code ?? 'No code yet'}{c.position ? ` · position ${c.position} · ${num(c.totalVotes)} votes` : ''}</small>
                   <small>{c.location}, {c.state} · applied {dateTime(c.createdAt)}</small>
                 </div>
@@ -183,7 +194,7 @@ function ContestantsTab({ onChange }) {
                   {c.status === 'pending' ? <button type="button" className="btn btn-ghost btn-small" onClick={() => statusAction(c, 'reject', 'Reject application')}>Reject</button> : null}
                   {c.status === 'approved' ? <button type="button" className="btn btn-ghost btn-small" onClick={() => statusAction(c, 'suspend', 'Suspend contestant', 'The profile disappears from the public site and cannot receive votes.')}>Suspend</button> : null}
                   {c.status === 'approved' || c.status === 'suspended' ? <button type="button" className="btn btn-ghost btn-small" onClick={() => statusAction(c, 'disqualify', 'Disqualify contestant', 'Removed from the leaderboard. The code is never reassigned.')}>Disqualify</button> : null}
-                  {c.status === 'suspended' || c.status === 'disqualified' ? <button type="button" className="btn btn-ghost btn-small" onClick={() => statusAction(c, 'reinstate', 'Reinstate contestant', 'Returns to the leaderboard with the existing votes and code.')}>Reinstate</button> : null}
+                  {['suspended', 'disqualified', 'eliminated'].includes(c.status) ? <button type="button" className="btn btn-ghost btn-small" onClick={() => statusAction(c, 'reinstate', 'Reinstate contestant', 'Returns to the leaderboard with the existing votes and code.')}>Reinstate</button> : null}
                   <button type="button" className="btn btn-ghost btn-small" aria-expanded={opened === c.id} onClick={() => setOpened(opened === c.id ? null : c.id)}>{opened === c.id ? 'Hide' : 'Details'}</button>
                 </div>
               </div>
@@ -212,7 +223,20 @@ function ContestantsTab({ onChange }) {
                     <Field label="Category / group"><input defaultValue={c.category ?? ''} onBlur={(e) => { if (e.target.value !== (c.category ?? '')) setCategory(c, e.target.value); }} /></Field>
                     {c.status === 'approved' ? <button type="button" className="btn btn-ghost" onClick={() => resend(c)}>Resend code &amp; link</button> : null}
                     {c.status === 'approved' ? <Link className="btn btn-ghost" to={`/c/${c.code}`}>Public profile</Link> : null}
+                    {c.status === 'approved' ? <button type="button" className="btn btn-ghost" onClick={() => simple(c, 'probation', { on: !c.onProbation })}>{c.onProbation ? 'End probation' : 'Put on probation'}</button> : null}
+                    <button type="button" className="btn btn-ghost" onClick={() => simple(c, 'reset-pin')}>{c.hasPin ? 'Reset PIN' : 'No PIN set'}</button>
                   </div>
+                  {c.pendingStageName || c.pendingPhotoUrl ? (
+                    <div className="profile-change">
+                      <h3>Profile change waiting</h3>
+                      {c.pendingPhotoUrl ? <img src={c.pendingPhotoUrl} alt={`New photo for ${c.stageName}`} /> : null}
+                      {c.pendingStageName ? <p>New name: <b>{c.pendingStageName}</b> (now {c.stageName})</p> : null}
+                      <div className="admin-actions">
+                        <button type="button" className="btn btn-primary btn-small" onClick={() => simple(c, 'profile-changes/approve')}>Approve change</button>
+                        <button type="button" className="btn btn-ghost btn-small" onClick={() => simple(c, 'profile-changes/reject')}>Reject</button>
+                      </div>
+                    </div>
+                  ) : null}
                   {c.status === 'approved' ? <VoteAdjuster contestant={c} onDone={refresh} /> : null}
                 </div>
               ) : null}
@@ -670,6 +694,120 @@ function GroupRow({ group, onSave }) {
   );
 }
 
+const ruleText = (r) => [
+  r.keepTop ? `top ${num(r.keepTop)} stay` : null,
+  r.minVotes ? `${num(r.minVotes)} votes needed${r.votesCounted === 'round' ? ' in the round' : ' in total'}` : null,
+  r.probation ? `${num(r.probation)} on probation` : null,
+].filter(Boolean).join(' · ');
+
+// Rounds of voting. Each round's rules decide who goes through when it ends.
+function RoundsPanel({ voting }) {
+  const { data, reload } = useFetch('/admin/rounds');
+  const [error, setError] = useState(null);
+  const [action, setAction] = useState(null);
+  useLive('leaderboard', reload);
+
+  async function add(e) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const f = new FormData(form);
+    const iso = (name) => (f.get(name) ? new Date(f.get(name)).toISOString() : '');
+    setError(null);
+    try {
+      await api('/admin/rounds', {
+        body: {
+          name: f.get('name'), startsAt: iso('startsAt'), endsAt: iso('endsAt'), keepTop: f.get('keepTop'), minVotes: f.get('minVotes'),
+          votesCounted: f.get('votesCounted'), probation: f.get('probation'),
+        },
+      });
+      form.reset();
+      reload();
+    } catch (err) {
+      setError(err);
+    }
+  }
+
+  async function remove(round) {
+    setError(null);
+    await api(`/admin/rounds/${round.id}`, { method: 'DELETE' }).catch(setError);
+    reload();
+  }
+
+  if (!data) return <section className="panel"><Loading /></section>;
+  const current = data.rounds.find((r) => !r.closedAt);
+  const preview = data.preview;
+  return (
+    <section className="panel">
+      <h2>Rounds and eliminations</h2>
+      <p className="muted">When a round ends, contestants who miss its rules are eliminated. Probation places let the next few below the cut stay in on a warning; anyone on probation who misses again is eliminated. Rounds end by themselves at their end time, during voting.</p>
+      <ErrorNote error={error} />
+      {data.rounds.length ? (
+        <ul className="round-list">
+          {data.rounds.map((r) => (
+            <li key={r.id} className={r.closedAt ? 'closed' : r.id === current?.id ? 'current' : ''}>
+              <div className="round-head">
+                <div>
+                  <strong>{r.name}</strong>
+                  {r.closedAt ? <em className="tag">Ended</em> : r.id === current?.id ? <em className="tag tag-approved">{voting ? 'On now' : 'First up'}</em> : <em className="tag">Next</em>}
+                  <small>{dateTime(r.startsAt)} to {dateTime(r.endsAt)} · {ruleText(r)}</small>
+                  {r.result ? <small>{num(r.result.safe)} went through · {num(r.result.probation.length)} on probation · {num(r.result.eliminated.length)} eliminated</small> : null}
+                </div>
+                {!r.closedAt ? (
+                  <div className="admin-actions">
+                    {r.id === current?.id && voting ? (
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-small"
+                        onClick={() => setAction({
+                          title: `End ${r.name} now`,
+                          description: preview ? `${num(preview.safe)} go through, ${num(preview.probation.length)} go on probation and ${num(preview.eliminated.length)} are eliminated. Everyone is told straight away.` : '',
+                          confirm: 'End the round',
+                          needsReason: false,
+                          run: () => api(`/admin/rounds/${r.id}/close`, { method: 'POST' }),
+                        })}
+                      >End now</button>
+                    ) : null}
+                    <button type="button" className="btn btn-ghost btn-small" onClick={() => remove(r)}>Remove</button>
+                  </div>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : <p className="muted empty">No rounds yet. Without rounds, voting simply runs until it closes.</p>}
+
+      {preview && current ? (
+        <div className="round-preview">
+          <h3>If {current.name} ended now</h3>
+          <p><b>{num(preview.safe)}</b> go through · <b>{num(preview.probation.length)}</b> on probation · <b>{num(preview.eliminated.length)}</b> eliminated</p>
+          {preview.probation.length ? <p className="muted small-note">Probation: {preview.probation.map((c) => `${c.name} (${c.code})`).join(', ')}</p> : null}
+          {preview.eliminated.length ? <p className="muted small-note">Eliminated: {preview.eliminated.slice(0, 30).map((c) => `${c.name} (${c.code})`).join(', ')}{preview.eliminated.length > 30 ? ` and ${num(preview.eliminated.length - 30)} more` : ''}</p> : null}
+        </div>
+      ) : null}
+
+      <h3>Add a round</h3>
+      <form className="stack" onSubmit={add}>
+        <div className="form-grid">
+          <Field label="Name"><input name="name" placeholder={`Round ${data.rounds.length + 1}`} required /></Field>
+          <Field label="Starts" hint="Blank means when the last round ends, or now."><input name="startsAt" type="datetime-local" /></Field>
+          <Field label="Ends"><input name="endsAt" type="datetime-local" required /></Field>
+          <Field label="Keep the top" hint="Blank for no limit."><input name="keepTop" type="number" min="1" placeholder="e.g. 100" /></Field>
+          <Field label="Minimum votes" hint="Blank for none."><input name="minVotes" type="number" min="1" placeholder="e.g. 500" /></Field>
+          <Field label="Votes counted">
+            <select name="votesCounted" defaultValue="round">
+              <option value="round">Votes in this round</option>
+              <option value="total">Total votes</option>
+            </select>
+          </Field>
+          <Field label="Probation places" hint="How many just below the cut stay in on a warning."><input name="probation" type="number" min="0" defaultValue="0" /></Field>
+        </div>
+        <button className="btn btn-ghost">Add round</button>
+      </form>
+      <ActionDialog action={action} onClose={() => setAction(null)} onDone={() => { setAction(null); reload(); }} />
+    </section>
+  );
+}
+
 function JoiningPanels() {
   const { data, reload } = useFetch('/admin/joining');
   const [error, setError] = useState(null);
@@ -888,6 +1026,7 @@ function CompetitionTab({ onChange }) {
         )}
       </section>
       <JoiningPanels />
+      <RoundsPanel voting={!registering} />
       {registering ? null : (
       <section className="panel">
         <h2>Voting</h2>

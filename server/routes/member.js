@@ -1,13 +1,18 @@
+import crypto from 'node:crypto';
+import multer from 'multer';
 import {
-  HttpError, asyncRouter, rateLimit, requireUser,
+  HttpError, asyncRouter, hashPassword, rateLimit, requireUser, sessionHash, verifyPassword,
 } from '../auth.js';
 import { movementBaseline, photoUrl } from '../competition.js';
-import { nowIso } from '../db.js';
+import { nowIso, tx } from '../db.js';
 import { groupById } from '../groups.js';
 import {
   emailReceipt, paymentView, settlePayment, startPayment,
 } from '../payments.js';
-import { normalizeCode } from './public.js';
+import { currentRound, roundStanding, roundView } from '../rounds.js';
+import {
+  IMAGE_TYPES, NIGERIAN_STATES, checkPin, clean, normalizeCode, validEmail, validPhone, whatsappTaken,
+} from './public.js';
 
 function maskEmail(email) {
   if (!email) return null;
@@ -111,6 +116,7 @@ export function votingRouter(ctx) {
 export function contestantRouter(ctx) {
   const { db } = ctx;
   const router = asyncRouter();
+  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
   router.use(requireUser);
 
   async function ownContestant(req) {
@@ -119,12 +125,40 @@ export function contestantRouter(ctx) {
     return row;
   }
 
+  // Everything they registered with, so they can check it and correct it.
+  const profileOf = (c) => ({
+    fullName: c.full_name,
+    stageName: c.stage_name,
+    email: c.email,
+    phone: c.phone,
+    whatsapp: c.whatsapp,
+    state: c.state,
+    location: c.location,
+    bio: c.bio,
+    instagram: c.instagram,
+    tiktok: c.tiktok,
+    facebook: c.facebook,
+    pendingStageName: c.pending_stage_name,
+    pendingPhotoUrl: c.pending_photo_file ? `/photos/${c.pending_photo_file}` : null,
+    hasPin: Boolean(c.pin_hash),
+  });
+
   router.get('/dashboard', async (req, res) => {
     const c = await ownContestant(req);
     const group = ['pending', 'approved'].includes(c.status) ? await groupById(db, c.whatsapp_group_id) : null;
+    const round = c.status === 'approved' ? await currentRound(db) : null;
+    let standing = null;
+    if (round) {
+      const { safe, probation } = await roundStanding(db, round);
+      const mine = [...safe, ...probation].find((s) => s.id === c.id);
+      standing = { votes: mine?.counted ?? 0, safe: safe.some((s) => s.id === c.id) };
+    }
     const base = {
       status: c.status,
       statusReason: c.status_reason,
+      profile: profileOf(c),
+      onProbation: Boolean(c.on_probation),
+      round: round ? { ...roundView(round), ...standing } : null,
       verification: c.verification,
       followerResults: c.follower_results ? JSON.parse(c.follower_results) : [],
       whatsappGroup: group ? { name: group.name, url: group.invite_url } : null,
@@ -178,6 +212,67 @@ export function contestantRouter(ctx) {
       },
       notifications,
     });
+  });
+
+  // Before approval, every change applies at once. After it, a new public name or photo waits for
+  // an admin, so nothing unsuitable appears on the site. Social accounts stay as checked.
+  router.put('/profile', upload.single('photo'), async (req, res) => {
+    const c = await ownContestant(req);
+    const b = req.body ?? {};
+    const fullName = clean(b.fullName, 100);
+    const stageName = clean(b.stageName, 60) || fullName;
+    const email = clean(b.email, 200).toLowerCase();
+    const phone = clean(b.phone, 20);
+    const whatsapp = clean(b.whatsapp, 20);
+    const state = clean(b.state, 40);
+    const location = clean(b.location, 100);
+    const bio = clean(b.bio, 600);
+    if (fullName.length < 2) throw new HttpError(400, 'Please enter your full name.');
+    if (!validEmail(email)) throw new HttpError(400, 'Please enter a valid email address.');
+    if (!validPhone(phone)) throw new HttpError(400, 'Please enter a valid phone number.');
+    if (!validPhone(whatsapp)) throw new HttpError(400, 'Please enter a valid WhatsApp number.');
+    if (!NIGERIAN_STATES.includes(state)) throw new HttpError(400, 'Please choose your state.');
+    if (location.length < 2) throw new HttpError(400, 'Please enter your town or city.');
+    if (bio.length < 20) throw new HttpError(400, 'Please write a short biography of at least 20 characters.');
+    if (email !== c.email && await db.prepare('SELECT 1 FROM users WHERE email = ? AND id <> ?').get(email, c.user_id)) {
+      throw new HttpError(409, 'Another account already uses that email address.');
+    }
+    if (await whatsappTaken(db, whatsapp, c.id)) throw new HttpError(409, 'Another contestant already uses that WhatsApp number.');
+
+    let photoFile = null;
+    if (req.file) {
+      const type = IMAGE_TYPES.find((t) => t.test(req.file.buffer));
+      if (!type) throw new HttpError(400, 'The photograph must be a JPG, PNG or WebP image.');
+      photoFile = `${crypto.randomBytes(16).toString('hex')}.${type.ext}`;
+      await ctx.photos.put(photoFile, req.file.buffer, type.mime);
+    }
+    const reviewed = !['pending', 'rejected'].includes(c.status);
+    const name = reviewed ? c.stage_name : stageName;
+    const pendingName = reviewed && stageName !== c.stage_name ? stageName : null;
+    const photo = photoFile && !reviewed ? photoFile : c.photo_file;
+    const pendingPhoto = reviewed ? photoFile ?? c.pending_photo_file : null;
+    await tx(db, async () => {
+      await db.prepare(`UPDATE contestants SET full_name = ?, email = ?, phone = ?, whatsapp = ?, state = ?, location = ?, bio = ?,
+        stage_name = ?, photo_file = ?, pending_stage_name = ?, pending_photo_file = ? WHERE id = ?`)
+        .run(fullName, email, phone, whatsapp, state, location, bio, name, photo, pendingName, pendingPhoto, c.id);
+      await db.prepare('UPDATE users SET email = ?, name = ?, phone = ? WHERE id = ?').run(email, fullName, phone, c.user_id);
+    });
+    if (pendingName || photoFile && reviewed) ctx.bus.publish('admin', { type: 'profile_change' });
+    const updated = await ownContestant(req);
+    res.json({ profile: profileOf(updated), photoUrl: photoUrl(updated), waiting: Boolean(updated.pending_stage_name || updated.pending_photo_file) });
+  });
+
+  // Choosing a PIN, or changing it, which needs the current one.
+  router.put('/pin', async (req, res) => {
+    const c = await ownContestant(req);
+    if (c.pin_hash && !verifyPassword(String(req.body?.currentPin ?? '').slice(0, 10), c.pin_hash)) {
+      throw new HttpError(400, 'Your current PIN is not right.');
+    }
+    checkPin(req.body?.pin);
+    await db.prepare('UPDATE contestants SET pin_hash = ?, pin_failures = 0, pin_locked_until = NULL WHERE id = ?').run(hashPassword(req.body.pin), c.id);
+    // A new PIN signs out every other device, in case the old one was shared.
+    await db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').run(c.user_id, sessionHash(req));
+    res.json({ ok: true });
   });
 
   router.post('/notifications/read', async (req, res) => {

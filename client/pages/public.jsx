@@ -256,6 +256,7 @@ function RegistrationHome() {
               {open || joined ? <Link to={joinTo} className="btn btn-primary reg-join">{joinLabel}</Link> : null}
               <Link to="/enquiry" className="btn reg-share-link">Sponsorship / Enquiry</Link>
             </div>
+            {joined ? null : <p className="reg-login">Already a contestant? <Link to="/dashboard">Log in with your phone number and PIN</Link></p>}
           </div>
           <div className="prize">
             <span className="prize-over">Over</span>
@@ -325,6 +326,16 @@ const whileVoting = (Page) => function WhileVoting() {
   return competition.phase === 'voting' ? <Page /> : <VotingSoon />;
 };
 
+// What it takes to survive the round that is on now.
+function RoundNote({ round, light = false }) {
+  const rules = [
+    round.keepTop ? `the top ${num(round.keepTop)} go through` : null,
+    round.minVotes ? `each contestant needs ${num(round.minVotes)} votes${round.votesCounted === 'round' ? ' this round' : ''}` : null,
+  ].filter(Boolean).join(', and ');
+  const rest = round.probation ? `The next ${num(round.probation)} go on probation, and the rest are eliminated.` : 'The rest are eliminated.';
+  return <p className={`round-note ${light ? 'light' : ''}`}><b>{round.name}:</b> when it ends, {rules}. {rest}</p>;
+}
+
 export function Home() {
   const { competition } = useApp();
   const navigate = useNavigate();
@@ -366,7 +377,8 @@ function VotingHome() {
               <em className="hero-word" style={{ '--i': 3 }}>Online</em>{' '}
               <span className="hero-word" style={{ '--i': 4 }}>Nigeria</span>
             </h1>
-            <Countdown competition={competition} />
+            {competition?.round ? <Timer target={competition.round.endsAt} label={`${competition.round.name} ends in`} /> : <Countdown competition={competition} />}
+            {competition?.round ? <RoundNote round={competition.round} light /> : null}
             <CodeSearch examples={top.flatMap((row) => [row.name, row.code]).slice(0, 6)} />
           </div>
           {covers.length ? <HeroCover rows={covers} /> : data || error ? null : <CoverSkeleton />}
@@ -737,6 +749,15 @@ export function Profile() {
   }, [code]);
 
   if (error && !data) {
+    if (error.status === 410) {
+      return (
+        <div className="wrap page">
+          <h1>No longer in the contest</h1>
+          <p className="muted">{error.message}</p>
+          <Link to="/contestants" className="btn btn-primary">See who is still in</Link>
+        </div>
+      );
+    }
     // Only a real "no such code" means that. Anything else is a problem on our side or the connection.
     if (error.status !== 404) return <div className="wrap page"><LoadFailed error={error} onRetry={reload} what="this contestant" /></div>;
     return (
@@ -758,7 +779,8 @@ export function Profile() {
       </div>
       <div className="profile-main">
         <p className="eyebrow">{data.location}, {data.state}{data.category ? ` · ${data.category}` : ''}</p>
-        <h1>{data.name}</h1>
+        <h1>{data.name}{data.onProbation ? <em className="tag tag-review probation-tag">On probation</em> : null}</h1>
+        {competition?.phase === 'voting' && competition.round ? <RoundNote round={competition.round} /> : null}
         {competition?.phase === 'voting' ? (
           <dl className="profile-stats">
             <div><dt>Total votes</dt><dd><CountUp value={data.totalVotes} /></dd></div>

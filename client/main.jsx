@@ -113,9 +113,13 @@ function Header() {
               <NavLink to="/admin">Admin</NavLink>
               <button type="button" className="nav-link-btn" onClick={logout}>Log out</button>
             </>
-          ) : user?.contestant ? <NavLink to="/dashboard">My dashboard</NavLink>
-            : registrationOpen(competition) ? <NavLink to="/register" className="btn btn-primary btn-small">Join the contest</NavLink>
-              : phase === 'voting' ? <NavLink to="/contestants" className="btn btn-primary btn-small">Vote now</NavLink> : null}
+          ) : user?.contestant ? <NavLink to="/dashboard">My dashboard</NavLink> : (
+            <>
+              <NavLink to="/dashboard">Contestant login</NavLink>
+              {registrationOpen(competition) ? <NavLink to="/register" className="btn btn-primary btn-small">Join the contest</NavLink>
+                : phase === 'voting' ? <NavLink to="/contestants" className="btn btn-primary btn-small">Vote now</NavLink> : null}
+            </>
+          )}
         </nav>
       </div>
     </header>

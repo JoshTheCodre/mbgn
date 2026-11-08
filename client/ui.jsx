@@ -214,6 +214,11 @@ export function BootScreen() {
   );
 }
 
+// Four digits, with the number keypad on phones, hidden like a password.
+export const PinInput = (props) => (
+  <input type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} minLength={4} title="Exactly 4 digits" className="pin-input" {...props} />
+);
+
 export function Field({ label, hint, children }) {
   return (
     <label className="field">

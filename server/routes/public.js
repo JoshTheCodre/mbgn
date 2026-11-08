@@ -10,6 +10,7 @@ import { getSetting, nowIso, tx } from '../db.js';
 import { PLATFORMS } from '../followers.js';
 import { assignGroup } from '../groups.js';
 import { handleWebhook } from '../payments.js';
+import { closeRoundsIfDue, currentRound, roundView } from '../rounds.js';
 import { startVotingIfDue } from '../stages.js';
 
 export const ENQUIRY_KINDS = ['Sponsorship', 'Partnership', 'Media and press', 'General enquiry'];
@@ -20,7 +21,7 @@ export const NIGERIAN_STATES = [
   'Lagos', 'Nasarawa', 'Niger', 'Ogun', 'Ondo', 'Osun', 'Oyo', 'Plateau', 'Rivers', 'Sokoto', 'Taraba', 'Yobe', 'Zamfara',
 ];
 
-const IMAGE_TYPES = [
+export const IMAGE_TYPES = [
   { ext: 'jpg', mime: 'image/jpeg', test: (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
   { ext: 'png', mime: 'image/png', test: (b) => b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) },
   { ext: 'webp', mime: 'image/webp', test: (b) => b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP' },
@@ -37,11 +38,26 @@ const shortCache = (_req, res, next) => {
   next();
 };
 
-const clean = (value, max = 200) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
-const validEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-const validPhone = (value) => /^\+?[0-9 ()-]{7,20}$/.test(value);
+export const clean = (value, max = 200) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
+export const validEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+export const validPhone = (value) => /^\+?[0-9 ()-]{7,20}$/.test(value);
 // 0803... and +234803... are the same number.
-const lastDigits = (value) => value.replace(/\D/g, '').slice(-10);
+export const lastDigits = (value) => value.replace(/\D/g, '').slice(-10);
+// The same comparison inside the database.
+export const DIGITS_SQL = (column) => `RIGHT(regexp_replace(${column}, '\\D', '', 'g'), 10)`;
+
+// Four digits is not much, so the obvious ones are refused and wrong guesses lock the account.
+const WEAK_PINS = new Set(['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '1212', '2580', '0123', '9876', '1122', '1004', '2000', '6969']);
+export function checkPin(pin) {
+  if (typeof pin !== 'string' || !/^\d{4}$/.test(pin)) throw new HttpError(400, 'Your PIN must be exactly 4 digits.');
+  if (WEAK_PINS.has(pin)) throw new HttpError(400, 'That PIN is too easy to guess. Please choose another.');
+}
+
+// Someone else's number must not open a second account, or sign in to the wrong one.
+export async function whatsappTaken(db, whatsapp, exceptId = 0) {
+  return Boolean(await db.prepare(`SELECT 1 FROM contestants WHERE ${DIGITS_SQL('whatsapp')} = ? AND status <> 'rejected' AND id <> ?`)
+    .get(lastDigits(whatsapp), exceptId));
+}
 
 function checkPassword(password) {
   if (typeof password !== 'string' || password.length < 8 || password.length > 200) {
@@ -120,9 +136,10 @@ export function publicRouter(ctx) {
 
   // ---- Competition facts ----
   router.get('/competition', shortCache, async (_req, res) => {
-    // Every page asks for this, so it is where the end of the registration countdown is noticed.
+    // Every page asks for this, so it is where the end of a countdown or a round is noticed.
     await startVotingIfDue(ctx);
-    const [phase, registration, name, voting, startsAt, endsAt, votePrice, packages, resultsPublishedAt, minFollowers, autoStart, contactPhone, contactEmail] = await Promise.all([
+    await closeRoundsIfDue(ctx);
+    const [phase, registration, name, voting, startsAt, endsAt, votePrice, packages, resultsPublishedAt, minFollowers, autoStart, contactPhone, contactEmail, round] = await Promise.all([
       getSetting(db, 'competition_phase'),
       registrationState(db),
       getSetting(db, 'competition_name'),
@@ -136,10 +153,12 @@ export function publicRouter(ctx) {
       getSetting(db, 'auto_start_voting'),
       getSetting(db, 'contact_phone'),
       getSetting(db, 'contact_email'),
+      currentRound(db),
     ]);
     res.json({
       phase,
       registration,
+      round: round ? roundView(round) : null,
       autoStartVoting: autoStart === '1',
       contact: { phone: contactPhone || null, email: contactEmail || null },
       minFollowers: Number(minFollowers),
@@ -189,8 +208,13 @@ export function publicRouter(ctx) {
   });
 
   router.get('/contestants/:code', shortCache, async (req, res) => {
-    const row = await db.prepare("SELECT * FROM contestants WHERE code = ? AND status = 'approved'").get(normalizeCode(req.params.code));
+    const row = await db.prepare("SELECT * FROM contestants WHERE code = ? AND status IN ('approved', 'eliminated')").get(normalizeCode(req.params.code));
     if (!row) throw new HttpError(404, 'No active contestant has that code.');
+    // Old voting links still say what happened, instead of "not found".
+    if (row.status === 'eliminated') {
+      const round = row.eliminated_round_id ? await db.prepare('SELECT name FROM rounds WHERE id = ?').get(row.eliminated_round_id) : null;
+      throw new HttpError(410, `${row.stage_name} was eliminated${round ? ` at the end of ${round.name}` : ''}, so she can no longer receive votes.`);
+    }
     res.json(publicProfile(row, await movementBaseline(db)));
   });
 
@@ -258,6 +282,7 @@ export function publicRouter(ctx) {
     if (!NIGERIAN_STATES.includes(state)) throw new HttpError(400, 'Please choose your state.');
     if (location.length < 2) throw new HttpError(400, 'Please enter your town or city.');
     if (bio.length < 20) throw new HttpError(400, 'Please write a short biography of at least 20 characters.');
+    checkPin(b.pin);
     const tiktok = socialLink(b.tiktok, 'tiktok');
     const instagram = socialLink(b.instagram, 'instagram');
     const facebook = socialLink(b.facebook, 'facebook');
@@ -271,6 +296,7 @@ export function publicRouter(ctx) {
 
     const alreadyJoined = () => new HttpError(409, 'You have already joined with this email address. Open your dashboard instead.');
     if (await db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) throw alreadyJoined();
+    if (await whatsappTaken(db, whatsapp)) throw new HttpError(409, 'That WhatsApp number is already registered. Log in with it and your PIN instead.');
 
     // Someone else's popular account should not get a second person through.
     for (const platform of given) {
@@ -291,9 +317,9 @@ export function publicRouter(ctx) {
       const { lastInsertRowid: uid } = await db.prepare(`INSERT INTO users (email, name, phone, role, created_at)
         VALUES (?, ?, ?, 'contestant', ?) RETURNING id`).run(email, fullName, phone, at);
       const { lastInsertRowid: contestantId } = await db.prepare(`INSERT INTO contestants (user_id, full_name, stage_name, email, phone, whatsapp, state, location, bio,
-        photo_file, tiktok, instagram, facebook, verification, follower_results, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
-        .run(uid, fullName, stageName, email, phone, whatsapp, state, location, bio, photoFile, tiktok, instagram, facebook, outcome, JSON.stringify(results), at);
+        photo_file, tiktok, instagram, facebook, verification, follower_results, pin_hash, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
+        .run(uid, fullName, stageName, email, phone, whatsapp, state, location, bio, photoFile, tiktok, instagram, facebook, outcome, JSON.stringify(results), hashPassword(b.pin), at);
       return { userId: uid, group: outcome === 'passed' ? await assignGroup(db, contestantId) : null };
     }).catch((err) => {
       // The same email submitted twice at once.
@@ -353,14 +379,44 @@ export function publicRouter(ctx) {
     res.status(201).json({ ok: true });
   });
 
-  // On a new device, the details given when joining bring back the dashboard. It is read-only.
+  // Contestants sign in on any device with the phone or WhatsApp number they joined with and their PIN.
+  // Five wrong PINs lock the account for 30 minutes, counted in the database so every server agrees.
+  router.post('/contestants/login', rateLimit({ windowMs: 15 * 60000, max: scaled(30) }), async (req, res) => {
+    const digits = lastDigits(clean(req.body?.phone, 30));
+    const pin = String(req.body?.pin ?? '').slice(0, 10);
+    const noMatch = () => new HttpError(401, 'That phone number and PIN do not match.');
+    if (digits.length < 7 || !/^\d{4}$/.test(pin)) throw noMatch();
+    const rows = await db.prepare(`SELECT id, user_id, pin_hash, pin_failures, pin_locked_until FROM contestants
+      WHERE (${DIGITS_SQL('whatsapp')} = ? OR ${DIGITS_SQL('phone')} = ?) AND status <> 'rejected' AND pin_hash IS NOT NULL`).all(digits, digits);
+    const now = nowIso();
+    const locked = rows.find((r) => r.pin_locked_until && r.pin_locked_until > now);
+    if (locked) {
+      throw new HttpError(429, `Too many wrong PINs. Try again at ${new Date(locked.pin_locked_until).toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Lagos' })}, or ask the organisers to reset your PIN.`);
+    }
+    const match = rows.find((r) => verifyPassword(pin, r.pin_hash));
+    if (!match) {
+      for (const r of rows) {
+        const failures = r.pin_failures + 1;
+        await db.prepare('UPDATE contestants SET pin_failures = ?, pin_locked_until = ? WHERE id = ?')
+          .run(failures >= 5 ? 0 : failures, failures >= 5 ? new Date(Date.now() + 30 * 60000).toISOString() : null, r.id);
+      }
+      throw noMatch();
+    }
+    await db.prepare('UPDATE contestants SET pin_failures = 0, pin_locked_until = NULL WHERE id = ?').run(match.id);
+    await startSession(ctx, res, match.user_id);
+    res.json({ user: await publicUser(await db.prepare('SELECT * FROM users WHERE id = ?').get(match.user_id)) });
+  });
+
+  // For contestants who joined before PINs existed, or whose PIN an admin reset: their email and
+  // WhatsApp number open the dashboard once, where they choose a PIN. After that, only the PIN works.
   router.post('/contestants/recognise', loginLimit, async (req, res) => {
     const email = clean(req.body?.email, 200).toLowerCase();
     const whatsapp = lastDigits(clean(req.body?.whatsapp, 30));
-    const row = await db.prepare('SELECT user_id, whatsapp FROM contestants WHERE email = ?').get(email);
+    const row = await db.prepare('SELECT user_id, whatsapp, pin_hash FROM contestants WHERE email = ?').get(email);
     if (!row || whatsapp.length < 7 || lastDigits(row.whatsapp) !== whatsapp) {
       throw new HttpError(401, 'Those details do not match anyone who has joined.');
     }
+    if (row.pin_hash) throw new HttpError(401, 'This account has a PIN. Log in with your phone number and PIN instead.');
     await startSession(ctx, res, row.user_id);
     res.json({ user: await publicUser(await db.prepare('SELECT * FROM users WHERE id = ?').get(row.user_id)) });
   });
@@ -423,15 +479,17 @@ export function photoHandler(ctx) {
   return async (req, res) => {
     const file = req.params.file;
     if (!/^[a-f0-9]{32}\.(jpg|png|webp)$/.test(file)) throw new HttpError(404, 'Not found.');
-    const row = await ctx.db.prepare('SELECT status, user_id FROM contestants WHERE photo_file = ?').get(file);
+    const row = await ctx.db.prepare('SELECT status, user_id, photo_file FROM contestants WHERE photo_file = ? OR pending_photo_file = ?').get(file, file);
     if (!row) throw new HttpError(404, 'Not found.');
+    // A new photo waiting for an admin is private, even for an approved contestant.
+    const isPublic = row.status === 'approved' && row.photo_file === file;
     const viewer = await sessionUser(ctx, req);
-    const allowed = row.status === 'approved' || viewer?.role === 'admin' || viewer?.id === row.user_id;
+    const allowed = isPublic || viewer?.role === 'admin' || viewer?.id === row.user_id;
     if (!allowed) throw new HttpError(404, 'Not found.');
     const photo = await ctx.photos.get(file);
     if (!photo) throw new HttpError(404, 'Not found.');
     res.set({
-      'Cache-Control': row.status === 'approved' ? 'public, max-age=86400, s-maxage=86400' : 'private, no-store',
+      'Cache-Control': isPublic ? 'public, max-age=86400, s-maxage=86400' : 'private, no-store',
       'X-Content-Type-Options': 'nosniff',
     });
     res.type(file.split('.').pop());

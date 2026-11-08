@@ -9,6 +9,7 @@ import { PLATFORMS, PROVIDERS } from '../followers.js';
 import {
   assignGroup, countWaiting, groupById, placeWaiting,
 } from '../groups.js';
+import { closeRound, roundStanding, roundView } from '../rounds.js';
 import { changeStage, startVotingIfDue, tellContestantsVotingOpened } from '../stages.js';
 import { voidVote } from '../votes.js';
 import { socialLink } from './public.js';
@@ -47,6 +48,10 @@ const contestantView = (c) => ({
   followerResults: c.follower_results ? JSON.parse(c.follower_results) : [],
   whatsappGroupName: c.group_name ?? null,
   adjustedVotes: c.adjusted_votes ?? 0,
+  pendingStageName: c.pending_stage_name,
+  pendingPhotoUrl: c.pending_photo_file ? `/photos/${c.pending_photo_file}` : null,
+  onProbation: Boolean(c.on_probation),
+  hasPin: Boolean(c.pin_hash),
   category: c.category,
   status: c.status,
   statusReason: c.status_reason,
@@ -181,7 +186,7 @@ export function adminRouter(ctx) {
     reject: { to: 'rejected', from: ['pending'], subject: 'Your MBGN application', notice: 'Your application was not approved.' },
     suspend: { to: 'suspended', from: ['approved'], subject: 'Your MBGN profile is suspended', notice: 'Your profile has been suspended.' },
     disqualify: { to: 'disqualified', from: ['approved', 'suspended'], subject: 'You have been disqualified from MBGN', notice: 'You have been disqualified.' },
-    reinstate: { to: 'approved', from: ['suspended', 'disqualified'], subject: 'Your MBGN profile is active again', notice: 'Your profile is active again.' },
+    reinstate: { to: 'approved', from: ['suspended', 'disqualified', 'eliminated'], subject: 'Your MBGN profile is active again', notice: 'Your profile is active again.' },
   };
 
   router.post('/contestants/:id/:action(reject|suspend|disqualify|reinstate)', async (req, res) => {
@@ -209,6 +214,114 @@ export function adminRouter(ctx) {
     await db.prepare('UPDATE contestants SET category = ? WHERE id = ?').run(category, c.id);
     await audit(ctx, req.user.id, 'contestant.category', `${c.stage_name}: ${category}`);
     res.json(contestantView(await getContestant(c.id)));
+  });
+
+  // A new public name or photo an approved contestant asked for.
+  router.post('/contestants/:id/profile-changes/:decision(approve|reject)', async (req, res) => {
+    const c = await getContestant(req.params.id);
+    if (!c.pending_stage_name && !c.pending_photo_file) throw new HttpError(409, 'There are no changes waiting.');
+    const approve = req.params.decision === 'approve';
+    await db.prepare('UPDATE contestants SET stage_name = ?, photo_file = ?, pending_stage_name = NULL, pending_photo_file = NULL WHERE id = ?')
+      .run(approve && c.pending_stage_name ? c.pending_stage_name : c.stage_name, approve && c.pending_photo_file ? c.pending_photo_file : c.photo_file, c.id);
+    await audit(ctx, req.user.id, `contestant.profile_${req.params.decision}`, `#${c.id} ${c.stage_name}`);
+    await notifyUser(ctx, c.user_id, 'status', approve ? 'Your profile changes have been approved and are now on the site.' : 'Your requested name or photo change was not approved. Contact the organisers if you have questions.');
+    if (approve) changed();
+    res.json(contestantView(await getContestant(c.id)));
+  });
+
+  // Clears a forgotten PIN. The contestant then opens the dashboard once with email and WhatsApp
+  // number, and chooses a new one.
+  router.post('/contestants/:id/reset-pin', async (req, res) => {
+    const c = await getContestant(req.params.id);
+    await db.prepare('UPDATE contestants SET pin_hash = NULL, pin_failures = 0, pin_locked_until = NULL WHERE id = ?').run(c.id);
+    await db.prepare('DELETE FROM sessions WHERE user_id = ?').run(c.user_id);
+    await audit(ctx, req.user.id, 'contestant.reset_pin', `#${c.id} ${c.stage_name}`);
+    res.json(contestantView(await getContestant(c.id)));
+  });
+
+  router.post('/contestants/:id/probation', async (req, res) => {
+    const c = await getContestant(req.params.id);
+    if (c.status !== 'approved') throw new HttpError(409, 'Only approved contestants can be on probation.');
+    const on = Boolean(req.body?.on);
+    await db.prepare('UPDATE contestants SET on_probation = ? WHERE id = ?').run(on ? 1 : 0, c.id);
+    await audit(ctx, req.user.id, on ? 'contestant.probation' : 'contestant.probation_end', `#${c.id} ${c.stage_name}`);
+    await notifyUser(ctx, c.user_id, 'status', on
+      ? 'You are on probation. If you miss the next round\'s target you will be eliminated. Share your voting link now.'
+      : 'You are no longer on probation.');
+    changed();
+    res.json(contestantView(await getContestant(c.id)));
+  });
+
+  // ---- Rounds and eliminations ----
+  const roundInput = (b, from) => {
+    const name = clean(b?.name, 60);
+    const startsAt = isoOrEmpty(b?.startsAt, 'Start') || from;
+    const endsAt = isoOrEmpty(b?.endsAt, 'End');
+    const whole = (value, label) => {
+      if (value === '' || value === null || value === undefined) return null;
+      const n = Number(value);
+      if (!Number.isInteger(n) || n < 1) throw new HttpError(400, `${label} must be a whole number above zero.`);
+      return n;
+    };
+    const keepTop = whole(b?.keepTop, 'Contestants kept');
+    const minVotes = whole(b?.minVotes, 'Minimum votes');
+    const probation = whole(b?.probation, 'Probation places') ?? 0;
+    if (name.length < 2) throw new HttpError(400, 'Please name the round, like Round 1.');
+    if (!endsAt) throw new HttpError(400, 'Please choose when the round ends.');
+    if (endsAt <= startsAt) throw new HttpError(400, 'The round must end after it starts.');
+    if (!keepTop && !minVotes) throw new HttpError(400, 'Choose how many contestants stay, a minimum number of votes, or both.');
+    return { name, startsAt, endsAt, keepTop, minVotes, probation, votesCounted: b?.votesCounted === 'total' ? 'total' : 'round' };
+  };
+
+  router.get('/rounds', async (_req, res) => {
+    const rounds = await db.prepare('SELECT * FROM rounds ORDER BY starts_at, id').all();
+    const current = rounds.find((r) => !r.closed_at);
+    let preview = null;
+    if (current) {
+      const standing = await roundStanding(db, current);
+      const brief = (list) => list.map((c) => ({ code: c.code, name: c.stage_name, position: c.position, votes: c.counted, onProbation: Boolean(c.on_probation) }));
+      preview = { roundId: current.id, safe: standing.safe.length, probation: brief(standing.probation), eliminated: brief(standing.eliminated) };
+    }
+    res.json({ rounds: rounds.map(roundView), preview });
+  });
+
+  router.post('/rounds', async (req, res) => {
+    // A new round follows the last one, from when it really ended if an admin ended it early.
+    const last = await db.prepare('SELECT LEAST(COALESCE(closed_at, ends_at), ends_at) AS ended FROM rounds ORDER BY starts_at DESC, id DESC LIMIT 1').get();
+    const r = roundInput(req.body, last?.ended ?? nowIso());
+    await db.prepare(`INSERT INTO rounds (name, starts_at, ends_at, keep_top, min_votes, votes_counted, probation)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(r.name, r.startsAt, r.endsAt, r.keepTop, r.minVotes, r.votesCounted, r.probation);
+    await audit(ctx, req.user.id, 'round.add', `${r.name}: ends ${r.endsAt}, keep top ${r.keepTop ?? '-'}, min votes ${r.minVotes ?? '-'}, probation ${r.probation}`);
+    ctx.bus.publish('competition', {});
+    res.status(201).json({ ok: true });
+  });
+
+  router.put('/rounds/:id', async (req, res) => {
+    const round = await db.prepare('SELECT * FROM rounds WHERE id = ?').get(req.params.id);
+    if (!round) throw new HttpError(404, 'Round not found.');
+    if (round.closed_at) throw new HttpError(409, 'This round has already ended.');
+    const r = roundInput(req.body, round.starts_at);
+    await db.prepare('UPDATE rounds SET name = ?, starts_at = ?, ends_at = ?, keep_top = ?, min_votes = ?, votes_counted = ?, probation = ? WHERE id = ?')
+      .run(r.name, r.startsAt, r.endsAt, r.keepTop, r.minVotes, r.votesCounted, r.probation, round.id);
+    await audit(ctx, req.user.id, 'round.update', `${r.name}: ends ${r.endsAt}`);
+    ctx.bus.publish('competition', {});
+    res.json({ ok: true });
+  });
+
+  router.delete('/rounds/:id', async (req, res) => {
+    const { changes } = await db.prepare('DELETE FROM rounds WHERE id = ? AND closed_at IS NULL').run(req.params.id);
+    if (!changes) throw new HttpError(409, 'Only a round that has not ended can be removed.');
+    await audit(ctx, req.user.id, 'round.delete', `#${req.params.id}`);
+    ctx.bus.publish('competition', {});
+    res.json({ ok: true });
+  });
+
+  router.post('/rounds/:id/close', async (req, res) => {
+    if (await getSetting(db, 'competition_phase') !== 'voting') throw new HttpError(409, 'Rounds end during voting. Start voting first.');
+    const done = await closeRound(ctx, Number(req.params.id), req.user.id);
+    if (!done) throw new HttpError(409, 'This round has already ended.');
+    const round = await db.prepare('SELECT * FROM rounds WHERE id = ?').get(done.round.id);
+    res.json(roundView(round));
   });
 
   // A blank date means no deadline. Moving it later reopens applications. With autoStart on,

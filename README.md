@@ -28,12 +28,12 @@ checkout runs on Paystack's real test page, and no real money moves.
 
 ### Demo details (from `npm run seed`, development only)
 
-Nobody signs in. Only the admin panel has a password.
+Supporters never sign in. Contestants use their phone number and a 4-digit PIN, and admins a password.
 
 | Who | How | Details |
 | --- | --- | --- |
 | Supporter | Open any contestant, choose votes and pay | None |
-| Contestant | Go to `/dashboard` and enter email and WhatsApp number | stella@mbgn.local / 08030000001 (jennifer is ...0002, and so on) |
+| Contestant | Go to `/dashboard`. Seeded contestants have no PIN yet, so open "No PIN yet?", enter email and WhatsApp number, and choose a PIN | stella@mbgn.local / 08030000001 (jennifer is ...0002, and so on) |
 | Pending applicant | Same | ngozi@mbgn.local / 08031000001 |
 | Admin | Go to `/admin` (not linked publicly) | admin@mbgn.local / admin-demo-pass |
 
@@ -132,6 +132,16 @@ Everything below is on the control panel at `/admin`, so nobody needs to change 
   contestant's log, the audit log and the contestants export. These votes have no payment behind them.
 - **Enquiries:** the Sponsorship / Enquiry page sends messages to the Enquiries tab and to every admin by
   email. Admins can add a phone number and email to show on that page.
+- **Rounds and eliminations:** on the Competition tab, add rounds with a start and end time and their
+  rules: keep the top N, a minimum number of votes (in the round, or in total), or both, plus a number
+  of probation places. When a round ends, by itself at its end time or when an admin presses **End now**,
+  everyone who misses the rules is eliminated, except the best few below the cut, who stay in on
+  probation. Anyone already on probation who misses again is eliminated. Everyone is told by
+  notification and email. The panel previews the outcome of the round that is on now. Eliminated
+  contestants leave the leaderboard, their voting link says what happened, and an admin can reinstate
+  them. Admins can also put a contestant on probation, or take them off it, by hand.
+- **Contestant accounts:** admins approve or reject a new public name or photo, and can reset a
+  forgotten PIN on the contestant's details.
 
 A contest still on the old ₦500 prices moves to ₦200 with the 50 and 100 vote deals the first time the
 new version starts. A contest whose prices an admin has already changed is left as it is.
@@ -164,9 +174,15 @@ new version starts. A contest whose prices an admin has already changed is left 
   which only serves an unapproved contestant's photo to that contestant and to admins.
 - **Refunds happen in Paystack.** Voiding a vote removes it from the totals. Returning the money is
   done separately in Paystack, and the site does not track it.
-- **Recognising contestants.** Joining identifies the contestant and keeps that browser recognised.
-  On a new device, their email and WhatsApp number reopen the read-only dashboard, and anyone who
-  knows both can view it.
+- **Contestant logins.** Joining keeps that browser signed in. On any other phone, the phone or WhatsApp
+  number they joined with and the 4-digit PIN they chose open the dashboard. Obvious PINs like 1234 are
+  refused, PINs are stored hashed, and five wrong tries lock the account for 30 minutes. A WhatsApp
+  number can only be on one application. Contestants who joined before PINs existed, or whose PIN an
+  admin reset, open the dashboard once with email and WhatsApp number and choose a PIN; after that only
+  the PIN works. Changing the PIN signs out every other phone.
+- **Contestants can correct their details.** Before approval, any change applies at once. After it, a
+  new public name or photo waits for an admin, and the old one stays on the site until then. Social
+  accounts can't be changed by the contestant, because the follower check used them.
 - **Codes are never reused.** They come from a counter that only moves forward. Rejected,
   suspended and disqualified contestants keep theirs.
 - **Supporter privacy.** Public messages and contestant dashboards carry vote counts and times

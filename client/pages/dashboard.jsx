@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, ago, dateTime, num, plural, shortDate, useApp, useFetch, useLive } from '../lib.jsx';
 import {
-  CodeTag, Countdown, ErrorNote, Field, LoadFailed, Loading, Movement, Portrait, CountUp, ShareButtons, WhatsAppGroup,
+  CodeTag, Countdown, ErrorNote, Field, LoadFailed, Loading, Movement, PinInput, Portrait, CountUp, ShareButtons, Timer, WhatsAppGroup,
 } from '../ui.jsx';
+import { PhotoPicker } from './account.jsx';
 
 function DailyVotes({ daily }) {
   const [active, setActive] = useState(null);
@@ -88,7 +89,7 @@ function GroupPanel({ data }) {
   return null;
 }
 
-function NotYetLive({ data, onRead }) {
+function NotYetLive({ data, onRead, onSaved }) {
   const copy = {
     pending: [
       data.verification === 'passed' ? 'You passed the follower check' : 'Your application is being reviewed',
@@ -97,6 +98,7 @@ function NotYetLive({ data, onRead }) {
     rejected: ['Your application was not approved', data.statusReason ?? ''],
     suspended: ['Your profile is suspended', data.statusReason ?? ''],
     disqualified: ['You have been disqualified', data.statusReason ?? ''],
+    eliminated: ['You have been eliminated', `${data.statusReason ?? ''} Thank you for taking part.`.trim()],
   }[data.status];
   return (
     <div className="wrap page narrow-wide">
@@ -109,26 +111,27 @@ function NotYetLive({ data, onRead }) {
           {data.code ? <p>Your code <b>{data.code}</b> stays reserved for you.</p> : null}
         </div>
       </div>
+      {data.profile.hasPin ? null : <PinPanel data={data} />}
       <GroupPanel data={data} />
+      <ProfilePanel data={data} onSaved={onSaved} />
+      {data.profile.hasPin ? <PinPanel data={data} /> : null}
       <Notifications items={data.notifications} onRead={onRead} />
     </div>
   );
 }
 
-// A contestant's browser is recognised from the moment they join. On a new device,
-// the details they joined with bring the dashboard back.
-function OpenDashboard() {
+// A contestant's browser is recognised from the moment they join. On any other phone, their
+// phone number and PIN open the dashboard.
+function ContestantLogin() {
   const { setUser } = useApp();
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  async function submit(e) {
-    e.preventDefault();
-    const form = new FormData(e.currentTarget);
+  async function submit(path, body) {
     setBusy(true);
     setError(null);
     try {
-      const { user } = await api('/contestants/recognise', { body: { email: form.get('email'), whatsapp: form.get('whatsapp') } });
+      const { user } = await api(path, { body });
       setUser(user);
     } catch (err) {
       setError(err);
@@ -138,16 +141,175 @@ function OpenDashboard() {
 
   return (
     <div className="wrap page narrow">
-      <h1>Open your dashboard</h1>
-      <p className="muted">Already in the contest? Enter the details you joined with.</p>
-      <form className="stack" onSubmit={submit}>
-        <Field label="Email address"><input name="email" type="email" autoComplete="email" required /></Field>
-        <Field label="WhatsApp number"><input name="whatsapp" type="tel" required /></Field>
+      <p className="eyebrow">Contestants</p>
+      <h1>Log in to your dashboard</h1>
+      <p className="muted">Use the phone or WhatsApp number you joined with, and your 4-digit PIN.</p>
+      <form className="stack" onSubmit={(e) => { e.preventDefault(); const f = new FormData(e.currentTarget); submit('/contestants/login', { phone: f.get('phone'), pin: f.get('pin') }); }}>
+        <Field label="Phone or WhatsApp number"><input name="phone" type="tel" autoComplete="tel" required /></Field>
+        <Field label="PIN"><PinInput name="pin" autoComplete="current-password" required /></Field>
         <ErrorNote error={error} />
-        <button className="btn btn-primary btn-wide" disabled={busy}>{busy ? 'Opening…' : 'Open my dashboard'}</button>
+        <button className="btn btn-primary btn-wide" disabled={busy}>{busy ? 'Logging in…' : 'Log in'}</button>
       </form>
-      <p className="muted form-foot">Not in yet? <Link to="/register">Join the contest</Link></p>
+      <details className="no-pin">
+        <summary>No PIN yet, or the organisers reset yours?</summary>
+        <p className="muted">Enter the email and WhatsApp number you joined with. You will be asked to choose a PIN straight away.</p>
+        <form className="stack" onSubmit={(e) => { e.preventDefault(); const f = new FormData(e.currentTarget); submit('/contestants/recognise', { email: f.get('email'), whatsapp: f.get('whatsapp') }); }}>
+          <Field label="Email address"><input name="email" type="email" autoComplete="email" required /></Field>
+          <Field label="WhatsApp number"><input name="whatsapp" type="tel" required /></Field>
+          <button className="btn btn-ghost btn-wide" disabled={busy}>Open my dashboard</button>
+        </form>
+      </details>
+      <p className="muted form-foot">Forgot your PIN? Ask the organisers to reset it. Not in yet? <Link to="/register">Join the contest</Link></p>
     </div>
+  );
+}
+
+// Everything they registered with. A new public name or photo waits for the organisers once approved.
+function ProfilePanel({ data, onSaved }) {
+  const { competition } = useApp();
+  const [editing, setEditing] = useState(false);
+  const [error, setError] = useState(null);
+  const [saved, setSaved] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const p = data.profile;
+  const approved = !['pending', 'rejected'].includes(data.status);
+
+  async function save(e) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const { waiting } = await api('/me/profile', { method: 'PUT', form: new FormData(e.currentTarget) });
+      setSaved(waiting ? 'Saved. Your new name or photo will show once the organisers approve it.' : 'Saved.');
+      setEditing(false);
+      onSaved();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const socials = [['Instagram', p.instagram], ['TikTok', p.tiktok], ['Facebook', p.facebook]].filter(([, link]) => link);
+  return (
+    <section className="panel profile-panel">
+      <div className="section-head">
+        <h2>Your registration</h2>
+        {!editing ? <button type="button" className="btn btn-ghost btn-small" onClick={() => { setEditing(true); setSaved(null); }}>Edit</button> : null}
+      </div>
+      {saved ? <p className="note note-good">{saved}</p> : null}
+      {p.pendingStageName || p.pendingPhotoUrl ? (
+        <p className="note">Waiting for the organisers: {[p.pendingStageName ? `new name “${p.pendingStageName}”` : null, p.pendingPhotoUrl ? 'new photo' : null].filter(Boolean).join(' and ')}.</p>
+      ) : null}
+      {editing ? (
+        <form className="stack" onSubmit={save}>
+          <PhotoPicker required={false} current={p.pendingPhotoUrl ?? data.photoUrl} hint={approved ? 'A new photo shows once the organisers approve it.' : 'JPG, PNG or WebP, up to 5 MB.'} />
+          <div className="form-grid">
+            <Field label="Contestant / stage name" hint={approved ? 'A new name shows once the organisers approve it.' : 'Shown publicly.'}><input name="stageName" defaultValue={p.pendingStageName ?? p.stageName} required /></Field>
+            <Field label="Full name"><input name="fullName" defaultValue={p.fullName} autoComplete="name" required /></Field>
+            <Field label="State">
+              <select name="state" defaultValue={p.state} required>
+                {(competition?.states ?? [p.state]).map((s) => <option key={s}>{s}</option>)}
+              </select>
+            </Field>
+            <Field label="Town or city"><input name="location" defaultValue={p.location} required /></Field>
+            <Field label="Email address"><input name="email" type="email" defaultValue={p.email} autoComplete="email" required /></Field>
+            <Field label="Phone number"><input name="phone" type="tel" defaultValue={p.phone} autoComplete="tel" required /></Field>
+            <Field label="WhatsApp number" hint="You log in with this number."><input name="whatsapp" type="tel" defaultValue={p.whatsapp} required /></Field>
+          </div>
+          <Field label="Short biography"><textarea name="bio" rows={4} minLength={20} maxLength={600} defaultValue={p.bio} required /></Field>
+          <ErrorNote error={error} />
+          <div className="admin-actions">
+            <button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
+            <button type="button" className="btn btn-ghost" onClick={() => setEditing(false)}>Cancel</button>
+          </div>
+        </form>
+      ) : (
+        <dl className="profile-list">
+          <div><dt>Stage name</dt><dd>{p.stageName}</dd></div>
+          <div><dt>Full name</dt><dd>{p.fullName}</dd></div>
+          <div><dt>Where</dt><dd>{p.location}, {p.state}</dd></div>
+          <div><dt>Email</dt><dd>{p.email}</dd></div>
+          <div><dt>Phone</dt><dd>{p.phone}</dd></div>
+          <div><dt>WhatsApp</dt><dd>{p.whatsapp}</dd></div>
+          <div className="wide"><dt>Biography</dt><dd>{p.bio}</dd></div>
+        </dl>
+      )}
+      <p className="muted small-note">
+        Social accounts: {socials.length ? socials.map(([label, link], i) => <span key={label}>{i ? ' · ' : ''}<a href={link} target="_blank" rel="noreferrer noopener">{label}</a></span>) : 'none'}.
+        {' '}These were used for your follower check, so ask the organisers to change them.
+      </p>
+    </section>
+  );
+}
+
+function PinPanel({ data }) {
+  const { setUser } = useApp();
+  const [error, setError] = useState(null);
+  const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const has = data.profile.hasPin;
+
+  async function save(e) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const f = new FormData(form);
+    setError(null);
+    setSaved(false);
+    if (f.get('pin') !== f.get('pinAgain')) {
+      setError(new Error('The two PINs do not match.'));
+      return;
+    }
+    setBusy(true);
+    try {
+      await api('/me/pin', { method: 'PUT', body: { currentPin: f.get('currentPin') ?? '', pin: f.get('pin') } });
+      setSaved(true);
+      form.reset();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function logout() {
+    await api('/auth/logout', { method: 'POST' }).catch(() => {});
+    setUser(null);
+  }
+
+  return (
+    <section className={`panel pin-panel ${has ? '' : 'needs-pin'}`}>
+      <h2>{has ? 'Your PIN' : 'Choose your PIN'}</h2>
+      <p className="muted">{has
+        ? 'Your phone or WhatsApp number and this PIN open your dashboard on any phone. Changing it signs out your other phones.'
+        : 'You have no PIN yet. Choose one now, so you can log in on any phone with your phone number and PIN.'}</p>
+      <form className="inline-form" onSubmit={save}>
+        {has ? <Field label="Current PIN"><PinInput name="currentPin" autoComplete="current-password" required /></Field> : null}
+        <Field label="New PIN"><PinInput name="pin" autoComplete="new-password" required /></Field>
+        <Field label="New PIN again"><PinInput name="pinAgain" autoComplete="new-password" required /></Field>
+        <button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : has ? 'Change PIN' : 'Save PIN'}</button>
+      </form>
+      <ErrorNote error={error} />
+      {saved ? <p className="note note-good">Your PIN is saved.</p> : null}
+      <p className="small-note"><button type="button" className="text-link as-button" onClick={logout}>Log out of this phone</button></p>
+    </section>
+  );
+}
+
+// Where they stand in the round that is on now.
+function RoundPanel({ data }) {
+  const r = data.round;
+  if (!r) return data.onProbation ? <p className="note note-error">You are on probation. If you miss the next round’s target you will be eliminated.</p> : null;
+  const rules = [r.keepTop ? `the top ${num(r.keepTop)} stay` : null, r.minVotes ? `you need ${num(r.minVotes)} votes${r.votesCounted === 'round' ? ' in this round' : ' in total'}` : null].filter(Boolean).join(', and ');
+  return (
+    <section className={`panel round-panel ${r.safe ? 'safe' : 'at-risk'}`}>
+      <p className="eyebrow">{r.name}</p>
+      <h2>{r.safe ? 'You are safe right now' : 'You are at risk of elimination'}</h2>
+      <p className="muted">When this round ends, {rules}.{r.probation ? ` The next ${num(r.probation)} below the cut go on probation instead of out.` : ''}</p>
+      {r.minVotes ? <p>Your votes {r.votesCounted === 'round' ? 'this round' : 'so far'}: <b>{num(r.votes)}</b> of {num(r.minVotes)}</p> : null}
+      {data.onProbation ? <p className="note note-error">You are on probation: miss this round’s target and you will be eliminated.</p> : null}
+      <Timer target={r.endsAt} label={`${r.name} ends in`} compact />
+    </section>
   );
 }
 
@@ -168,10 +330,10 @@ export function Dashboard() {
   }
 
   if (user === undefined) return <div className="wrap page"><Loading /></div>;
-  if (!user || !user.contestant) return <OpenDashboard />;
+  if (!user || !user.contestant) return <ContestantLogin />;
   if (error && !data) return <div className="wrap page"><LoadFailed error={error} onRetry={reload} what="your dashboard" /></div>;
   if (!data) return <div className="wrap page"><Loading /></div>;
-  if (data.status !== 'approved') return <NotYetLive data={data} onRead={markRead} />;
+  if (data.status !== 'approved') return <NotYetLive data={data} onRead={markRead} onSaved={reload} />;
 
   const { stats } = data;
   return (
@@ -193,6 +355,9 @@ export function Dashboard() {
         </div>
         <Countdown competition={competition} compact />
       </header>
+
+      {data.profile.hasPin ? null : <PinPanel data={data} />}
+      <RoundPanel data={data} />
 
       <dl className="tiles">
         <div><dt>Total votes</dt><dd><CountUp value={data.totalVotes} /></dd></div>
@@ -233,6 +398,9 @@ export function Dashboard() {
           </ul>
         )}
       </section>
+
+      <ProfilePanel data={data} onSaved={reload} />
+      {data.profile.hasPin ? <PinPanel data={data} /> : null}
     </div>
   );
 }
