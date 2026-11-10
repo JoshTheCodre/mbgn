@@ -19,13 +19,24 @@ const TABS = [
 ];
 
 export function Admin() {
+  const { setUser } = useApp();
   const [tab, setTab] = useState('overview');
   const { data: overview, reload } = useFetch('/admin/overview');
+
+  // The site has no admin link, so logging out happens here.
+  async function logout() {
+    await api('/auth/logout', { method: 'POST' }).catch(() => {});
+    setUser(null);
+    window.location.assign('/');
+  }
   useLive('leaderboard', reload);
   useLive('admin', reload);
   return (
     <div className="wrap page admin">
-      <div className="page-head"><h1>Control panel</h1></div>
+      <div className="page-head admin-head">
+        <h1>Control panel</h1>
+        <button type="button" className="btn btn-ghost btn-small" onClick={logout}>Log out</button>
+      </div>
       <div className="tabs admin-tabs" role="tablist">
         {TABS.map(([key, label]) => (
           <button key={key} type="button" role="tab" aria-selected={tab === key} className={tab === key ? 'active' : ''} onClick={() => { setTab(key); reload(); }}>

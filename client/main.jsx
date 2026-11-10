@@ -1,9 +1,9 @@
 import {
   Component, Suspense, lazy, useEffect, useRef, useState,
 } from 'react';
-import { BrowserRouter, Link, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Link, NavLink, Route, Routes, useLocation } from 'react-router-dom';
 import {
-  AppProvider, api, registrationOpen, useApp,
+  AppProvider, registrationOpen, useApp,
 } from './lib.jsx';
 import {
   HeaderPulse, LivePopups, Loading, PageSkeleton, ThemePicker,
@@ -26,14 +26,13 @@ const Dashboard = lazy(() => import('./pages/dashboard.jsx').then((m) => ({ defa
 const Admin = lazy(() => import('./pages/admin.jsx').then((m) => ({ default: m.Admin })));
 
 function Header() {
-  const { user, setUser, competition } = useApp();
+  const { user, competition } = useApp();
   const phase = competition?.phase;
   const [menu, setMenu] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const header = useRef(null);
   const links = useRef(null);
   const glide = useRef(null);
-  const navigate = useNavigate();
   const location = useLocation();
   useEffect(() => { setMenu(false); }, [location.pathname]);
 
@@ -75,12 +74,6 @@ function Header() {
     return () => window.removeEventListener('resize', restGlide);
   }, [location.pathname]);
 
-  async function logout() {
-    await api('/auth/logout', { method: 'POST' }).catch(() => {});
-    setUser(null);
-    navigate('/');
-  }
-
   return (
     <header className={`site-header ${scrolled ? 'scrolled' : ''}`} ref={header}>
       <div className="wrap header-row">
@@ -108,12 +101,8 @@ function Header() {
           </div>
           <span className="nav-spacer" />
           {phase === 'voting' ? <HeaderPulse /> : null}
-          {user?.role === 'admin' ? (
-            <>
-              <NavLink to="/admin">Admin</NavLink>
-              <button type="button" className="nav-link-btn" onClick={logout}>Log out</button>
-            </>
-          ) : user?.contestant ? <NavLink to="/dashboard">My dashboard</NavLink> : (
+          {/* No link to the control panel anywhere on the site: admins go to /admin themselves. */}
+          {user?.contestant ? <NavLink to="/dashboard">My dashboard</NavLink> : (
             <>
               <NavLink to="/dashboard" className="btn btn-ghost btn-small nav-login">Contestant login</NavLink>
               {registrationOpen(competition) ? <NavLink to="/register" className="btn btn-primary btn-small">Join the contest</NavLink>
