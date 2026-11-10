@@ -1768,3 +1768,19 @@ describe('Themes chosen by admins', () => {
     }
   });
 });
+
+describe('Winners page', () => {
+  test('is only offered once there is a result to show', async () => {
+    const app = await boot({}, { freshContest: true });
+    try {
+      const anon = client(app.base);
+      assert.equal((await anon.get('/competition')).data.hasResults, false);
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      await admin.post('/admin/results/history', { competition: 'MBGN 2025', winner: 'Last Year Queen', date: '2025-12-01' });
+      assert.equal((await anon.get('/competition')).data.hasResults, true);
+    } finally {
+      await app.close();
+    }
+  });
+});

@@ -353,7 +353,6 @@ export function Register() {
         <p className="eyebrow">Contestant application</p>
         <h1>Join the contest</h1>
         <p className="muted">You need at least {minFollowers} followers on Instagram, TikTok or Facebook. One account is enough, and we check it as soon as you send this form.</p>
-        <p className="register-login">Already registered? <Link to="/dashboard">Log in with your phone number and PIN</Link></p>
       </header>
       <form className="register-form" onSubmit={submit}>
         <fieldset>

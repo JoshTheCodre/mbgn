@@ -894,9 +894,6 @@ select option { background: var(--surface); }
 .proof .pay-actions { margin-top: 0; }
 
 /* Contestant login, profile and rounds */
-.register-login, .reg-login { margin: 10px 0 0; font-size: .92rem; }
-.reg-login { color: var(--on-panel); opacity: .9; }
-.reg-login a { color: inherit; font-weight: 600; }
 .pin-input { letter-spacing: .4em; font-size: 1.2rem; max-width: 180px; }
 .no-pin { margin-top: 20px; padding: 14px 16px; background: var(--surface); border-radius: var(--radius-s); }
 .no-pin summary { cursor: pointer; font-weight: 600; }

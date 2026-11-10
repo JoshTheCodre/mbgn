@@ -104,7 +104,7 @@ function Header() {
                 <NavLink to="/leaderboard">Leaderboard</NavLink>
               </>
             ) : null}
-            <NavLink to="/results">Winners</NavLink>
+            {competition?.hasResults ? <NavLink to="/results">Winners</NavLink> : null}
           </div>
           <span className="nav-spacer" />
           {phase === 'voting' ? <HeaderPulse /> : null}
@@ -115,7 +115,7 @@ function Header() {
             </>
           ) : user?.contestant ? <NavLink to="/dashboard">My dashboard</NavLink> : (
             <>
-              <NavLink to="/dashboard">Contestant login</NavLink>
+              <NavLink to="/dashboard" className="btn btn-ghost btn-small nav-login">Contestant login</NavLink>
               {registrationOpen(competition) ? <NavLink to="/register" className="btn btn-primary btn-small">Join the contest</NavLink>
                 : phase === 'voting' ? <NavLink to="/contestants" className="btn btn-primary btn-small">Vote now</NavLink> : null}
             </>
@@ -137,12 +137,14 @@ function Footer() {
           <Link to="/" className="logo">MBGN</Link>
           <p>{name}</p>
         </div>
-        <nav aria-label={voting ? 'Voting' : 'The contest'}>
-          <h2>{voting ? 'Vote' : 'The contest'}</h2>
-          {voting ? <Link to="/contestants">Contestants</Link> : null}
-          {voting ? <Link to="/leaderboard">Leaderboard</Link> : null}
-          <Link to="/results">Winners</Link>
-        </nav>
+        {voting || competition?.hasResults ? (
+          <nav aria-label={voting ? 'Voting' : 'The contest'}>
+            <h2>{voting ? 'Vote' : 'The contest'}</h2>
+            {voting ? <Link to="/contestants">Contestants</Link> : null}
+            {voting ? <Link to="/leaderboard">Leaderboard</Link> : null}
+            {competition?.hasResults ? <Link to="/results">Winners</Link> : null}
+          </nav>
+        ) : null}
         <nav aria-label="Contestants">
           <h2>Compete</h2>
           {registrationOpen(competition) ? <Link to="/register">Join the contest</Link> : null}

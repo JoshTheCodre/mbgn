@@ -180,6 +180,8 @@ export function publicRouter(ctx) {
       votePrice: Number(votePrice),
       packages,
       resultsPublishedAt: resultsPublishedAt || null,
+      // Winners only makes sense once there is a result, from this contest or an earlier one.
+      hasResults: Boolean(await db.prepare('SELECT 1 FROM results LIMIT 1').get()),
       states: NIGERIAN_STATES,
       themes: await themeSettings(db),
     });

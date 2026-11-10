@@ -256,7 +256,6 @@ function RegistrationHome() {
               {open || joined ? <Link to={joinTo} className="btn btn-primary reg-join">{joinLabel}</Link> : null}
               <Link to="/enquiry" className="btn reg-share-link">Sponsorship / Enquiry</Link>
             </div>
-            {joined ? null : <p className="reg-login">Already a contestant? <Link to="/dashboard">Log in with your phone number and PIN</Link></p>}
           </div>
           <div className="prize">
             <span className="prize-over">Over</span>

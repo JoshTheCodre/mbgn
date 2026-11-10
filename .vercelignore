@@ -1,0 +1,13 @@
+# Never uploaded to Vercel. The live site takes its settings only from Vercel's own environment
+# variables: a local .env would otherwise switch it into demo mode (DEMO_MODE=1).
+.env
+.env.local
+.env.development
+.env.production
+.env.*.local
+.secrets/
+data/
+node_modules/
+.next/
+.claude/
+.neon
