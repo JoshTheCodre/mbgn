@@ -9,7 +9,7 @@ const ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewB
 // - the data the page will ask for, so it arrives alongside the scripts rather than after them
 const EARLY = `(function(){
   var d=document,h=d.head;
-  try{var t=localStorage.getItem('mbgn-theme');if(t)d.documentElement.dataset.theme=t}catch(e){}
+  try{var t=localStorage.getItem('mbgn-theme')||localStorage.getItem('mbgn-theme-default');if(t)d.documentElement.dataset.theme=t}catch(e){}
   var f=d.createElement('link');f.rel='stylesheet';f.href=${JSON.stringify(FONTS)};h.appendChild(f);
   var want=['/api/competition'],voting=false;
   try{voting=JSON.parse(localStorage.getItem('mbgn-cache:/competition')).data.phase==='voting'}catch(e){}

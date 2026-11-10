@@ -4,15 +4,17 @@ import crypto from 'node:crypto';
 // Everything environment-specific lives here. Tests pass overrides directly.
 export function loadConfig(overrides = {}) {
   const env = process.env;
-  // Written out in full so next.config can set it at build time.
+  // Set in .env to try the site out with invented contestants. Never on the live site.
   const demo = process.env.DEMO_MODE === '1';
   const production = !demo && (overrides.nodeEnv ?? env.NODE_ENV) === 'production';
   // Vercel's only writable folder. It is temporary and separate for each server instance.
   const dataDir = overrides.dataDir ?? env.DATA_DIR ?? (env.VERCEL ? '/tmp/mbgn' : path.resolve('data'));
   const vercelUrl = env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${env.VERCEL_PROJECT_PRODUCTION_URL}` : null;
 
-  const paystack = overrides.paystack ?? (env.PAYSTACK_SECRET_KEY
-    ? { secretKey: env.PAYSTACK_SECRET_KEY, baseUrl: 'https://api.paystack.co' }
+  // Trimmed, since a key pasted into a dashboard or terminal often brings a line break with it.
+  const paystackKey = env.PAYSTACK_SECRET_KEY?.trim();
+  const paystack = overrides.paystack ?? (paystackKey
+    ? { secretKey: paystackKey, baseUrl: 'https://api.paystack.co' }
     : null);
 
   if (paystack && !/^sk_(test|live)_/.test(paystack.secretKey)) {
@@ -30,7 +32,7 @@ export function loadConfig(overrides = {}) {
   const appSecret = overrides.appSecret ?? env.APP_SECRET;
   if (production && !appSecret) throw new Error('APP_SECRET is required in production.');
 
-  const paymentEmail = overrides.paymentEmail ?? env.PAYMENT_EMAIL;
+  const paymentEmail = overrides.paymentEmail ?? env.PAYMENT_EMAIL?.trim();
   if (production && !paymentEmail) throw new Error('PAYMENT_EMAIL is required in production: Paystack needs a customer email on every payment.');
 
   const databaseUrl = overrides.databaseUrl ?? env.DATABASE_URL;

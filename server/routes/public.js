@@ -12,8 +12,18 @@ import { assignGroup } from '../groups.js';
 import { handleWebhook } from '../payments.js';
 import { closeRoundsIfDue, currentRound, roundView } from '../rounds.js';
 import { startVotingIfDue } from '../stages.js';
+import { THEME_IDS } from '../../shared/themes.js';
 
 export const ENQUIRY_KINDS = ['Sponsorship', 'Partnership', 'Media and press', 'General enquiry'];
+
+// The themes on offer, in the site's own order, and the default, which is always one of them.
+export async function themeSettings(db) {
+  const wanted = (await getSetting(db, 'themes_offered')).split(',');
+  const offered = THEME_IDS.filter((id) => wanted.includes(id));
+  const chosen = await getSetting(db, 'default_theme');
+  const list = offered.length ? offered : [THEME_IDS[0]];
+  return { offered: list, default: list.includes(chosen) ? chosen : list[0] };
+}
 
 export const NIGERIAN_STATES = [
   'Abia', 'Adamawa', 'Akwa Ibom', 'Anambra', 'Bauchi', 'Bayelsa', 'Benue', 'Borno', 'Cross River', 'Delta', 'Ebonyi',
@@ -171,7 +181,7 @@ export function publicRouter(ctx) {
       packages,
       resultsPublishedAt: resultsPublishedAt || null,
       states: NIGERIAN_STATES,
-      themePicker: !config.production,
+      themes: await themeSettings(db),
     });
   });
 

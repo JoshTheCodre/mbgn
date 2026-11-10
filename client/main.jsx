@@ -8,7 +8,7 @@ import {
 import {
   HeaderPulse, LivePopups, Loading, PageSkeleton, ThemePicker,
 } from './ui.jsx';
-import { applyTheme, currentTheme } from './themes.js';
+import { applyTheme, currentTheme, rememberDefaultTheme } from './themes.js';
 import { Contestants, Home, Leaderboard, NotFound, Profile, Results } from './pages/public.jsx';
 
 // Voters only download the public pages up front. Everything else comes when it's needed.
@@ -193,6 +193,15 @@ class ErrorBoundary extends Component {
 }
 
 function App() {
+  const { competition } = useApp();
+  const themes = competition?.themes;
+  // The admin decides which themes are on offer and which one new visitors see.
+  useEffect(() => {
+    if (!themes) return;
+    rememberDefaultTheme(themes.default);
+    applyTheme(currentTheme(themes));
+  }, [themes?.default, themes?.offered.join(',')]);
+
   // A voter is likely to need this next, for the page after paying. Fetched once the page is idle.
   useEffect(() => {
     const id = setTimeout(() => { loadAccount().catch(() => {}); }, 2500);

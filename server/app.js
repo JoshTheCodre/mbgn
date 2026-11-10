@@ -5,6 +5,7 @@ import { HttpError, attachUser, hashPassword, sameOriginWrites, wrap } from './a
 import { takeRankSnapshot } from './competition.js';
 import { nowIso, openDb } from './db.js';
 import { createFollowerChecker } from './followers.js';
+import { applyAdminLogin, clearTestData } from './golive.js';
 import { createMailer } from './mailer.js';
 import { createPhotoStore } from './photos.js';
 import { createPaystack, createSimulator, reconcilePending } from './payments.js';
@@ -35,6 +36,8 @@ export async function createContext(config) {
   await db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING')
     .run('registration_ends_at', new Date(Date.now() + 7 * 864e5).toISOString());
   await ensureAdmin(ctx);
+  await clearTestData(ctx);
+  await applyAdminLogin(ctx);
   return ctx;
 }
 

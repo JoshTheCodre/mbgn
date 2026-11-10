@@ -25,6 +25,9 @@ const DEFAULT_SETTINGS = {
   pricing_version: '2',
   // 'auto' asks the follower-count services. 'manual' sends every application to an admin.
   follower_check_mode: 'auto',
+  // Which looks visitors can choose from, and the one new visitors see.
+  themes_offered: 'owambe,royal,ankara,naija,glam,midnight',
+  default_theme: 'owambe',
 };
 
 // Bulk deals: from this many votes, every vote costs this package's rate.

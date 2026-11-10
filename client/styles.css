@@ -925,6 +925,13 @@ select option { background: var(--surface); }
 .profile-change h3 { margin: 0 0 6px; font-size: 1rem; }
 .profile-change img { width: 96px; height: 96px; object-fit: cover; border-radius: 12px; }
 
+/* Admin: site look */
+.theme-admin-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.theme-admin { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1.5px solid var(--line); border-radius: var(--radius-s); background: var(--bg); cursor: pointer; }
+.theme-admin.on { border-color: var(--accent); }
+.theme-admin input { accent-color: var(--accent); }
+.theme-admin small { display: block; color: var(--muted); }
+
 /* Admin: follower-count services */
 .services-table { min-width: 560px; }
 .services-table code { font-size: .82rem; }

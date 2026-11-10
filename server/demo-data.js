@@ -5,9 +5,12 @@ import path from 'node:path';
 import { allocateCode, recomputeRanks } from './competition.js';
 import { nowIso, setSetting, tx } from './db.js';
 
+// Public, in the README. Never accepted on a live site: see golive.js.
+export const DEMO_PASSWORD = 'admin-demo-pass';
+
 export const DEMO_ADMIN = {
   adminEmail: process.env.ADMIN_EMAIL ?? 'admin@mbgn.local',
-  adminPassword: process.env.ADMIN_PASSWORD ?? 'admin-demo-pass',
+  adminPassword: process.env.ADMIN_PASSWORD ?? DEMO_PASSWORD,
 };
 
 const PEOPLE = [

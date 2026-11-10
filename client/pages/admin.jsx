@@ -4,6 +4,7 @@ import { api, dateTime, naira, num, plural, useApp, useFetch, useLive } from '..
 import {
   Dialog, ErrorNote, Field, Loading, PLATFORM_NAMES, Portrait,
 } from '../ui.jsx';
+import { THEMES } from '../themes.js';
 
 const TABS = [
   ['overview', 'Overview'],
@@ -808,6 +809,66 @@ function RoundsPanel({ voting }) {
   );
 }
 
+// Which looks visitors can switch between, and the one everyone sees first.
+function ThemesPanel() {
+  const { competition, refreshCompetition } = useApp();
+  const current = competition?.themes;
+  const [offered, setOffered] = useState(null);
+  const [chosen, setChosen] = useState(null);
+  const [error, setError] = useState(null);
+  const [saved, setSaved] = useState(false);
+  if (!current) return null;
+  const ticked = offered ?? current.offered;
+  const defaultTheme = ticked.includes(chosen ?? current.default) ? (chosen ?? current.default) : ticked[0];
+
+  function toggle(id) {
+    setSaved(false);
+    setOffered(ticked.includes(id) ? ticked.filter((t) => t !== id) : [...ticked, id]);
+  }
+
+  async function save(e) {
+    e.preventDefault();
+    setError(null);
+    setSaved(false);
+    try {
+      await api('/admin/themes', { method: 'PUT', body: { offered: ticked, default: defaultTheme } });
+      setSaved(true);
+      setOffered(null);
+      setChosen(null);
+      refreshCompetition({ fresh: true });
+    } catch (err) {
+      setError(err);
+    }
+  }
+
+  const swatch = (t) => ({ background: `linear-gradient(135deg, ${t.swatch[0]}, ${t.swatch[1]})` });
+  return (
+    <section className="panel">
+      <h2>Site look</h2>
+      <p className="muted">Tick the themes visitors can switch between with the Theme button. With only one ticked, the button is hidden and everyone sees that theme.</p>
+      <form className="stack" onSubmit={save}>
+        <div className="theme-admin-list">
+          {THEMES.map((t) => (
+            <label key={t.id} className={`theme-admin ${ticked.includes(t.id) ? 'on' : ''}`}>
+              <input type="checkbox" checked={ticked.includes(t.id)} onChange={() => toggle(t.id)} />
+              <span className="theme-swatch" style={swatch(t)} />
+              <span><b>{t.name}</b><small>{t.vibe}</small></span>
+            </label>
+          ))}
+        </div>
+        <Field label="New visitors see" hint="Visitors who picked a theme keep their pick, as long as it is still on offer.">
+          <select value={defaultTheme} onChange={(e) => { setChosen(e.target.value); setSaved(false); }}>
+            {THEMES.filter((t) => ticked.includes(t.id)).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </Field>
+        <ErrorNote error={error} />
+        {saved ? <p className="note note-good">Saved. Visitors see the change on their next page load.</p> : null}
+        <button className="btn btn-ghost" disabled={!ticked.length}>Save look</button>
+      </form>
+    </section>
+  );
+}
+
 function JoiningPanels() {
   const { data, reload } = useFetch('/admin/joining');
   const [error, setError] = useState(null);
@@ -928,6 +989,37 @@ function CompetitionTab({ onChange }) {
     }
   }
 
+  const asIso = (value) => (value ? new Date(value).toISOString() : '');
+
+  async function saveVotingEnd(e) {
+    e.preventDefault();
+    setError(null);
+    setDeadlineSaved(false);
+    try {
+      await api('/admin/voting-ends', { method: 'PUT', body: { endsAt: asIso(new FormData(e.currentTarget).get('votingEndsAt')) } });
+      setDeadlineSaved('Saved. The voting countdown has been updated.');
+      reload();
+      refreshCompetition({ fresh: true });
+    } catch (err) {
+      setError(err);
+    }
+  }
+
+  async function reopen(e) {
+    e.preventDefault();
+    setError(null);
+    setDeadlineSaved(false);
+    try {
+      await api('/admin/phase/registration', { body: { endsAt: asIso(new FormData(e.currentTarget).get('reopenUntil')) } });
+      setDeadlineSaved('Registration is open again, with the new countdown.');
+      reload();
+      onChange();
+      refreshCompetition({ fresh: true });
+    } catch (err) {
+      setError(err);
+    }
+  }
+
   async function setVoting(status) {
     setError(null);
     try {
@@ -1011,22 +1103,25 @@ function CompetitionTab({ onChange }) {
         ) : (
           <>
             <p><b>Voting is on.</b> Registration has closed.</p>
-            <button
-              type="button"
-              className="btn btn-ghost btn-small"
-              onClick={() => setAction({
-                title: 'Reopen registration',
-                description: 'Voting stops and every voting page disappears until you start voting again. Votes already counted are kept.',
-                confirm: 'Reopen registration',
-                needsReason: false,
-                run: () => api('/admin/phase/registration', { method: 'POST' }),
-              })}
-            >Reopen registration</button>
+            <form className="inline-form stage-deadline" onSubmit={saveVotingEnd}>
+              <Field label="Voting countdown ends" hint="Voting stops by itself at this time. Blank means no end.">
+                <input key={data.endsAt} name="votingEndsAt" type="datetime-local" defaultValue={toLocalInput(data.endsAt)} />
+              </Field>
+              <button className="btn btn-ghost">Save</button>
+            </form>
+            <form className="inline-form stage-deadline" onSubmit={reopen}>
+              <Field label="Reopen registration until" hint="Voting stops and voting pages disappear. Votes already counted are kept.">
+                <input name="reopenUntil" type="datetime-local" defaultValue={toLocalInput(new Date(Date.now() + 7 * 864e5).toISOString())} required />
+              </Field>
+              <button className="btn btn-ghost">Reopen registration</button>
+            </form>
+            {deadlineSaved ? <p className="note note-good">{deadlineSaved}</p> : null}
           </>
         )}
       </section>
       <JoiningPanels />
       <RoundsPanel voting={!registering} />
+      <ThemesPanel />
       {registering ? null : (
       <section className="panel">
         <h2>Voting</h2>

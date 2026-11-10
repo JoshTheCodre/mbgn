@@ -1,29 +1,34 @@
-// Looks being trialled. The colours themselves live in styles.css under :root[data-theme].
-export const THEMES = [
-  { id: 'owambe', name: 'Owambe', vibe: 'Party magenta, purple, gold', swatch: ['#d60f75', '#5f1aa0'], bar: '#1d0a2b' },
-  { id: 'royal', name: 'Royal Gold', vibe: 'Navy and gold, premium', swatch: ['#14234d', '#d9b44a'], bar: '#fbf8f0' },
-  { id: 'ankara', name: 'Ankara', vibe: 'Bold blue and marigold', swatch: ['#1d3fd8', '#ffc61a'], bar: '#fffdf6' },
-  { id: 'naija', name: 'Naija Green', vibe: 'Flag green and lime', swatch: ['#008751', '#c6f432'], bar: '#f2fbf5' },
-  { id: 'glam', name: 'Glam Pink', vibe: 'Hot pink, elegant serif', swatch: ['#cc1169', '#ffc2dc'], bar: '#fff0f6' },
-  { id: 'midnight', name: 'Midnight', vibe: 'The previous dark violet', swatch: ['#24222e', '#7b4be8'], bar: '#24222e' },
-];
+import { THEMES } from '../shared/themes.js';
 
+export { THEMES };
+
+// The visitor's own pick. The admin's default is remembered apart from it, so a returning visitor
+// gets the right colours before the page has even asked the server (see pages/_document.jsx).
 const KEY = 'mbgn-theme';
-const DEFAULT_THEME = 'owambe';
+const DEFAULT_KEY = 'mbgn-theme-default';
 
-export function currentTheme() {
-  try {
-    const saved = localStorage.getItem(KEY);
-    if (THEMES.some((t) => t.id === saved)) return saved;
-  } catch { /* storage blocked: fall back to the default */ }
-  return DEFAULT_THEME;
+const read = (key) => {
+  try { return localStorage.getItem(key); } catch { return null; }
+};
+const write = (key, value) => {
+  try { localStorage.setItem(key, value); } catch { /* the choice just won't be remembered */ }
+};
+
+// The visitor's pick if it is still on offer, otherwise the admin's default.
+export function currentTheme(themes) {
+  const offered = themes?.offered ?? THEMES.map((t) => t.id);
+  const fallback = themes?.default ?? read(DEFAULT_KEY) ?? 'owambe';
+  const saved = read(KEY);
+  return offered.includes(saved) ? saved : fallback;
 }
 
-export function applyTheme(id) {
+// `remember` is for a visitor choosing a theme. Showing the default never pins it, so a later change
+// of default by an admin still reaches them.
+export function applyTheme(id, { remember = false } = {}) {
   const theme = THEMES.find((t) => t.id === id) ?? THEMES[0];
   document.documentElement.dataset.theme = theme.id;
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme.bar);
-  try {
-    localStorage.setItem(KEY, theme.id);
-  } catch { /* the choice just won't be remembered */ }
+  if (remember) write(KEY, theme.id);
 }
+
+export const rememberDefaultTheme = (id) => write(DEFAULT_KEY, id);

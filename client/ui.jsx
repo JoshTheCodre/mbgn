@@ -551,12 +551,14 @@ export function ActivityFeed({ limit = 5 }) {
   );
 }
 
-// Lets the team compare looks on the real site. The server hides it in production.
+// Lets visitors choose among the themes an admin has put on offer. Hidden when there is only one.
 export function ThemePicker() {
   const { competition } = useApp();
   const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(currentTheme);
+  const [active, setActive] = useState(() => currentTheme(competition?.themes));
   const root = useRef(null);
+  const offered = THEMES.filter((t) => competition?.themes?.offered.includes(t.id));
+  useEffect(() => { setActive(currentTheme(competition?.themes)); }, [competition?.themes?.default, competition?.themes?.offered.join(',')]);
 
   // Clicking or tapping anywhere else, or pressing Escape, closes it.
   useEffect(() => {
@@ -571,21 +573,21 @@ export function ThemePicker() {
     };
   }, [open]);
 
-  if (!competition?.themePicker) return null;
-  const selected = THEMES.find((t) => t.id === active) ?? THEMES[0];
+  if (offered.length < 2) return null;
+  const selected = THEMES.find((t) => t.id === active) ?? offered[0];
   const swatch = (t) => ({ background: `linear-gradient(135deg, ${t.swatch[0]}, ${t.swatch[1]})` });
 
   return (
     <div className="theme-picker" ref={root}>
       {open ? (
         <div className="theme-list" role="group" aria-label="Choose a theme">
-          {THEMES.map((t) => (
+          {offered.map((t) => (
             <button
               key={t.id}
               type="button"
               className={`theme-option ${t.id === active ? 'active' : ''}`}
               aria-pressed={t.id === active}
-              onClick={() => { applyTheme(t.id); setActive(t.id); }}
+              onClick={() => { applyTheme(t.id, { remember: true }); setActive(t.id); }}
             >
               <span className="theme-swatch" style={swatch(t)} />
               <span><b>{t.name}</b><small>{t.vibe}</small></span>

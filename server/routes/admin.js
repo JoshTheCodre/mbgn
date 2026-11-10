@@ -12,7 +12,8 @@ import {
 import { closeRound, roundStanding, roundView } from '../rounds.js';
 import { changeStage, startVotingIfDue, tellContestantsVotingOpened } from '../stages.js';
 import { voidVote } from '../votes.js';
-import { socialLink } from './public.js';
+import { socialLink, themeSettings } from './public.js';
+import { THEME_IDS } from '../../shared/themes.js';
 
 const clean = (value, max = 500) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
 
@@ -123,9 +124,27 @@ export function adminRouter(ctx) {
   // ---- The contest's stage: taking applications, then voting ----
   router.post('/phase/:phase(registration|voting)', async (req, res) => {
     const { phase } = req.params;
+    if (phase === 'registration') {
+      if (await getSetting(db, 'competition_phase') === 'registration') throw new HttpError(409, 'The contest is already in its registration stage.');
+      // Reopening needs a new countdown. With the old one already passed, voting would start again
+      // by itself on the next visit. Blank means no deadline.
+      const endsAt = isoOrEmpty(req.body?.endsAt, 'Countdown end');
+      if (endsAt && endsAt <= nowIso()) throw new HttpError(400, 'Choose a countdown end in the future.');
+      await setSetting(db, 'registration_ends_at', endsAt);
+    }
     if (!(await changeStage(ctx, phase, req.user.id))) throw new HttpError(409, `The contest is already in its ${phase} stage.`);
     const notified = phase === 'voting' ? await tellContestantsVotingOpened(ctx) : 0;
     res.json({ phase, notified });
+  });
+
+  // The voting countdown. Voting stops by itself at this time. Blank means no end.
+  router.put('/voting-ends', async (req, res) => {
+    const endsAt = isoOrEmpty(req.body?.endsAt, 'Voting end');
+    if (endsAt && endsAt <= nowIso()) throw new HttpError(400, 'Choose a time in the future, or use Close voting to stop now.');
+    await setSetting(db, 'voting_ends_at', endsAt);
+    await audit(ctx, req.user.id, 'voting.ends_at', endsAt || 'none');
+    ctx.bus.publish('competition', {});
+    res.json({ endsAt: endsAt || null });
   });
 
   // ---- Contestants ----
@@ -400,6 +419,20 @@ export function adminRouter(ctx) {
     await audit(ctx, req.user.id, 'contact.update', `${phone || 'no phone'}, ${email || 'no email'}`);
     ctx.bus.publish('competition', {});
     res.json({ phone, email });
+  });
+
+  // ---- The site's look ----
+  router.put('/themes', async (req, res) => {
+    const wanted = Array.isArray(req.body?.offered) ? req.body.offered : [];
+    const offered = THEME_IDS.filter((id) => wanted.includes(id));
+    if (!offered.length) throw new HttpError(400, 'Keep at least one theme.');
+    const chosen = THEME_IDS.includes(req.body?.default) ? req.body.default : null;
+    if (!chosen || !offered.includes(chosen)) throw new HttpError(400, 'The default theme must be one of the themes on offer.');
+    await setSetting(db, 'themes_offered', offered.join(','));
+    await setSetting(db, 'default_theme', chosen);
+    await audit(ctx, req.user.id, 'themes.update', `${offered.join(', ')}; default ${chosen}`);
+    ctx.bus.publish('competition', {});
+    res.json(await themeSettings(db));
   });
 
   // ---- Who can join: the follower check and the WhatsApp groups ----

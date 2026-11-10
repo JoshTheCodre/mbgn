@@ -582,7 +582,7 @@ async function proofImage(payment) {
   return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
 }
 
-function ProofOfVote({ payment }) {
+function ProofOfVote({ payment, onDone }) {
   const [busy, setBusy] = useState(false);
   const { contestant } = payment;
   const link = `${window.location.origin}/c/${contestant.code}`;
@@ -624,6 +624,7 @@ function ProofOfVote({ payment }) {
       <div className="pay-actions">
         <button type="button" className="btn btn-primary btn-wide" disabled={busy} onClick={save}>{busy ? 'Preparing…' : 'Save or share as a picture'}</button>
         <a className="btn btn-whatsapp btn-wide" href={`https://wa.me/?text=${encodeURIComponent(message)}`} target="_blank" rel="noreferrer noopener"><BrandLogo name="whatsapp" />Share on WhatsApp</a>
+        <button type="button" className="btn btn-ghost btn-wide" onClick={onDone}>Done, back to the contestants</button>
       </div>
     </div>
   );
@@ -631,6 +632,7 @@ function ProofOfVote({ payment }) {
 
 export function PayReturn() {
   const { reference } = useParams();
+  const navigate = useNavigate();
   const [payment, setPayment] = useState(null);
   const [error, setError] = useState(null);
   const [attempts, setAttempts] = useState(0);
@@ -701,12 +703,14 @@ export function PayReturn() {
           <p className="muted">Now in position {contestant.position} with {num(contestant.totalVotes)} votes.</p>
           <div className="pay-actions">
             <button type="button" className="btn btn-primary btn-wide" onClick={() => setProofOpen(true)}>Show my proof of vote</button>
-            <Link to={back} className="btn btn-vote btn-wide">Vote again</Link>
+            <Link to="/contestants" className="btn btn-vote btn-wide">Back to the contestants</Link>
+            <Link to={back} className="btn btn-ghost btn-wide">Vote again</Link>
             <Link to="/leaderboard" className="btn btn-ghost btn-wide">See the leaderboard</Link>
           </div>
           {receipt}
-          <Dialog open={proofOpen} onClose={() => setProofOpen(false)} title="Thank you for voting!">
-            <ProofOfVote payment={payment} />
+          {/* Closing the proof, however it is closed, ends the vote: back to the contestants. */}
+          <Dialog open={proofOpen} onClose={() => navigate('/contestants')} title="Thank you for voting!">
+            <ProofOfVote payment={payment} onDone={() => navigate('/contestants')} />
           </Dialog>
         </>
       ) : null}

@@ -13,6 +13,9 @@ import { setSetting } from '../server/db.js';
 import { createFollowerChecker, findFollowers } from '../server/followers.js';
 import { socialLink } from '../server/routes/public.js';
 import { bulkPrice, upsellOffers } from '../shared/pricing.js';
+import { hashPassword } from '../server/auth.js';
+import { seedDemoData } from '../server/demo-data.js';
+import { applyAdminLogin, clearTestData } from '../server/golive.js';
 
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000001e221bc330000000049454e44ae426082', 'hex');
 
@@ -1620,6 +1623,148 @@ describe('Contestant PIN, profile and rounds', () => {
       assert.equal((await boss.post(`/admin/contestants/${delta.id}/probation`, { on: true })).data.onProbation, true);
     } finally {
       await fresh.close();
+    }
+  });
+});
+
+describe('Going live', () => {
+  test('the first live start removes the demo people and all test money, once, and keeps real applicants', async () => {
+    const app = await boot({}, { freshContest: true });
+    try {
+      const { ctx } = app;
+      await seedDemoData(ctx);
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const real = await makeContestant(app, admin, 'Realone');
+      await setSetting(ctx.db, 'competition_phase', 'voting');
+      await payForVotes(client(app.base), real.code, 30);
+      await admin.post(`/admin/contestants/${real.id}/adjustments`, { quantity: 5, reason: 'Demo transfer' });
+      const count = async (table) => (await ctx.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).n;
+      assert.ok(await count('payments') > 0);
+
+      // Outside production nothing happens, so a demo or test run never loses its data.
+      assert.equal(await clearTestData(ctx), null);
+      assert.ok(await count('votes') > 0);
+
+      const live = { ...ctx, config: { ...ctx.config, production: true } };
+      const done = await clearTestData(live);
+      assert.equal(done.demoContestants, 14);
+      assert.equal(done.realContestantsKept, 1);
+      for (const table of ['votes', 'payments', 'vote_adjustments', 'activity', 'results', 'rank_snapshots']) assert.equal(await count(table), 0, table);
+      assert.equal((await ctx.db.prepare("SELECT COUNT(*) AS n FROM users WHERE email LIKE '%@mbgn.local'").get()).n, 0);
+
+      const { data } = await client(app.base).get('/competition');
+      assert.equal(data.phase, 'registration');
+      const daysLeft = (new Date(data.registration.endsAt) - Date.now()) / 864e5;
+      assert.ok(daysLeft > 6.9 && daysLeft <= 7, 'a fresh 7-day countdown');
+      const board = (await client(app.base).get('/leaderboard')).data.rows;
+      assert.deepEqual(board.map((r) => [r.code, r.totalVotes, r.position]), [[real.code, 0, 1]]);
+      // Real applicants keep their account: the PIN still works.
+      const { whatsapp } = (await real.person.get('/me/dashboard')).data.profile;
+      assert.equal((await client(app.base).post('/contestants/login', { phone: whatsapp, pin: '2468' })).status, 200);
+      assert.ok(await ctx.db.prepare("SELECT 1 FROM audit_log WHERE action = 'golive.clear_test_data' AND details LIKE '%demoContestants: 14%'").get());
+
+      // Only ever once: real votes after going live are never touched.
+      assert.equal(await clearTestData(live), null);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('ADMIN_EMAIL and ADMIN_PASSWORD on a live site set the admin login whenever they change', async () => {
+    const app = await boot();
+    try {
+      const { ctx } = app;
+      // As if someone had chosen a weak password under "Your login".
+      await ctx.db.prepare("UPDATE users SET password_hash = ? WHERE role = 'admin'").run(hashPassword('123456789'));
+      const live = (extra) => ({ ...ctx, config: { ...ctx.config, production: true, ...extra } });
+      const login = (email, password) => client(app.base).post('/auth/login', { email, password });
+      const signedIn = client(app.base);
+      await signedIn.post('/auth/login', { email: 'admin@test.local', password: '123456789' });
+
+      // Without usable settings nothing changes, so nobody is locked out.
+      assert.equal(await applyAdminLogin(live({ adminPassword: null })), false);
+      assert.equal(await applyAdminLogin(live({ adminEmail: 'boss@live.test', adminPassword: 'admin-demo-pass' })), false);
+      assert.equal((await login('admin@test.local', '123456789')).status, 200);
+
+      assert.equal(await applyAdminLogin(live({ adminEmail: 'Boss@Live.test', adminPassword: 'a-long-new-password' })), true);
+      assert.equal((await login('admin@test.local', '123456789')).status, 401);
+      assert.equal((await login('boss@live.test', 'a-long-new-password')).status, 200);
+      assert.equal((await signedIn.get('/admin/overview')).status, 401);
+
+      // The same settings on later starts leave a change made under "Your login" alone.
+      const boss = client(app.base);
+      await boss.post('/auth/login', { email: 'boss@live.test', password: 'a-long-new-password' });
+      await boss.req('PUT', '/admin/account', { body: { email: 'boss@live.test', newPassword: 'changed-in-the-panel', currentPassword: 'a-long-new-password' } });
+      assert.equal(await applyAdminLogin(live({ adminEmail: 'boss@live.test', adminPassword: 'a-long-new-password' })), false);
+      assert.equal((await login('boss@live.test', 'changed-in-the-panel')).status, 200);
+
+      // New settings reset it again, which is the way back in after a forgotten password.
+      assert.equal(await applyAdminLogin(live({ adminEmail: 'boss@live.test', adminPassword: 'a-reset-password' })), true);
+      assert.equal((await login('boss@live.test', 'a-reset-password')).status, 200);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('Countdowns an admin can change at any stage', () => {
+  test('reopening registration takes a new countdown, so voting does not start again straight away', async () => {
+    const app = await boot();
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const anon = client(app.base);
+      // The old countdown has long passed, as on a site whose voting started by itself.
+      await setSetting(app.ctx.db, 'registration_ends_at', new Date(Date.now() - 864e5).toISOString());
+      await setSetting(app.ctx.db, 'auto_start_voting', '1');
+      assert.equal((await anon.get('/competition')).data.phase, 'voting');
+
+      const past = new Date(Date.now() - 60000).toISOString();
+      assert.equal((await admin.post('/admin/phase/registration', { endsAt: past })).status, 400);
+      assert.equal((await anon.get('/competition')).data.phase, 'voting');
+
+      const nextWeek = new Date(Date.now() + 7 * 864e5).toISOString();
+      assert.equal((await admin.post('/admin/phase/registration', { endsAt: nextWeek })).status, 200);
+      const reopened = (await anon.get('/competition')).data;
+      assert.equal(reopened.phase, 'registration');
+      assert.equal(reopened.registration.endsAt, nextWeek);
+      assert.equal(reopened.registration.open, true);
+
+      // And the voting countdown can be changed while voting is on.
+      await admin.post('/admin/phase/voting');
+      assert.equal((await admin.req('PUT', '/admin/voting-ends', { body: { endsAt: past } })).status, 400);
+      const end = new Date(Date.now() + 3 * 864e5).toISOString();
+      assert.equal((await admin.req('PUT', '/admin/voting-ends', { body: { endsAt: end } })).status, 200);
+      assert.equal((await anon.get('/competition')).data.endsAt, end);
+      assert.equal((await anon.req('PUT', '/admin/voting-ends', { body: { endsAt: end } })).status, 401);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('Themes chosen by admins', () => {
+  test('admins choose which themes are offered and the default, and the site follows', async () => {
+    const app = await boot();
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const anon = client(app.base);
+      assert.deepEqual((await anon.get('/competition')).data.themes, { offered: ['owambe', 'royal', 'ankara', 'naija', 'glam', 'midnight'], default: 'owambe' });
+
+      const put = (body) => admin.req('PUT', '/admin/themes', { body });
+      assert.equal((await put({ offered: [], default: 'owambe' })).status, 400);
+      assert.equal((await put({ offered: ['royal'], default: 'naija' })).status, 400);
+      assert.equal((await put({ offered: ['nonsense'], default: 'nonsense' })).status, 400);
+      assert.equal((await anon.req('PUT', '/admin/themes', { body: { offered: ['naija'], default: 'naija' } })).status, 401);
+
+      const saved = await put({ offered: ['naija', 'royal', 'nonsense'], default: 'naija' });
+      assert.equal(saved.status, 200);
+      assert.deepEqual(saved.data, { offered: ['royal', 'naija'], default: 'naija' });
+      assert.deepEqual((await anon.get('/competition')).data.themes, { offered: ['royal', 'naija'], default: 'naija' });
+    } finally {
+      await app.close();
     }
   });
 });

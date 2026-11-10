@@ -42,35 +42,41 @@ are AI-generated images of fictional adults, for demonstration only: never prese
 contestants. Seeded contestants without a photo show a lettered placeholder. To add one, drop
 `<stage name>.webp` into that folder and reseed. Real registrations must upload a photo.
 
-## The test deployment on Vercel
+## Demo mode
 
-The project runs on Next.js, with the server under `pages/api`, in Vercel's Frankfurt region next to
-the Neon database. `next.config.mjs` sets `DEMO_MODE`, which loads the demo data and allows simulated
-payments, so **it is for testing only**. The demo admin password above is public, so anyone can open the
-admin panel of a demo deployment.
+`DEMO_MODE=1` in `.env` fills an empty database with invented contestants, allows simulated payments, and
+uses the public demo admin login above. It is for trying the site out on your own computer. Vercel
+runs the site in Frankfurt, next to the Neon database, **without** demo mode: there it is the live site.
 
-Vercel needs these environment variables: `DATABASE_URL` (the `main` branch), `APP_SECRET`,
-`PAYSTACK_SECRET_KEY`, and all four `R2_` settings. `APP_SECRET` must stay the same on every server copy,
-because the network-based fraud checks compare values made with it.
+Vercel needs these environment variables: `DATABASE_URL` (the `main` branch), `APP_SECRET`, the `R2_`
+settings, a live `PAYSTACK_SECRET_KEY` and `PAYMENT_EMAIL`. Without demo mode, the server refuses to start
+without them, or with a Paystack test key. `APP_SECRET` must stay the same on every server copy, because
+the network-based fraud checks compare values made with it.
 
 ## Going live
 
-Remove `DEMO_MODE` from `next.config.mjs` first, then:
+The site ran as a demo until November 2026. To switch it to real money:
 
-1. Set `NODE_ENV=production`, `DATABASE_URL`, the `R2_` settings, `PUBLIC_URL`, `APP_SECRET`,
-   `ADMIN_EMAIL` and `ADMIN_PASSWORD` (see `.env.example`). Do not run the seed, and start from a clean
-   database rather than the demo one.
-2. Set `PAYSTACK_SECRET_KEY` to a live key (`sk_live_`), and `PAYMENT_EMAIL` to a mailbox on your own
-   domain. The server refuses to start in production without them, or with a test key. Use a Paystack
-   account of MBGN's own: its business name shows on checkout, and the money settles to its bank.
-3. In the Paystack dashboard (Settings > API Keys & Webhooks), set the webhook URL to
-   `https://your-domain/api/webhooks/paystack`. An account has one webhook URL for each mode.
-4. Set `SMTP_URL` so emails are delivered. Without it they only reach the admin email log.
-5. Set one or more follower-count service keys (see below) so counts are read automatically. Without any,
-   every application waits for an admin to check the accounts by hand. Add the first WhatsApp group on
-   the Competition tab.
-6. Back up the database. Neon's free plan can only restore the last 6 hours, and a busy site can use up
-   its monthly compute hours, so move to a paid plan for the live contest.
+1. **Back up the database.** In the Neon console, create a branch from `main` (Branches > Create
+   branch). That keeps a copy of everything as it was, in case anything needs to come back.
+2. **Run `scripts\paystack-live.ps1`** (`powershell -ExecutionPolicy Bypass -File scripts\paystack-live.ps1`).
+   It asks for the live Paystack secret and public keys, the payment mailbox, and optionally a new admin
+   email and password (it offers the one in `.secrets/admin-login.txt`), sets the site's address to
+   https://www.mbgn.com.ng, saves it all on Vercel, and deploys. Use a Paystack account of MBGN's own: its
+   business name shows on checkout, and the money settles to its bank.
+3. **On its first start as the live site, the server clears the test data, once:** the invented demo
+   contestants (their emails end `@mbgn.local`) and their accounts go, as do every vote, payment and
+   admin vote change so far, since none of it was real money. Real applicants stay, with their details,
+   PINs, codes and WhatsApp groups, back at zero votes. The contest goes back to registration with a fresh
+   7-day countdown, which an admin can change. The audit log records what was removed.
+4. **The admin login comes from `ADMIN_EMAIL` and `ADMIN_PASSWORD` on Vercel** whenever they change, which
+   is also the way back in after a forgotten password. In between, changes under **Your login** stay.
+5. In the Paystack dashboard (Settings > API Keys & Webhooks, Live mode), set the webhook URL to
+   `https://www.mbgn.com.ng/api/webhooks/paystack`. An account has one webhook URL for each mode.
+6. On the Competition tab, set the registration countdown, check the prices and add a WhatsApp group.
+7. Set `SMTP_URL` so emails are delivered. Without it they only reach the admin email log.
+8. Neon's free plan can only restore the last 6 hours, and a busy site can use up its monthly compute
+   hours, so move to a paid plan for the live contest.
 
 ## How a contest runs
 
@@ -121,8 +127,11 @@ The prize amount on the registration page is set in [client/pages/public.jsx](cl
 
 Everything below is on the control panel at `/admin`, so nobody needs to change code.
 
-- **Countdowns:** the Competition tab sets when registration closes (the home page countdown) and when
-  voting opens and closes.
+- **Countdowns:** the Contest stage panel on the Competition tab always shows the countdown that matters.
+  During registration it sets when registration closes. During voting it sets when voting closes, and
+  reopening registration asks for a new countdown, so voting does not start again straight away.
+- **Site look:** the Site look panel picks which themes visitors can switch between with the Theme
+  button, and the one new visitors see. With only one ticked, the button is hidden.
 - **Prices:** the normal price per vote (₦200 to begin with) and the bulk deals. From a deal's number of
   votes upwards, every vote costs that deal's rate: with 50 votes for ₦8,000, 70 votes cost ₦160 each.
   The panel warns when a bigger deal costs more per vote than a smaller one. Before paying, every
