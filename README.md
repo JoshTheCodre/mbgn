@@ -85,8 +85,10 @@ The site ran as a demo until November 2026. To switch it to real money:
    A new contest gets a 7-day deadline, which an admin can change or remove on the Competition tab. At the
    deadline new applications stop by themselves. A later date reopens them.
 
-   **The follower check** runs when someone sends the form. At least one of their Instagram, TikTok or
-   Facebook accounts needs the number of followers set on the Competition tab (800 to begin with).
+   **The follower check** runs when someone sends the form. Applicants choose one account, on Instagram,
+   TikTok or Facebook, which needs the number of followers set on the Competition tab (800 to begin with).
+   They must tick that the account is theirs: using someone else's means disqualification, as the
+   Contest rules page (`/rules`) says.
    - *Passed:* the application goes to the review team, and they get their WhatsApp group link on screen,
      on their dashboard and by email.
    - *Not enough:* nothing is saved, and they can try again.
@@ -136,9 +138,17 @@ Everything below is on the control panel at `/admin`, so nobody needs to change 
   votes upwards, every vote costs that deal's rate: with 50 votes for ₦8,000, 70 votes cost ₦160 each.
   The panel warns when a bigger deal costs more per vote than a smaller one. Before paying, every
   supporter is offered the next deal up, and can say no.
-- **Votes by hand:** on a contestant's details, admins can add or remove votes, for example for a bank
-  transfer paid outside Paystack, or a correction. Each change needs a reason, and stays in that
-  contestant's log, the audit log and the contestants export. These votes have no payment behind them.
+- **Votes bought in person:** on the Payments & votes tab, admins record votes someone paid for directly,
+  with cash, a transfer or POS: the contestant, votes, amount received, how they paid and the voter's
+  name. They become an ordinary paid payment, so they count at once, show in revenue (and separately
+  as "in person" on the overview), and the buyer gets a proof of vote and receipt. Each records the
+  admin who took the money. Only while voting is open.
+- **Votes by hand:** on a contestant's details, admins can add or remove votes for corrections. Each change
+  needs a reason, and stays in that contestant's log, the audit log and the contestants export. These
+  votes have no payment behind them.
+- **Rules and privacy:** the Contest rules (`/rules`) and Privacy (`/privacy`) pages are linked from the
+  footer. Their text is in [client/pages/info.jsx](client/pages/info.jsx), and shows the live follower
+  minimum, vote price and bulk deals.
 - **Enquiries:** the Sponsorship / Enquiry page sends messages to the Enquiries tab and to every admin by
   email. Admins can add a phone number and email to show on that page.
 - **Rounds and eliminations:** on the Competition tab, add rounds with a start and end time and their

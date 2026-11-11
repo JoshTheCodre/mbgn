@@ -295,6 +295,8 @@ export function publicRouter(ctx) {
     if (location.length < 2) throw new HttpError(400, 'Please enter your town or city.');
     if (bio.length < 20) throw new HttpError(400, 'Please write a short biography of at least 20 characters.');
     checkPin(b.pin);
+    // Using someone else's account means disqualification, and applicants say so before the check.
+    if (b.ownAccount !== 'yes') throw new HttpError(400, 'Please confirm the social media account belongs to you.');
     const tiktok = socialLink(b.tiktok, 'tiktok');
     const instagram = socialLink(b.instagram, 'instagram');
     const facebook = socialLink(b.facebook, 'facebook');

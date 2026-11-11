@@ -223,6 +223,37 @@ export async function settlePayment(ctx, reference) {
   return db.prepare('SELECT * FROM payments WHERE id = ?').get(payment.id);
 }
 
+export const IN_PERSON_METHODS = ['Cash', 'Bank transfer', 'POS', 'Other'];
+
+// Votes bought from an admin in person. They become an ordinary paid payment, so they count, show
+// in revenue and reports, and get a receipt and a proof of vote, just like a payment through Paystack.
+export async function recordInPersonSale(ctx, { code, quantity, amount, method, voterName, email, note, adminId }) {
+  const { db } = ctx;
+  const name = typeof voterName === 'string' ? voterName.trim().replace(/\s+/g, ' ').slice(0, 60) : '';
+  const address = typeof email === 'string' ? email.trim().toLowerCase().slice(0, 200) : '';
+  const reference = typeof note === 'string' ? note.trim().slice(0, 100) : '';
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_VOTES_PER_PAYMENT) throw new HttpError(400, 'Enter a whole number of votes.');
+  if (!Number.isInteger(amount) || amount < 1) throw new HttpError(400, 'Enter the amount received, in whole naira.');
+  if (!IN_PERSON_METHODS.includes(method)) throw new HttpError(400, 'Choose how they paid.');
+  if (name.length < 2) throw new HttpError(400, 'Enter the voter’s name. It goes on their proof of vote.');
+  if (address && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) throw new HttpError(400, 'That email address does not look right.');
+  const state = await votingState(db);
+  if (!state.open) throw new HttpError(409, `${state.message} Votes can only be sold while voting is open.`);
+  const contestant = await db.prepare("SELECT id, code FROM contestants WHERE code = ? AND status = 'approved'").get(code);
+  if (!contestant) throw new HttpError(404, 'No active contestant has that code.');
+
+  const paymentRef = `MBG-INP-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(8).toString('hex').toUpperCase()}`;
+  const { lastInsertRowid: id } = await db.prepare(`INSERT INTO payments (reference, email, voter_name, vote_contestant_id, vote_quantity, amount,
+    provider, provider_ref, recorded_by, return_to, created_at) VALUES (?, ?, ?, ?, ?, ?, 'in_person', ?, ?, ?, ?) RETURNING id`)
+    .run(paymentRef, address || null, name, contestant.id, quantity, amount, reference || null, adminId, `/c/${contestant.code}`, nowIso());
+  const payment = await db.prepare('SELECT * FROM payments WHERE id = ?').get(id);
+  const outcome = await recordPaidVotes(ctx, payment, { amountPaid: amount, method: `In person: ${method}`, providerRef: reference || null });
+  await db.prepare('INSERT INTO audit_log (actor_id, action, details, created_at) VALUES (?, ?, ?, ?)')
+    .run(adminId, 'votes.in_person', `${contestant.code}: ${quantity} votes for NGN ${amount} by ${method}, from ${name}${reference ? ` (${reference})` : ''}`, nowIso());
+  if (outcome && address) await sendPaymentEmail(ctx, payment, outcome);
+  return db.prepare('SELECT * FROM payments WHERE id = ?').get(id);
+}
+
 function sendPaymentEmail(ctx, payment, { held, contestant }) {
   const link = `${ctx.config.publicUrl}/receipt/payment/${payment.reference}`;
   const naira = `NGN ${payment.amount.toLocaleString('en-NG')}`;

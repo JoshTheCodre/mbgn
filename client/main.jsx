@@ -24,6 +24,9 @@ const Register = fromAccount('Register');
 const Reset = fromAccount('Reset');
 const Dashboard = lazy(() => import('./pages/dashboard.jsx').then((m) => ({ default: m.Dashboard })));
 const Admin = lazy(() => import('./pages/admin.jsx').then((m) => ({ default: m.Admin })));
+const loadInfo = () => import('./pages/info.jsx');
+const Rules = lazy(() => loadInfo().then((m) => ({ default: m.Rules })));
+const Privacy = lazy(() => loadInfo().then((m) => ({ default: m.Privacy })));
 
 function Header() {
   const { user, competition } = useApp();
@@ -138,6 +141,11 @@ function Footer() {
           <h2>Compete</h2>
           {registrationOpen(competition) ? <Link to="/register">Join the contest</Link> : null}
           <Link to="/dashboard">Contestant dashboard</Link>
+        </nav>
+        <nav aria-label="About">
+          <h2>About</h2>
+          <Link to="/rules">Contest rules</Link>
+          <Link to="/privacy">Privacy</Link>
           <Link to="/enquiry">Sponsorship &amp; enquiries</Link>
         </nav>
       </div>
@@ -213,6 +221,8 @@ function App() {
           <Route path="/results" element={<Results />} />
           <Route path="/register" element={<Register />} />
           <Route path="/enquiry" element={<Enquiry />} />
+          <Route path="/rules" element={<Rules />} />
+          <Route path="/privacy" element={<Privacy />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/pay/return/:reference" element={<PayReturn />} />
           <Route path="/pay/sim/:reference" element={<PaySim />} />

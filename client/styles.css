@@ -916,6 +916,23 @@ select option { background: var(--surface); }
 .round-list li.closed { opacity: .75; }
 .round-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; }
 .round-head small { display: block; color: var(--muted); }
+/* Registration: the one account to check */
+.platform-choice { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.platform-option { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 6px; border: 1.5px solid var(--line); border-radius: var(--radius-s); background: var(--bg); font-weight: 600; font-size: .92rem; text-align: center; cursor: pointer; }
+.platform-option.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+.platform-option input { position: absolute; inset: 0; width: 1px; height: 1px; min-height: 0; padding: 0; margin: 0; opacity: 0; pointer-events: none; }
+.platform-option:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.own-account { margin: 0; }
+
+/* Rules and privacy */
+.info-section { margin: 0 0 18px; padding: 18px 20px; background: var(--surface); border-radius: var(--radius); }
+.info-section h2 { margin: 0 0 8px; font-size: 1.15rem; }
+.info-section ul { margin: 0; padding-left: 20px; display: grid; gap: 8px; list-style: disc; }
+.info-section p { margin: 0; }
+.info-section.warn { border-left: 4px solid var(--bad-text); }
+
+.in-person { margin-bottom: 16px; }
+.in-person-done p { margin: 4px 0; }
 .round-preview { margin: 12px 0; padding: 12px 14px; background: var(--surface-2); border-radius: var(--radius-s); }
 .round-preview h3 { margin: 0 0 4px; font-size: 1rem; }
 .profile-change { margin-top: 14px; padding: 12px 14px; background: var(--warn-bg); color: var(--warn-text); border-radius: var(--radius-s); }
@@ -1138,7 +1155,8 @@ legend + * { clear: both; }
 .footer-bottom { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 20px; margin-top: 30px; padding-top: 16px; font-size: .82rem; color: var(--muted); position: relative; }
 .footer-bottom::before { content: ''; position: absolute; top: 0; left: 16px; right: 16px; height: 1px; background: var(--line); }
 @media (min-width: 720px) {
-  .footer-top { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr); gap: 48px; }
+  /* The brand, then as many link columns as there are: two to three, depending on the stage. */
+  .footer-top { grid-template-columns: minmax(0, 2fr); grid-auto-columns: minmax(0, 1fr); grid-auto-flow: column; gap: 40px; }
   .footer-brand { grid-column: auto; }
   .footer-bottom::before { left: 28px; right: 28px; }
 }

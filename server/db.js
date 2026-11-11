@@ -168,6 +168,8 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 -- What the supporter typed, for their proof of vote.
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS voter_name TEXT;
+-- The admin who took the money, for votes bought in person.
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS recorded_by INTEGER REFERENCES users(id);
 CREATE INDEX IF NOT EXISTS payments_pending ON payments(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS payments_network ON payments(ip_hash, created_at DESC);
 

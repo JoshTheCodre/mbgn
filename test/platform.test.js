@@ -115,6 +115,7 @@ function registrationForm(name, overrides = {}) {
     location: 'Ikeja',
     bio: 'A short biography that is certainly long enough.',
     pin: '2468',
+    ownAccount: 'yes',
     instagram: `@${name.toLowerCase()}`,
     ...overrides,
   };
@@ -1779,6 +1780,65 @@ describe('Winners page', () => {
       await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
       await admin.post('/admin/results/history', { competition: 'MBGN 2025', winner: 'Last Year Queen', date: '2025-12-01' });
       assert.equal((await anon.get('/competition')).data.hasResults, true);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('Votes bought in person', () => {
+  test('an admin records a sale, which counts like a payment and gives the buyer a proof of vote', async () => {
+    const app = await boot();
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const star = await makeContestant(app, admin, 'Walkin');
+      const sell = (body) => admin.post('/admin/in-person-votes', { code: star.code, quantity: 50, amount: 8000, method: 'Cash', voterName: 'Mama Ngozi', ...body });
+
+      assert.equal((await sell({ voterName: '' })).status, 400);
+      assert.equal((await sell({ amount: 0 })).status, 400);
+      assert.equal((await sell({ method: 'Crypto' })).status, 400);
+      assert.equal((await sell({ quantity: 0 })).status, 400);
+      assert.equal((await sell({ code: 'NOPE99' })).status, 404);
+      assert.equal((await client(app.base).post('/admin/in-person-votes', { code: star.code, quantity: 5, amount: 1000, method: 'Cash', voterName: 'X' })).status, 401);
+
+      const sale = await sell({ email: 'ngozi@buyer.test', note: 'Receipt 0042' });
+      assert.equal(sale.status, 201);
+      assert.equal(sale.data.votesStatus, 'counted');
+      assert.equal((await client(app.base).get(`/contestants/${star.code}`)).data.totalVotes, 50);
+
+      // The buyer's proof of vote and receipt work like any payment's.
+      const proof = (await client(app.base).post(`/payments/${sale.data.reference}/verify`)).data;
+      assert.deepEqual([proof.status, proof.votesStatus, proof.voterName, proof.amount, proof.method], ['paid', 'counted', 'Mama Ngozi', 8000, 'In person: Cash']);
+      assert.match(proof.receiptNo, /^VOTE-/);
+      assert.ok(await app.ctx.db.prepare("SELECT 1 FROM outbox WHERE to_addr = 'ngozi@buyer.test' AND subject LIKE 'Your 50 votes%'").get());
+
+      // Admins see who sold it, and it counts as revenue.
+      const row = (await admin.get('/admin/payments')).data.find((p) => p.reference === sale.data.reference);
+      assert.deepEqual([row.provider, row.method, row.recordedBy, row.contestant, row.providerRef], ['in_person', 'In person: Cash', 'Administrator', `Walkin (${star.code})`, 'Receipt 0042']);
+      const overview = (await admin.get('/admin/overview')).data;
+      assert.equal(overview.revenueInPerson, 8000);
+      assert.ok(overview.revenue >= 8000);
+      assert.ok(await app.ctx.db.prepare("SELECT 1 FROM audit_log WHERE action = 'votes.in_person' AND details LIKE '%50 votes for NGN 8000 by Cash, from Mama Ngozi (Receipt 0042)'").get());
+
+      // Not while voting is paused.
+      await admin.post('/admin/voting/paused');
+      assert.equal((await sell({})).status, 409);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('Account ownership', () => {
+  test('applicants must confirm the account they give is theirs', async () => {
+    const app = await boot();
+    try {
+      const join = (overrides) => client(app.base).req('POST', '/contestants/register', { form: registrationForm('Owner', overrides) });
+      const refused = await join({ ownAccount: '' });
+      assert.equal(refused.status, 400);
+      assert.match(refused.data.error, /belongs to you/);
+      assert.equal((await join({})).status, 201);
     } finally {
       await app.close();
     }

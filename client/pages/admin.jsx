@@ -5,6 +5,7 @@ import {
   Dialog, ErrorNote, Field, Loading, PLATFORM_NAMES, Portrait,
 } from '../ui.jsx';
 import { THEMES } from '../themes.js';
+import { bulkPrice } from '../../shared/pricing.js';
 
 const TABS = [
   ['overview', 'Overview'],
@@ -65,7 +66,7 @@ function Overview({ data, go }) {
   return (
     <>
       <dl className="tiles tiles-3">
-        <div><dt>Revenue</dt><dd>{naira(data.revenue)}</dd><small>{naira(data.revenue24h)} in 24 hrs</small></div>
+        <div><dt>Revenue</dt><dd>{naira(data.revenue)}</dd><small>{naira(data.revenue24h)} in 24 hrs{data.revenueInPerson ? ` · ${naira(data.revenueInPerson)} in person` : ''}</small></div>
         <div><dt>Paid votes</dt><dd>{num(data.totalVotes)}</dd><small>{num(data.votes24h)} in 24 hrs{data.adjustedVotes ? ` · ${data.adjustedVotes > 0 ? '+' : ''}${num(data.adjustedVotes)} by admins` : ''}</small></div>
         <div><dt>Active contestants</dt><dd>{num(data.contestants)}</dd><small>{num(data.pending)} waiting for review</small></div>
       </dl>
@@ -261,6 +262,103 @@ function ContestantsTab({ onChange }) {
   );
 }
 
+const IN_PERSON_METHODS = ['Cash', 'Bank transfer', 'POS', 'Other'];
+
+// Votes someone buys from an admin in person. They count like any payment, and the buyer gets a
+// proof of vote and receipt.
+function InPersonSale({ onDone }) {
+  const { competition } = useApp();
+  const [code, setCode] = useState('');
+  const [who, setWho] = useState(null);
+  const [quantity, setQuantity] = useState('');
+  const [amount, setAmount] = useState('');
+  const [amountTyped, setAmountTyped] = useState(false);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null);
+  const votes = Number(quantity);
+  const price = Number.isInteger(votes) && votes > 0 ? bulkPrice(votes, competition?.votePrice ?? 0, competition?.packages ?? []) : null;
+  const shownAmount = amountTyped ? amount : price ?? '';
+
+  async function lookUp() {
+    setWho(null);
+    if (!code.trim()) return;
+    try {
+      const c = await api(`/contestants/${encodeURIComponent(code.trim())}`);
+      setWho({ name: c.name, code: c.code });
+    } catch (err) {
+      setWho({ error: err.message });
+    }
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const f = new FormData(form);
+    setBusy(true);
+    setError(null);
+    setDone(null);
+    try {
+      const sale = await api('/admin/in-person-votes', {
+        body: {
+          code, quantity: votes, amount: Number(shownAmount), method: f.get('method'), voterName: f.get('voterName'), email: f.get('email'), note: f.get('note'),
+        },
+      });
+      setDone({ ...sale, name: who?.name ?? code, voter: f.get('voterName') });
+      form.reset();
+      setCode('');
+      setWho(null);
+      setQuantity('');
+      setAmount('');
+      setAmountTyped(false);
+      onDone();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="panel in-person">
+      <h2>Record votes bought in person</h2>
+      <p className="muted">For supporters who pay you directly, with cash, a transfer or POS. The votes count at once, show in revenue, and the supporter gets a proof of vote like anyone paying online.</p>
+      {competition?.voting && !competition.voting.open ? <p className="note">{competition.voting.message} Votes can only be sold while voting is open.</p> : null}
+      <form className="stack" onSubmit={submit}>
+        <div className="form-grid">
+          <Field label="Contestant code" hint={who?.name ? `${who.name} (${who.code})` : who?.error ?? 'For example MBG013'}>
+            <input value={code} onChange={(e) => { setCode(e.target.value); setWho(null); }} onBlur={lookUp} required />
+          </Field>
+          <Field label="Votes"><input type="number" min="1" step="1" value={quantity} onChange={(e) => setQuantity(e.target.value)} required /></Field>
+          <Field label="Amount received (₦)" hint={price !== null ? `The price for ${num(votes)} votes is ${naira(price)}.` : 'Filled in from the price once you enter the votes.'}>
+            <input type="number" min="1" step="1" value={shownAmount} onChange={(e) => { setAmount(e.target.value); setAmountTyped(true); }} required />
+          </Field>
+          <Field label="Paid by">
+            <select name="method" defaultValue="Cash">
+              {IN_PERSON_METHODS.map((m) => <option key={m}>{m}</option>)}
+            </select>
+          </Field>
+          <Field label="Voter’s name" hint="Goes on their proof of vote."><input name="voterName" required /></Field>
+          <Field label="Voter’s email" hint="Optional. They get the receipt by email."><input name="email" type="email" /></Field>
+        </div>
+        <Field label="Note" hint="Optional, such as the transfer reference or receipt number."><input name="note" maxLength={100} /></Field>
+        <ErrorNote error={error} />
+        <button className="btn btn-primary" disabled={busy}>{busy ? 'Recording…' : `Record ${price !== null ? `${num(votes)} votes` : 'votes'}`}</button>
+      </form>
+      {done ? (
+        <div className="note note-good in-person-done">
+          <p><b>{num(done.votes)} votes for {done.name}</b> recorded, {naira(done.amount)} from {done.voter}.{done.votesStatus === 'held' ? ' The votes could not be counted, so refund the money.' : ''}</p>
+          <p>
+            <a href={`/pay/return/${done.reference}`} target="_blank" rel="noreferrer">Open their proof of vote</a>
+            {' · '}
+            <Link to={`/receipt/payment/${done.reference}`}>Receipt</Link>
+          </p>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function MoneyTab({ onChange }) {
   const [view, setView] = useState('payments');
   const payments = useFetch(view === 'payments' ? '/admin/payments' : null);
@@ -268,6 +366,7 @@ function MoneyTab({ onChange }) {
   const [action, setAction] = useState(null);
   return (
     <>
+      <InPersonSale onDone={() => { payments.reload(); onChange(); }} />
       <div className="qty-chips">
         <button type="button" className={`chip ${view === 'payments' ? 'active' : ''}`} onClick={() => setView('payments')}>Payments</button>
         <button type="button" className={`chip ${view === 'votes' ? 'active' : ''}`} onClick={() => setView('votes')}>Votes</button>
@@ -276,20 +375,21 @@ function MoneyTab({ onChange }) {
         !payments.data ? <Loading /> : (
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>Date</th><th>Reference</th><th>Voter</th><th>Receipt email</th><th className="num">Votes</th><th className="num">Amount</th><th>Status</th></tr></thead>
+              <thead><tr><th>Date</th><th>Reference</th><th>Voter</th><th>Contestant</th><th>Receipt email</th><th className="num">Votes</th><th className="num">Amount</th><th>Status</th></tr></thead>
               <tbody>
                 {payments.data.map((p) => (
                   <tr key={p.reference}>
                     <td>{dateTime(p.createdAt)}</td>
                     <td>{p.status === 'paid' ? <Link to={`/receipt/payment/${p.reference}`}>{p.reference}</Link> : p.reference}</td>
                     <td>{p.voterName ?? '—'}</td>
+                    <td>{p.contestant ?? '—'}</td>
                     <td>{p.email ?? '—'}</td>
                     <td className="num">{num(p.votes)}</td>
                     <td className="num">{naira(p.amount)}</td>
-                    <td><em className={`tag tag-${p.status}`}>{p.status}</em>{p.votesStatus === 'held' ? <em className="tag tag-review">refund due</em> : null}</td>
+                    <td><em className={`tag tag-${p.status}`}>{p.status}</em>{p.provider === 'in_person' ? <em className="tag" title={`${p.method ?? ''}${p.recordedBy ? `, recorded by ${p.recordedBy}` : ''}`}>in person</em> : null}{p.votesStatus === 'held' ? <em className="tag tag-review">refund due</em> : null}</td>
                   </tr>
                 ))}
-                {payments.data.length === 0 ? <tr><td colSpan="7" className="muted">No payments yet.</td></tr> : null}
+                {payments.data.length === 0 ? <tr><td colSpan="8" className="muted">No payments yet.</td></tr> : null}
               </tbody>
             </table>
           </div>

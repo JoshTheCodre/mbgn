@@ -11,8 +11,9 @@ import {
 } from '../groups.js';
 import { closeRound, roundStanding, roundView } from '../rounds.js';
 import { changeStage, startVotingIfDue, tellContestantsVotingOpened } from '../stages.js';
+import { recordInPersonSale } from '../payments.js';
 import { voidVote } from '../votes.js';
-import { socialLink, themeSettings } from './public.js';
+import { normalizeCode, socialLink, themeSettings } from './public.js';
 import { THEME_IDS } from '../../shared/themes.js';
 
 const clean = (value, max = 500) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
@@ -116,8 +117,9 @@ export function adminRouter(ctx) {
       one("SELECT COUNT(*) AS n FROM enquiries WHERE status = 'new'"),
       one("SELECT COALESCE(SUM(quantity), 0) AS n FROM vote_adjustments"),
     ]);
+    const revenueInPerson = await one("SELECT COALESCE(SUM(amount), 0) AS n FROM payments WHERE status = 'paid' AND provider = 'in_person'");
     res.json({
-      voting, totalVotes, votes24h, revenue, revenue24h, votesHeld, contestants, pending, openFlags, paymentsInReview, waitingForGroup, newEnquiries, adjustedVotes,
+      voting, totalVotes, votes24h, revenue, revenue24h, revenueInPerson, votesHeld, contestants, pending, openFlags, paymentsInReview, waitingForGroup, newEnquiries, adjustedVotes,
     });
   });
 
@@ -533,12 +535,32 @@ export function adminRouter(ctx) {
   // ---- Money and votes ----
   router.get('/payments', async (req, res) => {
     const status = clean(req.query.status, 20);
-    const rows = await db.prepare(`SELECT p.* FROM payments p
+    const rows = await db.prepare(`SELECT p.*, u.name AS recorded_by_name, c.code, c.stage_name FROM payments p
+      LEFT JOIN users u ON u.id = p.recorded_by
+      LEFT JOIN contestants c ON c.id = p.vote_contestant_id
       ${status ? 'WHERE p.status = ?' : ''} ORDER BY p.id DESC LIMIT 300`).all(...(status ? [status] : []));
     res.json(rows.map((p) => ({
       reference: p.reference, voterName: p.voter_name, email: p.email, votes: p.vote_quantity, votesStatus: p.votes_status, amount: p.amount, status: p.status,
       provider: p.provider, providerRef: p.provider_ref, paidAmount: p.paid_amount, createdAt: p.created_at, paidAt: p.paid_at,
+      method: p.payment_method, recordedBy: p.recorded_by_name, contestant: p.code ? `${p.stage_name} (${p.code})` : null,
     })));
+  });
+
+  // Votes someone buys in person, with cash, a transfer or POS, recorded by the admin who took the money.
+  router.post('/in-person-votes', async (req, res) => {
+    const b = req.body ?? {};
+    const payment = await recordInPersonSale(ctx, {
+      code: normalizeCode(b.code),
+      quantity: Number(b.quantity),
+      amount: Number(b.amount),
+      method: b.method,
+      voterName: b.voterName,
+      email: b.email,
+      note: b.note,
+      adminId: req.user.id,
+    });
+    changed();
+    res.status(201).json({ reference: payment.reference, votesStatus: payment.votes_status, amount: payment.amount, votes: payment.vote_quantity });
   });
 
   router.get('/votes', async (_req, res) => {

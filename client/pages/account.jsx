@@ -253,7 +253,7 @@ function CheckResult({ accounts, response, testMode, onRetry }) {
       {outcome === 'review' ? <p className="muted">We could not finish the check automatically, so our team will look at your accounts and email <b>{email}</b>.</p> : null}
       {outcome === 'failed' ? (
         <p className="muted">
-          You need at least <b>{num(minFollowers)}</b> followers on one of your accounts. Your application has not been sent, so you can try again once you get there.
+          You need at least <b>{num(minFollowers)}</b> followers on the account you chose. Your application has not been sent, so you can try another of your accounts, or try again once you get there.
           {hasMissing ? ' If we could not find an account, check the spelling.' : ''}
         </p>
       ) : null}
@@ -271,7 +271,7 @@ function CheckResult({ accounts, response, testMode, onRetry }) {
         ) : null}
         {outcome === 'passed' && !whatsappGroup ? <p className="note">Your WhatsApp group link will be sent to your email soon.</p> : null}
         {outcome === 'failed'
-          ? <button type="button" className="btn btn-primary btn-wide" onClick={onRetry}>Change my accounts</button>
+          ? <button type="button" className="btn btn-primary btn-wide" onClick={onRetry}>Try another account</button>
           : <Link to="/dashboard" className="btn btn-ghost btn-wide">Go to my dashboard</Link>}
         {outcome === 'failed' ? <Link to="/" className="btn btn-ghost btn-wide">Back to the home page</Link> : null}
       </div>
@@ -285,6 +285,8 @@ export function Register() {
   const [step, setStep] = useState('form');
   const [accounts, setAccounts] = useState([]);
   const [response, setResponse] = useState(null);
+  // The one account used for the follower check.
+  const [platform, setPlatform] = useState('instagram');
   const errorRef = useRef(null);
 
   // Stays here after joining, so the new contestant can see their result.
@@ -311,10 +313,10 @@ export function Register() {
     e.preventDefault();
     const form = new FormData(e.currentTarget);
     const given = Object.keys(PLATFORM_NAMES)
-      .filter((platform) => form.get(platform).trim())
-      .map((platform) => ({ platform, account: accountLabel(form.get(platform).trim()) }));
+      .filter((p) => (form.get(p) ?? '').trim())
+      .map((p) => ({ platform: p, account: accountLabel(form.get(p).trim()) }));
     if (given.length === 0) {
-      showError(new Error('Please add at least one of your Instagram, TikTok or Facebook accounts.'));
+      showError(new Error(`Please enter your ${PLATFORM_NAMES[platform]} username or link.`));
       return;
     }
     if (form.get('pin') !== form.get('pinAgain')) {
@@ -352,17 +354,31 @@ export function Register() {
       <header className="register-head">
         <p className="eyebrow">Contestant application</p>
         <h1>Join the contest</h1>
-        <p className="muted">You need at least {minFollowers} followers on Instagram, TikTok or Facebook. One account is enough, and we check it as soon as you send this form.</p>
+        <p className="muted">You need at least {minFollowers} followers on Instagram, TikTok or Facebook. Choose one account, and we check it as soon as you send this form.</p>
       </header>
       <form className="register-form" onSubmit={submit}>
         <fieldset>
-          <legend>Your social media</legend>
-          <p className="field-hint">Add every account you have. At least one needs {minFollowers} followers.</p>
-          <div className="form-grid three">
-            <Field label="Instagram"><input name="instagram" placeholder="@yourname" /></Field>
-            <Field label="TikTok"><input name="tiktok" placeholder="@yourname" /></Field>
-            <Field label="Facebook"><input name="facebook" placeholder="yourname or page link" /></Field>
+          <legend>Your social media account</legend>
+          <p className="field-hint">Choose the one account we should check. It needs at least {minFollowers} followers.</p>
+          <div className="platform-choice" role="radiogroup" aria-label="Social media account to check">
+            {Object.entries(PLATFORM_NAMES).map(([id, label]) => (
+              <label key={id} className={`platform-option ${platform === id ? 'on' : ''}`}>
+                <input type="radio" name="platformChoice" value={id} checked={platform === id} onChange={() => setPlatform(id)} />
+                <span className={`follower-logo follower-logo-${id}`}><BrandLogo name={id} /></span>
+                {label}
+              </label>
+            ))}
           </div>
+          <Field label={`Your ${PLATFORM_NAMES[platform]} ${platform === 'facebook' ? 'page name or link' : 'username'}`}>
+            <input key={platform} name={platform} placeholder={platform === 'facebook' ? 'yourpage or facebook.com/yourpage' : '@yourname'} required />
+          </Field>
+          <div className="note note-error own-account">
+            <b>Use only your own account.</b> If we find that you entered an account that is not yours, you will be disqualified straight away. See the <Link to="/rules">contest rules</Link>.
+          </div>
+          <label className="check-line">
+            <input type="checkbox" name="ownAccount" value="yes" required />
+            I confirm this account belongs to me.
+          </label>
           {competition?.followerCheckIsTest ? <p className="note">Test mode: follower counts are made up. A username ending in _ and a number has that many followers, so @ada_500 does not pass and @ada_1200 does.</p> : null}
         </fieldset>
         <fieldset>
