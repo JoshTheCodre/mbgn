@@ -1844,3 +1844,21 @@ describe('Account ownership', () => {
     }
   });
 });
+
+describe('In-person sales priced by the site', () => {
+  test('without an amount, a sale is charged the normal price, bulk deals included', async () => {
+    const app = await boot();
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const star = await makeContestant(app, admin, 'Priced');
+      const sale = await admin.post('/admin/in-person-votes', { code: star.code, quantity: 70, method: 'POS', voterName: 'Ada Obi' });
+      assert.equal(sale.status, 201);
+      assert.equal(sale.data.amount, 11200);
+      const small = await admin.post('/admin/in-person-votes', { code: star.code, quantity: 3, method: 'Cash', voterName: 'Ada Obi' });
+      assert.equal(small.data.amount, 600);
+    } finally {
+      await app.close();
+    }
+  });
+});

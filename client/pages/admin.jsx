@@ -271,14 +271,12 @@ function InPersonSale({ onDone }) {
   const [code, setCode] = useState('');
   const [who, setWho] = useState(null);
   const [quantity, setQuantity] = useState('');
-  const [amount, setAmount] = useState('');
-  const [amountTyped, setAmountTyped] = useState(false);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(null);
   const votes = Number(quantity);
+  // The server charges the same price, bulk deals included.
   const price = Number.isInteger(votes) && votes > 0 ? bulkPrice(votes, competition?.votePrice ?? 0, competition?.packages ?? []) : null;
-  const shownAmount = amountTyped ? amount : price ?? '';
 
   async function lookUp() {
     setWho(null);
@@ -300,17 +298,13 @@ function InPersonSale({ onDone }) {
     setDone(null);
     try {
       const sale = await api('/admin/in-person-votes', {
-        body: {
-          code, quantity: votes, amount: Number(shownAmount), method: f.get('method'), voterName: f.get('voterName'), email: f.get('email'), note: f.get('note'),
-        },
+        body: { code, quantity: votes, method: f.get('method'), voterName: f.get('voterName') },
       });
       setDone({ ...sale, name: who?.name ?? code, voter: f.get('voterName') });
       form.reset();
       setCode('');
       setWho(null);
       setQuantity('');
-      setAmount('');
-      setAmountTyped(false);
       onDone();
     } catch (err) {
       setError(err);
@@ -329,9 +323,8 @@ function InPersonSale({ onDone }) {
           <Field label="Contestant code" hint={who?.name ? `${who.name} (${who.code})` : who?.error ?? 'For example MBG013'}>
             <input value={code} onChange={(e) => { setCode(e.target.value); setWho(null); }} onBlur={lookUp} required />
           </Field>
-          <Field label="Votes"><input type="number" min="1" step="1" value={quantity} onChange={(e) => setQuantity(e.target.value)} required /></Field>
-          <Field label="Amount received (₦)" hint={price !== null ? `The price for ${num(votes)} votes is ${naira(price)}.` : 'Filled in from the price once you enter the votes.'}>
-            <input type="number" min="1" step="1" value={shownAmount} onChange={(e) => { setAmount(e.target.value); setAmountTyped(true); }} required />
+          <Field label="Votes" hint={price !== null ? `Collect ${naira(price)}` : 'The price includes bulk deals.'}>
+            <input type="number" min="1" step="1" value={quantity} onChange={(e) => setQuantity(e.target.value)} required />
           </Field>
           <Field label="Paid by">
             <select name="method" defaultValue="Cash">
@@ -339,11 +332,9 @@ function InPersonSale({ onDone }) {
             </select>
           </Field>
           <Field label="Voter’s name" hint="Goes on their proof of vote."><input name="voterName" required /></Field>
-          <Field label="Voter’s email" hint="Optional. They get the receipt by email."><input name="email" type="email" /></Field>
         </div>
-        <Field label="Note" hint="Optional, such as the transfer reference or receipt number."><input name="note" maxLength={100} /></Field>
         <ErrorNote error={error} />
-        <button className="btn btn-primary" disabled={busy}>{busy ? 'Recording…' : `Record ${price !== null ? `${num(votes)} votes` : 'votes'}`}</button>
+        <button className="btn btn-primary" disabled={busy}>{busy ? 'Recording…' : price !== null ? `Record ${num(votes)} votes for ${naira(price)}` : 'Record votes'}</button>
       </form>
       {done ? (
         <div className="note note-good in-person-done">

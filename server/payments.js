@@ -233,6 +233,8 @@ export async function recordInPersonSale(ctx, { code, quantity, amount, method, 
   const address = typeof email === 'string' ? email.trim().toLowerCase().slice(0, 200) : '';
   const reference = typeof note === 'string' ? note.trim().slice(0, 100) : '';
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_VOTES_PER_PAYMENT) throw new HttpError(400, 'Enter a whole number of votes.');
+  // Charged at the normal price, bulk deals included, unless a different amount was agreed.
+  if (amount === undefined || amount === null || Number.isNaN(amount)) amount = await priceFor(db, quantity);
   if (!Number.isInteger(amount) || amount < 1) throw new HttpError(400, 'Enter the amount received, in whole naira.');
   if (!IN_PERSON_METHODS.includes(method)) throw new HttpError(400, 'Choose how they paid.');
   if (name.length < 2) throw new HttpError(400, 'Enter the voter’s name. It goes on their proof of vote.');

@@ -139,8 +139,9 @@ Everything below is on the control panel at `/admin`, so nobody needs to change 
   The panel warns when a bigger deal costs more per vote than a smaller one. Before paying, every
   supporter is offered the next deal up, and can say no.
 - **Votes bought in person:** on the Payments & votes tab, admins record votes someone paid for directly,
-  with cash, a transfer or POS: the contestant, votes, amount received, how they paid and the voter's
-  name. They become an ordinary paid payment, so they count at once, show in revenue (and separately
+  with cash, a transfer or POS: the contestant, number of votes, how they paid and the voter's
+  name. The amount is the normal price, bulk deals included. They become an ordinary paid payment, so
+  they count at once, show in revenue (and separately
   as "in person" on the overview), and the buyer gets a proof of vote and receipt. Each records the
   admin who took the money. Only while voting is open.
 - **Votes by hand:** on a contestant's details, admins can add or remove votes for corrections. Each change
