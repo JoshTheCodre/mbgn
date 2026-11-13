@@ -19,6 +19,7 @@ const Enquiry = fromAccount('Enquiry');
 const Forgot = fromAccount('Forgot');
 const PayReturn = fromAccount('PayReturn');
 const PaySim = fromAccount('PaySim');
+const PayTransfer = fromAccount('PayTransfer');
 const Receipt = fromAccount('Receipt');
 const Register = fromAccount('Register');
 const Reset = fromAccount('Reset');
@@ -226,6 +227,7 @@ function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/pay/return/:reference" element={<PayReturn />} />
           <Route path="/pay/sim/:reference" element={<PaySim />} />
+          <Route path="/pay/transfer/:reference" element={<PayTransfer />} />
           <Route path="/receipt/:kind/:number" element={<Receipt />} />
           <Route path="/admin" element={<AdminGate />} />
           <Route path="/forgot" element={<Forgot />} />

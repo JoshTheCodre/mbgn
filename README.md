@@ -73,6 +73,11 @@ The site ran as a demo until November 2026. To switch it to real money:
    is also the way back in after a forgotten password. In between, changes under **Your login** stay.
 5. In the Paystack dashboard (Settings > API Keys & Webhooks, Live mode), set the webhook URL to
    `https://www.mbgn.com.ng/api/webhooks/paystack`. An account has one webhook URL for each mode.
+   Under Settings > Preferences, tick **Bank Transfer**, **Card** and **Bank** as payment channels.
+   Supporters choose how to pay on the vote panel. A bank transfer shows an account number from
+   Paystack on our own page, valid for 60 minutes. Card and OPay (inside Paystack's "Bank" channel)
+   open Paystack's checkout on that option. If Paystack can't open a transfer account, the supporter
+   goes to Paystack's transfer page instead, so voting never stops.
 6. On the Competition tab, set the registration countdown, check the prices and add a WhatsApp group.
 7. Set `SMTP_URL` so emails are delivered. Without it they only reach the admin email log.
 8. Neon's free plan can only restore the last 6 hours, and a busy site can use up its monthly compute

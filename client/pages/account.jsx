@@ -769,6 +769,166 @@ export function PayReturn() {
   );
 }
 
+function CopyButton({ value, label }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      // Older phone browsers: a hidden box and the copy command.
+      const box = Object.assign(document.createElement('textarea'), { value, readOnly: true });
+      Object.assign(box.style, { position: 'fixed', top: '0', opacity: '0' });
+      document.body.append(box);
+      box.select();
+      try { document.execCommand('copy'); } catch { /* nothing more to try */ }
+      box.remove();
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+  return (
+    <button type="button" className={`btn btn-ghost copy-btn ${copied ? 'done' : ''}`} onClick={copy} aria-label={`Copy the ${label}`}>
+      {copied ? 'Copied' : 'Copy'}
+    </button>
+  );
+}
+
+function timeLeft(ms) {
+  const seconds = Math.ceil(ms / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+// Pay with Transfer: the account Paystack opened for this one payment, on our own page. The votes
+// still count only once Paystack confirms the money arrived, which its webhook normally reports
+// within seconds.
+export function PayTransfer() {
+  const { reference } = useParams();
+  const navigate = useNavigate();
+  const [payment, setPayment] = useState(null);
+  const [error, setError] = useState(null);
+  const [sentAt, setSentAt] = useState(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [simBusy, setSimBusy] = useState(false);
+  const sent = useRef(false);
+  const checkNow = useRef(() => {});
+
+  useEffect(() => {
+    let stop = false;
+    let timer;
+    let checks = 0;
+    const opened = Date.now();
+    async function check(askPaystack) {
+      try {
+        const path = `/payments/${encodeURIComponent(reference)}`;
+        const result = askPaystack ? await api(`${path}/verify`, { method: 'POST' }) : await api(path);
+        if (stop) return;
+        setError(null);
+        // Paid, or anything else that isn't waiting: the usual payment page shows it, with the proof of vote.
+        if (result.status !== 'pending') {
+          navigate(`/pay/return/${reference}`, { replace: true });
+          return;
+        }
+        setPayment(result);
+      } catch (err) {
+        if (stop) return;
+        setError(err);
+        if (err.status === 404) return;
+      }
+      checks += 1;
+      if (Date.now() - opened > 75 * 60000) return;
+      // Mostly reads our own record, which the webhook updates. Once they say they've sent it,
+      // it looks more often and asks Paystack directly every half minute.
+      clearTimeout(timer);
+      timer = setTimeout(() => check(sent.current && checks % 6 === 0), sent.current ? 5000 : 15000);
+    }
+    checkNow.current = () => check(true);
+    check(false);
+    return () => { stop = true; clearTimeout(timer); };
+  }, [reference, navigate]);
+
+  useEffect(() => {
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, []);
+
+  async function simulate() {
+    setSimBusy(true);
+    try {
+      await api(`/simulator/${encodeURIComponent(reference)}/pay`, { method: 'POST' });
+      navigate(`/pay/return/${reference}`, { replace: true });
+    } catch (err) {
+      setError(err);
+      setSimBusy(false);
+    }
+  }
+
+  if (!payment) {
+    return (
+      <div className="wrap page narrow pay-status">
+        {error ? null : <span className="spinner" aria-hidden="true" />}
+        <h1>{error ? 'We could not load this payment' : 'Getting your account number…'}</h1>
+        <ErrorNote error={error} />
+      </div>
+    );
+  }
+  const { transfer, contestant } = payment;
+  if (!transfer) return <Navigate to={`/pay/return/${reference}`} replace />;
+  const back = payment.returnTo ?? '/';
+  const left = Date.parse(transfer.expiresAt) - now;
+  const expired = left <= 0;
+  const waitedLong = sentAt && now - sentAt > 10 * 60000;
+
+  return (
+    <div className="wrap page narrow pay-transfer">
+      <p className="eyebrow">{plural(payment.votes, 'vote')} for {contestant.name} · {contestant.code}</p>
+      <h1>Send exactly {naira(payment.amount)}</h1>
+      <p className="muted">Transfer from any bank app, OPay, PalmPay or Moniepoint. Your votes count as soon as the money arrives.</p>
+      <div className="transfer-card">
+        <div className="transfer-row">
+          <div><small>Account number</small><b className="transfer-number">{transfer.accountNumber}</b></div>
+          <CopyButton value={transfer.accountNumber} label="account number" />
+        </div>
+        <div className="transfer-row">
+          <div><small>Amount</small><b>{naira(payment.amount)}</b></div>
+          <CopyButton value={String(payment.amount)} label="amount" />
+        </div>
+        <div className="transfer-row">
+          <div><small>Bank · Account name</small><b>{[transfer.bankName, transfer.accountName].filter(Boolean).join(' · ')}</b></div>
+        </div>
+        <div className={`transfer-row transfer-timer ${expired ? 'expired' : ''}`}>
+          {expired ? 'This account has expired' : `${timeLeft(left)} left`}
+        </div>
+      </div>
+      <p className="muted small-note">This account is only for this payment. Send the exact amount in one transfer, so it matches your votes.</p>
+
+      {sentAt ? (
+        <div className="transfer-waiting" role="status">
+          {waitedLong ? null : <span className="spinner" aria-hidden="true" />}
+          <b>{waitedLong ? 'Still waiting for your transfer' : 'Waiting for your transfer to arrive…'}</b>
+          <p className="muted">
+            {waitedLong
+              ? `If you sent it, your votes will count as soon as it arrives, and you can leave this page. Your reference is ${reference}.`
+              : 'This usually takes less than a minute. Please keep this page open.'}
+          </p>
+        </div>
+      ) : expired ? (
+        <div className="note note-error">Don’t send money to this account now. <Link to={back}>Start again</Link> to get a new one.</div>
+      ) : (
+        <button
+          type="button"
+          className="btn btn-vote btn-wide"
+          onClick={() => { sent.current = true; setSentAt(Date.now()); checkNow.current(); }}
+        >I’ve sent the money</button>
+      )}
+      {payment.provider === 'simulator' && !expired ? (
+        <button type="button" className="btn btn-ghost btn-wide" disabled={simBusy} onClick={simulate}>Test mode: pretend the transfer arrived</button>
+      ) : null}
+      <ErrorNote error={error} />
+      <p className="form-foot"><Link to={back}>Pay another way</Link></p>
+    </div>
+  );
+}
+
 export function PaySim() {
   const { reference } = useParams();
   const navigate = useNavigate();

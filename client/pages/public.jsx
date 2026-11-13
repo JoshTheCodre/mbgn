@@ -634,12 +634,50 @@ function UpsellDialog({ open, votes, offers, votePrice, contestant, onPick, onCl
   );
 }
 
+const PayIcon = ({ d }) => (
+  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
+);
+const PAY_OPTIONS = [
+  { id: 'transfer', label: 'Bank transfer', hint: 'Most people pay this way', icon: <PayIcon d="M3 10h18M5 10v8m4.5-8v8m5-8v8M19 10v8M3 21h18M12 3 3 8h18z" />, button: 'by transfer' },
+  { id: 'opay', label: 'OPay', hint: 'Or another bank app', icon: <span className="opay-mark">OPay</span>, button: 'with OPay' },
+  { id: 'card', label: 'Card', hint: 'Visa, Mastercard, Verve', icon: <PayIcon d="M3 6h18v12H3zM3 10h18M7 15h3" />, button: 'by card' },
+];
+
+// Like a bank's own checkout: a bank transfer opens an account number right here, the others
+// go straight to that option on Paystack.
+function PayWith({ method, onChange }) {
+  return (
+    <div className="pay-with">
+      <span className="field-label">Pay with</span>
+      <div className="pay-choice" role="radiogroup" aria-label="Pay with">
+        {PAY_OPTIONS.map((o) => (
+          <label key={o.id} className={`pay-option pay-option-${o.id} ${method === o.id ? 'on' : ''}`}>
+            <input type="radio" name="payMethod" value={o.id} checked={method === o.id} onChange={() => onChange(o.id)} />
+            <span className="pay-icon">{o.icon}</span>
+            <span className="pay-text"><b>{o.label}</b><small>{o.hint}</small></span>
+          </label>
+        ))}
+      </div>
+      <button type="button" className={`text-link as-button pay-more ${method === 'any' ? 'on' : ''}`} aria-pressed={method === 'any'} onClick={() => onChange('any')}>
+        {method === 'any' ? 'Paying another way: USSD, QR and more on Paystack' : 'More ways to pay'}
+      </button>
+    </div>
+  );
+}
+
 function VotePanel({ contestant, viaLink }) {
   const { competition } = useApp();
+  const navigate = useNavigate();
   const [quantity, setQuantity] = useState(5);
   const [custom, setCustom] = useState('');
   const [voterName, setVoterName] = useState(() => {
     try { return localStorage.getItem('mbgn-voter-name') ?? ''; } catch { return ''; }
+  });
+  const [method, setMethod] = useState(() => {
+    try {
+      const saved = localStorage.getItem('mbgn-pay-method');
+      return saved === 'any' || PAY_OPTIONS.some((o) => o.id === saved) ? saved : 'transfer';
+    } catch { return 'transfer'; }
   });
   const [offering, setOffering] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -675,10 +713,14 @@ function VotePanel({ contestant, viaLink }) {
     setOffering(false);
     setBusy(true);
     setError(null);
-    try { localStorage.setItem('mbgn-voter-name', voterName.trim()); } catch { /* a convenience only */ }
     try {
-      const started = await api('/votes/pay', { body: { code: contestant.code, quantity: votes, voterName, viaLink } });
-      window.location.assign(started.checkoutUrl);
+      localStorage.setItem('mbgn-voter-name', voterName.trim());
+      localStorage.setItem('mbgn-pay-method', method);
+    } catch { /* a convenience only */ }
+    try {
+      const started = await api('/votes/pay', { body: { code: contestant.code, quantity: votes, voterName, method, viaLink } });
+      if (started.transfer) navigate(`/pay/transfer/${started.reference}`);
+      else window.location.assign(started.checkoutUrl);
     } catch (err) {
       setError(err);
       setBusy(false);
@@ -738,7 +780,14 @@ function VotePanel({ contestant, viaLink }) {
       </Field>
 
       {valid ? (
-        <button className="btn btn-vote btn-wide" disabled={busy}>{busy ? 'Opening checkout…' : `Pay ${naira(priceOf(amount))} and vote`}</button>
+        <>
+          <PayWith method={method} onChange={setMethod} />
+          <button className="btn btn-vote btn-wide" disabled={busy}>
+            {busy
+              ? (method === 'transfer' ? 'Getting your account number…' : 'Opening checkout…')
+              : `Pay ${naira(priceOf(amount))} ${PAY_OPTIONS.find((o) => o.id === method)?.button ?? 'and vote'}`}
+          </button>
+        </>
       ) : null}
       <ErrorNote error={error} />
       <UpsellDialog open={offering} votes={amount} offers={offers} votePrice={votePrice} contestant={contestant} onPick={pay} onClose={() => setOffering(false)} />

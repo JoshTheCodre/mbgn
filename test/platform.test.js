@@ -302,6 +302,23 @@ describe('MBGN platform', () => {
     assert.equal((await app.ctx.db.prepare('SELECT COUNT(*) AS n FROM votes WHERE payment_id = ?').get(row.id)).n, 1);
   });
 
+  test('in test mode a bank transfer shows an account number on our page, and the simulator pays it', async () => {
+    const { code } = await makeContestant(app, admin, 'SimTransfer');
+    const anon = client(app.base);
+    const { data } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 2, method: 'transfer' });
+    assert.equal(data.checkoutUrl, undefined);
+    assert.match(data.transfer.accountNumber, /^\d{10}$/);
+    assert.equal((await anon.get(`/payments/${data.reference}`)).data.transfer.accountNumber, data.transfer.accountNumber);
+    assert.equal((await anon.post(`/payments/${data.reference}/verify`)).data.status, 'pending');
+
+    await anon.post(`/simulator/${data.reference}/pay`);
+    const { data: paid } = await anon.post(`/payments/${data.reference}/verify`);
+    assert.equal(paid.votesStatus, 'counted');
+    assert.equal(paid.transfer, null);
+    assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 2);
+    assert.equal((await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 1, method: 'cheque' })).status, 400);
+  });
+
   test('payments check the amount, contestant and voting state, and ignore any email sent', async () => {
     const { code } = await makeContestant(app, admin, 'DirectRules');
     const anon = client(app.base);
@@ -569,6 +586,8 @@ describe('Paystack integration (against a local stand-in)', () => {
   let status;
   let queries = 0;
   let sent;
+  let charged;
+  let chargeFails = false;
   let app;
   let admin;
 
@@ -588,6 +607,24 @@ describe('Paystack integration (against a local stand-in)', () => {
           assert.equal(sent.currency, 'NGN');
           assert.ok(sent.callback_url.endsWith(`/pay/return/${sent.reference}`));
           return send({ authorization_url: 'https://checkout.paystack.com/abc', access_code: 'abc', reference: sent.reference });
+        }
+        // Pay with Transfer through the Charge API.
+        if (url.pathname === '/charge') {
+          charged = JSON.parse(raw);
+          if (chargeFails) {
+            res.statusCode = 400;
+            return res.end(JSON.stringify({ status: false, message: 'Pay with Transfer is not enabled on this account' }));
+          }
+          return send({
+            status: 'pending_bank_transfer',
+            display_text: 'Please make a transfer to the account specified',
+            reference: charged.reference,
+            amount: charged.amount,
+            account_name: 'PAYSTACK CHECKOUT',
+            account_number: '1234567890',
+            bank: { slug: 'paystack-titan', name: 'Paystack-Titan', id: 1 },
+            account_expires_at: charged.bank_transfer.account_expires_at,
+          });
         }
         if (url.pathname.startsWith('/transaction/verify/')) {
           queries += 1;
@@ -657,6 +694,58 @@ describe('Paystack integration (against a local stand-in)', () => {
     // Paystack requires an email, so it gets the site's own mailbox with the reference added.
     assert.equal(sent.email, `votes+${data.reference.toLowerCase()}@${app.ctx.config.paymentEmail.split('@')[1]}`);
     assert.equal((await anon.post(`/simulator/${data.reference}/pay`)).status, 404);
+  });
+
+  test('a bank transfer gets its own account number from Paystack, and counts once Paystack confirms', async () => {
+    const { code } = await makeContestant(app, admin, 'PaystackTransfer');
+    const anon = client(app.base);
+    const { data } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 3, method: 'transfer' });
+    assert.equal(data.checkoutUrl, undefined);
+    assert.deepEqual(
+      { number: data.transfer.accountNumber, bank: data.transfer.bankName, name: data.transfer.accountName },
+      { number: '1234567890', bank: 'Paystack-Titan', name: 'PAYSTACK CHECKOUT' },
+    );
+    assert.equal(charged.amount, 60000);
+    assert.equal(charged.reference, data.reference);
+    const minutes = (Date.parse(charged.bank_transfer.account_expires_at) - Date.now()) / 60000;
+    assert.ok(minutes > 55 && minutes <= 60);
+    assert.equal((await anon.get(`/payments/${data.reference}`)).data.transfer.accountNumber, '1234567890');
+
+    status = 'success';
+    paidAmount = 600;
+    const body = eventFor(data.reference);
+    await webhook(body, sign(body));
+    const { data: view } = await anon.get(`/payments/${data.reference}`);
+    assert.equal(view.votesStatus, 'counted');
+    assert.equal(view.transfer, null);
+    assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 3);
+  });
+
+  test('card and OPay open Paystack on that option, and a transfer falls back to Paystack if no account opens', async () => {
+    const { code } = await makeContestant(app, admin, 'PaystackChannels');
+    const anon = client(app.base);
+    const pay = (method) => anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 1, ...(method ? { method } : {}) });
+    await pay('card');
+    assert.deepEqual(sent.channels, ['card']);
+    await pay('opay');
+    assert.deepEqual(sent.channels, ['bank']);
+    await pay();
+    assert.equal(sent.channels, undefined);
+
+    chargeFails = true;
+    try {
+      const { data } = await pay('transfer');
+      assert.equal(data.checkoutUrl, 'https://checkout.paystack.com/abc');
+      assert.deepEqual(sent.channels, ['bank_transfer']);
+      assert.equal(sent.reference, data.reference);
+      // Paystack keeps the reference of the attempt that failed, so the checkout has its own.
+      assert.notEqual(charged.reference, data.reference);
+      const { data: view } = await anon.get(`/payments/${data.reference}`);
+      assert.equal(view.status, 'pending');
+      assert.equal(view.transfer, null);
+    } finally {
+      chargeFails = false;
+    }
   });
 
   test('forged or unsigned webhooks are ignored, and flagged', async () => {

@@ -931,6 +931,41 @@ select option { background: var(--surface); }
 .info-section p { margin: 0; }
 .info-section.warn { border-left: 4px solid var(--bad-text); }
 
+/* Pay with: transfer on our page, OPay and card on Paystack */
+.pay-with { display: grid; gap: 8px; }
+.pay-choice { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.pay-option { position: relative; display: flex; align-items: center; gap: 10px; min-width: 0; padding: 12px; border: 1.5px solid var(--line); border-radius: var(--radius-s); background: var(--bg); cursor: pointer; }
+.pay-option-transfer { grid-column: 1 / -1; }
+.pay-option-transfer::after { content: ''; flex: none; width: 18px; height: 18px; margin-left: auto; border: 2px solid var(--line-strong); border-radius: 50%; }
+.pay-option.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+.pay-option-transfer.on::after { border-color: var(--accent); background: radial-gradient(circle, var(--accent) 0 45%, transparent 50%); }
+.pay-option input { position: absolute; inset: 0; width: 1px; height: 1px; min-height: 0; padding: 0; margin: 0; opacity: 0; pointer-events: none; }
+.pay-option:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pay-icon { display: grid; place-items: center; flex: none; width: 40px; height: 40px; border-radius: 10px; background: var(--surface-2); color: var(--text); }
+.opay-mark { font-size: .72rem; font-weight: 800; letter-spacing: -.01em; color: #1dcf9f; }
+.pay-text { display: grid; min-width: 0; }
+.pay-text b { font-size: .98rem; }
+.pay-text small { color: var(--muted); font-size: .8rem; line-height: 1.3; }
+.pay-more { justify-self: start; font-size: .9rem; }
+.pay-more.on { text-decoration: none; }
+
+.pay-transfer h1 { margin-bottom: 6px; }
+.transfer-card { margin: 18px 0 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+.transfer-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px dashed var(--line); }
+.transfer-row:last-child { border-bottom: 0; }
+.transfer-row > div { display: grid; gap: 4px; min-width: 0; }
+.transfer-row small { color: var(--muted); font-size: .76rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.transfer-row b { font-size: 1.05rem; overflow-wrap: anywhere; }
+.transfer-row b.transfer-number { font-size: 1.5rem; font-variant-numeric: tabular-nums; letter-spacing: .06em; }
+.copy-btn { flex: none; min-width: 84px; border-radius: 999px; }
+.copy-btn.done { border-color: var(--good-text); color: var(--good-text); }
+.transfer-timer { font-weight: 600; font-variant-numeric: tabular-nums; }
+.transfer-timer.expired { color: var(--bad-text); }
+.pay-transfer > .btn { margin-top: 8px; }
+.transfer-waiting { display: grid; justify-items: center; gap: 6px; margin-top: 14px; padding: 18px; text-align: center; background: var(--surface); border-radius: var(--radius); }
+.transfer-waiting .spinner { margin-bottom: 6px; }
+.transfer-waiting p { margin: 0; overflow-wrap: anywhere; }
+
 .show-more { display: grid; justify-items: center; gap: 6px; margin: 18px 0 8px; }
 .show-more .small-note { margin: 0; }
 .in-person { margin-bottom: 16px; }

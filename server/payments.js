@@ -28,7 +28,8 @@ export function createPaystack(config) {
 
   return {
     name: 'paystack',
-    async init({ reference, amount, description, customerEmail, redirectUrl }) {
+    // Paystack's checkout page. `channels` limits it to the way the supporter chose to pay.
+    async init({ reference, amount, description, customerEmail, redirectUrl, channels }) {
       const data = await call('/transaction/initialize', {
         method: 'POST',
         body: JSON.stringify({
@@ -37,6 +38,7 @@ export function createPaystack(config) {
           currency: 'NGN',
           reference,
           callback_url: redirectUrl,
+          ...(channels ? { channels } : {}),
           metadata: {
             // Paystack's cancel link on checkout goes here.
             cancel_action: `${redirectUrl}?cancelled=1`,
@@ -46,6 +48,29 @@ export function createPaystack(config) {
       });
       if (data.reference !== reference) throw new Error('Paystack returned a different payment reference.');
       return { checkoutUrl: data.authorization_url, providerRef: data.access_code };
+    },
+    // Pay with Transfer: Paystack opens a bank account for this one payment, and our own page
+    // shows it. The money is confirmed the same way as any other payment.
+    async chargeTransfer({ reference, amount, description, customerEmail, expiresAt }) {
+      const data = await call('/charge', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: customerEmail,
+          amount: amount * 100,
+          reference,
+          bank_transfer: { account_expires_at: expiresAt },
+          metadata: { custom_fields: [{ display_name: 'Order', variable_name: 'order', value: description }] },
+        }),
+      });
+      if (!data?.account_number) throw new Error(`Paystack gave no account to pay into (${data?.status ?? 'no status'}).`);
+      if (data.reference && data.reference !== reference) throw new Error('Paystack returned a different payment reference.');
+      const expiry = Date.parse(data.account_expires_at);
+      return {
+        accountNumber: String(data.account_number),
+        accountName: data.account_name ?? null,
+        bankName: data.bank?.name ?? null,
+        expiresAt: Number.isNaN(expiry) ? expiresAt : new Date(expiry).toISOString(),
+      };
     },
     async query(reference) {
       const data = await call(`/transaction/verify/${encodeURIComponent(reference)}`);
@@ -77,6 +102,11 @@ export function createSimulator(db) {
     async init({ reference, amount }) {
       await db.prepare('INSERT INTO simulated_provider (reference, amount) VALUES (?, ?)').run(reference, amount);
       return { checkoutUrl: `/pay/sim/${reference}`, providerRef: `SIM-${reference}` };
+    },
+    async chargeTransfer({ reference, amount, expiresAt }) {
+      await db.prepare('INSERT INTO simulated_provider (reference, amount) VALUES (?, ?)').run(reference, amount);
+      const accountNumber = String(crypto.createHash('sha256').update(reference).digest().readUInt32BE(0)).padStart(10, '0');
+      return { accountNumber, accountName: 'MBGN TEST', bankName: 'Test bank, no real money', expiresAt };
     },
     async query(reference) {
       const row = await db.prepare('SELECT * FROM simulated_provider WHERE reference = ?').get(reference);
@@ -111,19 +141,28 @@ function checkoutEmail(config, reference) {
   return `${name}+${reference.toLowerCase()}@${domain}`;
 }
 
+// How a supporter can choose to pay, and the Paystack checkout channels each one opens.
+// A bank transfer is normally shown on our own page; its checkout is only the fallback.
+// OPay sits in Paystack's "Pay with Bank" channel.
+export const PAY_METHODS = { transfer: ['bank_transfer'], opay: ['bank'], card: ['card'], any: null };
+const TRANSFER_MINUTES = 60;
+
+// Long and random: holding this reference is what lets someone see the payment and its receipt.
+const newReference = () => `MBG-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(12).toString('hex').toUpperCase()}`;
+
 // The votes count as soon as the provider confirms the payment.
-export async function startPayment(ctx, { code, quantity, voterName, email = null, viaLink, ip }) {
+export async function startPayment(ctx, { code, quantity, voterName, method = 'any', email = null, viaLink, ip }) {
   const { db, config, provider } = ctx;
   const name = typeof voterName === 'string' ? voterName.trim().replace(/\s+/g, ' ').slice(0, 60) : '';
   if (name.length < 2) throw new HttpError(400, 'Please enter your name. It goes on your proof of vote.');
+  if (!Object.hasOwn(PAY_METHODS, method)) throw new HttpError(400, 'Choose how you want to pay.');
   const state = await votingState(db);
   if (!state.open) throw new HttpError(409, state.message);
   const contestant = await db.prepare("SELECT id, code FROM contestants WHERE code = ? AND status = 'approved'").get(code);
   if (!contestant) throw new HttpError(404, 'No active contestant has that code.');
   const amount = await priceFor(db, quantity);
 
-  // Long and random: holding this reference is what lets someone see the payment and its receipt.
-  const reference = `MBG-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(12).toString('hex').toUpperCase()}`;
+  let reference = newReference();
 
   const ipHash = hashIp(config, ip);
   const { lastInsertRowid: paymentId } = await db.prepare(`
@@ -138,13 +177,30 @@ export async function startPayment(ctx, { code, quantity, voterName, email = nul
     await raiseFlag(ctx, { kind: 'repeated_checkouts', severity: 'low', details: `${attempts} unfinished checkouts in 10 minutes from one network.` });
   }
 
+  const description = `${quantity} MBGN vote${quantity === 1 ? '' : 's'} for ${contestant.code}`;
+  if (method === 'transfer' && provider.chargeTransfer) {
+    try {
+      const expiresAt = new Date(Date.now() + TRANSFER_MINUTES * 60000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+      const transfer = await provider.chargeTransfer({ reference, amount, description, customerEmail: checkoutEmail(config, reference), expiresAt });
+      await db.prepare('UPDATE payments SET transfer_details = ? WHERE id = ?').run(JSON.stringify(transfer), paymentId);
+      return { reference, transfer, votes: quantity, amount };
+    } catch (err) {
+      // Pay with Transfer is switched off on the Paystack account, or Paystack had a moment. Its own
+      // checkout can still take the transfer. Paystack keeps the failed attempt's reference, so a new one.
+      console.error('Could not open a transfer account, sending to checkout instead:', err.message);
+      reference = newReference();
+      await db.prepare('UPDATE payments SET reference = ? WHERE id = ?').run(reference, paymentId);
+    }
+  }
+
   try {
     const { checkoutUrl, providerRef } = await provider.init({
       reference,
       amount,
-      description: `${quantity} MBGN vote${quantity === 1 ? '' : 's'} for ${contestant.code}`,
+      description,
       customerEmail: checkoutEmail(config, reference),
       redirectUrl: `${config.publicUrl}/pay/return/${reference}`,
+      channels: PAY_METHODS[method],
     });
     await db.prepare('UPDATE payments SET provider_ref = ? WHERE id = ?').run(providerRef ?? null, paymentId);
     return { reference, checkoutUrl, votes: quantity, amount };
@@ -175,6 +231,8 @@ export async function paymentView(db, payment) {
     paidAt: payment.paid_at,
     returnTo: payment.return_to,
     emailed: Boolean(payment.email),
+    // The account to pay into, while it is still waiting for the money.
+    transfer: payment.status === 'pending' && payment.transfer_details ? JSON.parse(payment.transfer_details) : null,
     contestant: {
       code: contestant.code,
       name: contestant.stage_name,
