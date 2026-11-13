@@ -422,29 +422,94 @@ export function ShareCard({ title, text, message }) {
   );
 }
 
-export function ShareButtons({ url, name, message }) {
+export async function copyText(value) {
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch {
+    // Older phone browsers: a hidden box and the copy command.
+    const box = Object.assign(document.createElement('textarea'), { value, readOnly: true });
+    Object.assign(box.style, { position: 'fixed', top: '0', opacity: '0' });
+    document.body.append(box);
+    box.select();
+    try { document.execCommand('copy'); } catch { /* nothing more to try */ }
+    box.remove();
+  }
+}
+
+export function CopyButton({ value, label }) {
   const [copied, setCopied] = useState(false);
-  const text = message ?? `Vote for ${name} on Most Beautiful Girl Online Nigeria!`;
+  async function copy() {
+    await copyText(value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+  return (
+    <button type="button" className={`btn btn-ghost copy-btn ${copied ? 'done' : ''}`} onClick={copy} aria-label={`Copy the ${label}`}>
+      {copied ? 'Copied' : 'Copy'}
+    </button>
+  );
+}
+
+const LineIcon = ({ children }) => (
+  <svg className="brand-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>
+);
+
+const shareText = (name, message) => message ?? `Vote for ${name} on Most Beautiful Girl Online Nigeria!`;
+
+// One button that opens the phone's own share sheet, with every app the person has: WhatsApp,
+// Instagram, Telegram, SMS, Copy and the rest. A browser without one copies the link instead.
+export function ShareButton({ url, name, message, label = 'Share' }) {
+  const [copied, setCopied] = useState(false);
+
+  async function share() {
+    if (typeof navigator.share === 'function') {
+      try {
+        await navigator.share({ title: 'MBGN', text: shareText(name, message), url });
+        return;
+      } catch (err) {
+        // Closing the sheet without picking an app is not a failure.
+        if (err?.name === 'AbortError') return;
+      }
+    }
+    await copyText(url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
+  }
+
+  return (
+    <button type="button" className="btn btn-ghost btn-wide share-native" onClick={share}>
+      <LineIcon><path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7M12 3v12M7 8l5-5 5 5" /></LineIcon>
+      <span role="status">{copied ? 'Link copied. Paste it anywhere' : label}</span>
+    </button>
+  );
+}
+
+// `copy={false}` when the link is already on show with its own Copy button.
+export function ShareButtons({ url, name, message, copy: withCopy = true }) {
+  const [copied, setCopied] = useState(false);
+  const text = shareText(name, message);
   const targets = shareTargets(url, text);
 
   async function copy() {
-    await navigator.clipboard.writeText(url);
+    await copyText(url);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
 
   return (
-    <div className="share-line share-line-four">
+    <div className={`share-line ${withCopy ? 'share-line-four' : ''}`}>
       <a className="btn btn-whatsapp" href={targets.whatsapp} target="_blank" rel="noreferrer"><BrandLogo name="whatsapp" />WhatsApp</a>
       <a className="btn btn-facebook" href={targets.facebook} target="_blank" rel="noreferrer"><BrandLogo name="facebook" />Facebook</a>
       <a className="btn btn-x" href={targets.x} target="_blank" rel="noreferrer" aria-label="Share on X"><BrandLogo name="x" />Post</a>
-      <button type="button" className="btn btn-ghost" onClick={copy}>
-        <svg className="brand-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
-          <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
-        </svg>
-        {copied ? 'Copied ✓' : 'Copy link'}
-      </button>
+      {withCopy ? (
+        <button type="button" className="btn btn-ghost" onClick={copy}>
+          <LineIcon>
+            <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+            <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+          </LineIcon>
+          {copied ? 'Copied ✓' : 'Copy link'}
+        </button>
+      ) : null}
     </div>
   );
 }

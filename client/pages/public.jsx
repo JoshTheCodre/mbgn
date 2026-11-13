@@ -5,8 +5,8 @@ import {
 } from '../lib.jsx';
 import { bulkPrice, upsellOffers } from '../../shared/pricing.js';
 import {
-  ActivityFeed, CardsSkeleton, CodeTag, CoverSkeleton, Crown, Countdown, Dialog, ErrorNote, Field, LoadFailed, Loading, Movement,
-  PageSkeleton, Portrait, ProfileSkeleton, RankSkeleton, CountUp, ShareButtons, ShareCard, Timer,
+  ActivityFeed, BrandLogo, CardsSkeleton, CodeTag, CoverSkeleton, Crown, Countdown, Dialog, ErrorNote, Field, LoadFailed,
+  Loading, Movement, PLATFORM_NAMES, PageSkeleton, Portrait, ProfileSkeleton, RankSkeleton, CountUp, ShareButton, ShareCard, Timer,
 } from '../ui.jsx';
 
 const prefersCalm = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -639,8 +639,19 @@ const PayIcon = ({ d }) => (
 );
 const PAY_OPTIONS = [
   { id: 'transfer', label: 'Bank transfer', hint: 'Most people pay this way', icon: <PayIcon d="M3 10h18M5 10v8m4.5-8v8m5-8v8M19 10v8M3 21h18M12 3 3 8h18z" />, button: 'by transfer' },
-  { id: 'opay', label: 'OPay', hint: 'Or another bank app', icon: <span className="opay-mark">OPay</span>, button: 'with OPay' },
-  { id: 'card', label: 'Card', hint: 'Visa, Mastercard, Verve', icon: <PayIcon d="M3 6h18v12H3zM3 10h18M7 15h3" />, button: 'by card' },
+  { id: 'opay', label: 'OPay', hint: 'Pay in the OPay app', logo: true, icon: <img className="opay-logo" src="/pay/opay.png" width="141" height="48" alt="" />, button: 'with OPay' },
+  {
+    id: 'card',
+    label: 'Card',
+    hint: (
+      <span className="card-marks">
+        <img src="/pay/visa.png" width="145" height="48" alt="Visa" />
+        <img src="/pay/mastercard.png" width="76" height="48" alt="Mastercard" />
+        <img src="/pay/verve.png" width="139" height="48" alt="Verve" />
+      </span>
+    ),
+    button: 'by card',
+  },
 ];
 
 // Like a bank's own checkout: a bank transfer opens an account number right here, the others
@@ -653,8 +664,8 @@ function PayWith({ method, onChange }) {
         {PAY_OPTIONS.map((o) => (
           <label key={o.id} className={`pay-option pay-option-${o.id} ${method === o.id ? 'on' : ''}`}>
             <input type="radio" name="payMethod" value={o.id} checked={method === o.id} onChange={() => onChange(o.id)} />
-            <span className="pay-icon">{o.icon}</span>
-            <span className="pay-text"><b>{o.label}</b><small>{o.hint}</small></span>
+            {o.icon ? <span className={`pay-icon ${o.logo ? 'pay-icon-logo' : ''}`}>{o.icon}</span> : null}
+            <span className="pay-text"><b>{o.label}</b>{typeof o.hint === 'string' ? <small>{o.hint}</small> : o.hint}</span>
           </label>
         ))}
       </div>
@@ -795,6 +806,18 @@ function VotePanel({ contestant, viaLink }) {
   );
 }
 
+// "@stella" from instagram.com/stella or tiktok.com/@stella, so a profile link shows whose it is.
+function socialHandle(link, platform) {
+  try {
+    const first = new URL(link).pathname.split('/').filter(Boolean)[0];
+    if (!first || ['people', 'pages', 'profile.php'].includes(first)) return `${PLATFORM_NAMES[platform]} page`;
+    const name = decodeURIComponent(first).replace(/^@/, '');
+    return platform === 'facebook' ? name : `@${name}`;
+  } catch {
+    return PLATFORM_NAMES[platform];
+  }
+}
+
 export function Profile() {
   const { competition } = useApp();
   const { code } = useParams();
@@ -842,6 +865,8 @@ export function Profile() {
   if (!data) return <ProfileSkeleton />;
 
   const url = `${window.location.origin}/c/${data.code}`;
+  const socials = ['tiktok', 'instagram', 'facebook'].filter((id) => data[id])
+    .map((id) => ({ id, url: data[id], name: PLATFORM_NAMES[id], handle: socialHandle(data[id], id) }));
   return (
     <div className="wrap page profile">
       <div className="profile-photo">
@@ -860,14 +885,36 @@ export function Profile() {
           </dl>
         ) : null}
         <VotePanel contestant={data} viaLink={viaLink} />
-        <p className="profile-bio">{data.bio}</p>
-        <div className="social-links">
-          {data.tiktok ? <a href={data.tiktok} target="_blank" rel="noreferrer noopener">TikTok</a> : null}
-          {data.instagram ? <a href={data.instagram} target="_blank" rel="noreferrer noopener">Instagram</a> : null}
-          {data.facebook ? <a href={data.facebook} target="_blank" rel="noreferrer noopener">Facebook</a> : null}
-        </div>
-        <h2 className="share-title">Share {data.name}’s voting link</h2>
-        <ShareButtons url={url} name={data.name} />
+
+        {/* Something a supporter does: send people to her voting page. */}
+        <section className="profile-share" aria-labelledby="share-heading">
+          <h2 id="share-heading">Get {data.name} more votes</h2>
+          <p className="muted">Send her voting link to friends. Anyone who opens it can vote for her in seconds.</p>
+          <ShareButton url={url} name={data.name} label={`Share ${data.name}’s voting link`} />
+          <p className="share-link-note">{url.replace(/^https?:\/\/(www\.)?/, '')}</p>
+        </section>
+
+        {/* About her: her own accounts, which open elsewhere. */}
+        <section className="profile-about" aria-labelledby="about-heading">
+          <h2 id="about-heading">About {data.name}</h2>
+          {data.bio ? <p className="profile-bio">{data.bio}</p> : null}
+          {socials.length ? (
+            <>
+              <h3 className="follow-title">Follow {data.name}</h3>
+              <ul className="social-chips">
+                {socials.map((s) => (
+                  <li key={s.id}>
+                    <a className="social-chip" href={s.url} target="_blank" rel="noreferrer noopener" aria-label={`${data.name} on ${s.name}: ${s.handle}`}>
+                      <span className={`follower-logo follower-logo-${s.id}`}><BrandLogo name={s.id} /></span>
+                      <span className="social-chip-text"><small>{s.name}</small><b>{s.handle}</b></span>
+                      <svg className="social-chip-out" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9" /></svg>
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+        </section>
       </div>
     </div>
   );

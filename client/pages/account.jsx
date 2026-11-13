@@ -4,7 +4,7 @@ import {
   api, dateTime, naira, num, plural, registrationOpen, useApp, useFetch,
 } from '../lib.jsx';
 import {
-  BrandLogo, Dialog, ErrorNote, Field, FollowerRow, Loading, PLATFORM_NAMES, PinInput, WhatsAppGroup,
+  BrandLogo, CopyButton, Dialog, ErrorNote, Field, FollowerRow, Loading, PLATFORM_NAMES, PinInput, WhatsAppGroup,
 } from '../ui.jsx';
 
 export function AdminLogin() {
@@ -766,30 +766,6 @@ export function PayReturn() {
         </>
       ) : null}
     </div>
-  );
-}
-
-function CopyButton({ value, label }) {
-  const [copied, setCopied] = useState(false);
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(value);
-    } catch {
-      // Older phone browsers: a hidden box and the copy command.
-      const box = Object.assign(document.createElement('textarea'), { value, readOnly: true });
-      Object.assign(box.style, { position: 'fixed', top: '0', opacity: '0' });
-      document.body.append(box);
-      box.select();
-      try { document.execCommand('copy'); } catch { /* nothing more to try */ }
-      box.remove();
-    }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
-  return (
-    <button type="button" className={`btn btn-ghost copy-btn ${copied ? 'done' : ''}`} onClick={copy} aria-label={`Copy the ${label}`}>
-      {copied ? 'Copied' : 'Copy'}
-    </button>
   );
 }
 

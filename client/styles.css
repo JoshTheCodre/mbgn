@@ -843,9 +843,29 @@ select option { background: var(--surface); }
 .profile-stats dt { font-size: .78rem; color: var(--muted); }
 .profile-stats dd { font-weight: 600; font-size: 1.45rem; line-height: 1.25; color: var(--accent-soft); font-variant-numeric: tabular-nums; }
 .profile-move { font-size: 1rem !important; padding-top: 6px; }
-.profile-bio { margin-top: 22px; white-space: pre-line; color: var(--muted); }
+.profile-bio { margin: 6px 0 0; white-space: pre-line; color: var(--muted); }
+/* Sharing her voting link (a filled card: something you do) and her own accounts (an outlined
+   section: about her, opening elsewhere) are kept visibly apart. */
+.profile-share, .profile-about { margin-top: 16px; padding: 18px; border-radius: var(--radius); }
+.profile-share { background: var(--surface); }
+.profile-about { border: 1px solid var(--line); }
+.profile-share h2, .profile-about h2 { margin: 0 0 4px; font-size: 1.15rem; }
+.profile-share > p { margin: 0 0 14px; font-size: .92rem; }
+/* Outlined, so it never competes with the vote button above it. */
+.share-native { min-height: 50px; border-color: var(--accent); font-weight: 600; }
+.share-native .brand-logo { width: 20px; height: 20px; }
+.share-link-note { margin: 8px 0 0; overflow: hidden; color: var(--muted); font-size: .82rem; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.follow-title { margin: 18px 0 8px; color: var(--muted); font-size: .78rem; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+.social-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.social-chip { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 7px 14px 7px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--text); text-decoration: none; transition: border-color .15s, background .15s; }
+.social-chip:hover { border-color: var(--accent); background: var(--surface); }
+.social-chip .follower-logo { width: 34px; height: 34px; }
+.social-chip .follower-logo .brand-logo { width: 18px; height: 18px; }
+.social-chip-text { display: grid; min-width: 0; line-height: 1.25; }
+.social-chip-text small { color: var(--muted); font-size: .74rem; }
+.social-chip-text b { overflow: hidden; font-size: .92rem; text-overflow: ellipsis; white-space: nowrap; }
+.social-chip-out { flex: none; margin-left: auto; color: var(--muted); }
 .social-links { display: flex; flex-wrap: wrap; gap: 14px; font-weight: 500; }
-.share-title { font-size: 1.1rem; margin-top: 26px; }
 .share-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .share-row .btn { min-height: 42px; padding: 6px 16px; font-size: .92rem; }
 .vote-panel { background: var(--surface); border-radius: var(--radius); padding: 18px; }
@@ -942,11 +962,29 @@ select option { background: var(--surface); }
 .pay-option input { position: absolute; inset: 0; width: 1px; height: 1px; min-height: 0; padding: 0; margin: 0; opacity: 0; pointer-events: none; }
 .pay-option:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .pay-icon { display: grid; place-items: center; flex: none; width: 40px; height: 40px; border-radius: 10px; background: var(--surface-2); color: var(--text); }
-.opay-mark { font-size: .72rem; font-weight: 800; letter-spacing: -.01em; color: #1dcf9f; }
+/* Brand logos sit on white, as their makers intend, so they read on every theme. */
+.pay-icon-logo { background: #fff; box-shadow: inset 0 0 0 1px var(--line); }
+.opay-logo { display: block; width: 32px; height: auto; }
+.card-marks { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.card-marks img { display: block; flex: none; box-sizing: border-box; height: 18px; width: auto; padding: 3px 4px; background: #fff; border-radius: 4px; box-shadow: inset 0 0 0 1px var(--line); }
+/* The three card logos stay on one line, shrinking to fit the tile (their widths add up to 7.5
+   times their height, plus 32px of padding and gaps). Only on a very narrow screen, where they
+   would be smaller than 14px, do they wrap. */
+@supports (height: 1cqw) {
+  .pay-option-card .pay-text { flex: 1 1 0; min-width: 0; container-type: inline-size; }
+  .card-marks { flex-wrap: nowrap; }
+  .card-marks img { height: clamp(14px, calc((100cqw - 32px) / 7.5 + 6px), 18px); }
+  @container (max-width: 91px) { .card-marks { flex-wrap: wrap; } }
+}
 .pay-text { display: grid; min-width: 0; }
 .pay-text b { font-size: .98rem; }
 .pay-text small { color: var(--muted); font-size: .8rem; line-height: 1.3; }
 .pay-more { justify-self: start; font-size: .9rem; }
+@media (max-width: 360px) {
+  .pay-option { gap: 8px; padding: 10px; }
+  .pay-icon { width: 32px; height: 32px; }
+  .opay-logo { width: 26px; }
+}
 .pay-more.on { text-decoration: none; }
 
 .pay-transfer h1 { margin-bottom: 6px; }
