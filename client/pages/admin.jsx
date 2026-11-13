@@ -127,9 +127,13 @@ function ActionDialog({ action, onClose, onDone }) {
 function ContestantsTab({ onChange }) {
   const [status, setStatus] = useState('pending');
   const [q, setQ] = useState('');
+  // A page at a time: with thousands of applications, the whole list would be slow to load.
+  const [limit, setLimit] = useState(200);
+  useEffect(() => { setLimit(200); }, [status, q]);
   const query = new URLSearchParams();
   if (status) query.set('status', status);
   if (q) query.set('q', q);
+  query.set('limit', limit);
   const { data, error, reload } = useFetch(`/admin/contestants?${query}`);
   const [action, setAction] = useState(null);
   const [opened, setOpened] = useState(null);
@@ -257,6 +261,12 @@ function ContestantsTab({ onChange }) {
           ))}
         </ul>
       )}
+      {data && data.length >= limit ? (
+        <div className="show-more">
+          <p className="muted small-note">Showing the first {num(data.length)}.</p>
+          <button type="button" className="btn btn-ghost" onClick={() => setLimit(limit + 200)}>Show more</button>
+        </div>
+      ) : null}
       <ActionDialog action={action} onClose={() => setAction(null)} onDone={() => { setAction(null); refresh(); }} />
     </>
   );

@@ -2,7 +2,7 @@ import {
   HttpError, asyncRouter, hashPassword, requireAdmin, sessionHash, verifyPassword,
 } from '../auth.js';
 import {
-  allocateCode, audit, notifyUser, photoUrl, publishActivity, recomputeRanks, votingState,
+  allocateCode, audit, notifyMany, notifyUser, photoUrl, publishActivity, recomputeRanks, votingState,
 } from '../competition.js';
 import { getSetting, nowIso, setSetting, tx } from '../db.js';
 import { PLATFORMS, PROVIDERS } from '../followers.js';
@@ -160,7 +160,7 @@ export function adminRouter(ctx) {
     const rows = await db.prepare(`SELECT *, (SELECT name FROM whatsapp_groups g WHERE g.id = contestants.whatsapp_group_id) AS group_name,
       (SELECT COALESCE(SUM(quantity), 0) FROM vote_adjustments a WHERE a.contestant_id = contestants.id) AS adjusted_votes
       FROM contestants ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, COALESCE(position, 999999), id DESC LIMIT 500`).all(...params);
+      ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, COALESCE(position, 999999), id DESC LIMIT ?`).all(...params, Math.min(Number(req.query.limit) || 200, 5000));
     res.json(rows.map(contestantView));
   });
 
@@ -704,10 +704,10 @@ export function adminRouter(ctx) {
     if (title.length < 3 || body.length < 3) throw new HttpError(400, 'An announcement needs a title and a message.');
     await db.prepare('INSERT INTO announcements (title, body, public, created_at) VALUES (?, ?, ?, ?)').run(title, body, isPublic ? 1 : 0, nowIso());
     const recipients = await db.prepare("SELECT user_id, email, stage_name FROM contestants WHERE status = 'approved'").all();
-    for (const r of recipients) {
-      await notifyUser(ctx, r.user_id, 'announcement', `${title}: ${body}`);
-      await ctx.mailer.send({ to: r.email, subject: title, text: `Hello ${r.stage_name},\n\n${body}` });
-    }
+    // Saved all at once; the emails go out in batches, so thousands of contestants is fine.
+    await notifyMany(ctx, recipients.map((r) => ({ userId: r.user_id, message: `${title}: ${body}` })), 'announcement');
+    await ctx.mailer.queue(recipients.map((r) => ({ to: r.email, subject: title, text: `Hello ${r.stage_name},\n\n${body}` })));
+    ctx.background(ctx.mailer.sendQueued());
     if (isPublic) await publishActivity(ctx, { kind: 'announcement', message: `${title}: ${body}` });
     await audit(ctx, req.user.id, 'announcement.send', title);
     res.status(201).json({ recipients: recipients.length });

@@ -199,7 +199,8 @@ export function publicRouter(ctx) {
     }
     if (state) { where.push('state = ?'); params.push(state); }
     if (category) { where.push('category = ?'); params.push(category); }
-    const limit = Math.min(Number(req.query.limit) || 500, 500);
+    // Pages ask for more as people scroll through, up to every contestant there could be.
+    const limit = Math.min(Number(req.query.limit) || 500, 5000);
     const [rows, baseline, { total }, updatedAt, states, categories] = await Promise.all([
       db.prepare(`SELECT * FROM contestants WHERE ${where.join(' AND ')} ORDER BY position ASC LIMIT ?`).all(...params, limit),
       movementBaseline(db),
@@ -275,7 +276,9 @@ export function publicRouter(ctx) {
   });
 
   // ---- Contestant registration ----
-  router.post('/contestants/register', rateLimit({ windowMs: 3600000, max: scaled(40) }), upload.single('photo'), async (req, res) => {
+  // Generous, because many Nigerians share one mobile network address. Each still needs a new email,
+  // a new WhatsApp number and its own social account.
+  router.post('/contestants/register', rateLimit({ windowMs: 3600000, max: scaled(300) }), upload.single('photo'), async (req, res) => {
     if (!(await registrationState(db)).open) throw new HttpError(409, 'Registration has closed.');
     const b = req.body ?? {};
     const fullName = clean(b.fullName, 100);

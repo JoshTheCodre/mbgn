@@ -41,7 +41,7 @@ export async function api(path, options = {}) {
 const remembered = new Map();
 // Only public data, so nothing private is left on a shared phone. These few also survive a return visit.
 const isPublic = (path) => /^\/(competition|leaderboard|activity|results|contestants\/)/.test(path);
-const KEPT_BETWEEN_VISITS = new Set(['/competition', '/leaderboard?limit=5', '/activity?limit=5', '/leaderboard?']);
+const KEPT_BETWEEN_VISITS = new Set(['/competition', '/leaderboard?limit=5', '/activity?limit=5', '/leaderboard?limit=200']);
 const STORE_PREFIX = 'mbgn-cache:';
 
 export function recall(path) {

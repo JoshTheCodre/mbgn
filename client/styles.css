@@ -931,6 +931,8 @@ select option { background: var(--surface); }
 .info-section p { margin: 0; }
 .info-section.warn { border-left: 4px solid var(--bad-text); }
 
+.show-more { display: grid; justify-items: center; gap: 6px; margin: 18px 0 8px; }
+.show-more .small-note { margin: 0; }
 .in-person { margin-bottom: 16px; }
 .in-person-done p { margin: 4px 0; }
 .round-preview { margin: 12px 0; padding: 12px 14px; background: var(--surface-2); border-radius: var(--radius-s); }

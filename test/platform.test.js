@@ -16,6 +16,7 @@ import { bulkPrice, upsellOffers } from '../shared/pricing.js';
 import { hashPassword } from '../server/auth.js';
 import { seedDemoData } from '../server/demo-data.js';
 import { applyAdminLogin, clearTestData } from '../server/golive.js';
+import { createMailer } from '../server/mailer.js';
 
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000001e221bc330000000049454e44ae426082', 'hex');
 
@@ -1857,6 +1858,57 @@ describe('In-person sales priced by the site', () => {
       assert.equal(sale.data.amount, 11200);
       const small = await admin.post('/admin/in-person-votes', { code: star.code, quantity: 3, method: 'Cash', voterName: 'Ada Obi' });
       assert.equal(small.data.amount, 600);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('Large contests', () => {
+  test('emails to everyone are queued and sent in batches, once each, even by several servers at once', async () => {
+    const app = await boot();
+    try {
+      const { db } = app.ctx;
+      const mailer = createMailer({ smtpUrl: { jsonTransport: true }, mailFrom: 'MBGN <no-reply@test.local>' }, db);
+      const count = async (status) => (await db.prepare('SELECT COUNT(*) AS n FROM outbox WHERE status = ?').get(status)).n;
+      await mailer.queue(Array.from({ length: 45 }, (_, i) => ({ to: `fan${i}@test.local`, subject: 'Hello', text: `Message ${i}` })));
+      assert.equal(await count('queued'), 45);
+
+      // A batch a server claimed and never finished is handed back.
+      await db.prepare("UPDATE outbox SET status = 'sending', claimed_at = ? WHERE id = (SELECT MIN(id) FROM outbox WHERE status = 'queued')")
+        .run(new Date(Date.now() - 3600000).toISOString());
+
+      const [a, b] = await Promise.all([mailer.sendQueued(), mailer.sendQueued()]);
+      assert.equal(a + b, 45);
+      assert.equal(await count('sent'), 45);
+      assert.equal(await count('queued'), 0);
+      assert.equal(await mailer.sendQueued(), 0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('announcements reach every contestant in one go, and long lists load a page at a time', async () => {
+    const app = await boot();
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      for (const name of ['Pageone', 'Pagetwo', 'Pagethree', 'Pagefour']) await makeContestant(app, admin, name);
+      await client(app.base).req('POST', '/contestants/register', { form: registrationForm('Waiting') });
+
+      const sent = await admin.post('/admin/announcements', { title: 'Big news', body: 'Round two starts tomorrow.' });
+      assert.equal(sent.data.recipients, 4);
+      const { db } = app.ctx;
+      assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE kind = 'announcement' AND message = 'Big news: Round two starts tomorrow.'").get()).n, 4);
+      assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE subject = 'Big news'").get()).n, 4);
+
+      const anon = client(app.base);
+      const page = await anon.get('/leaderboard?limit=2');
+      assert.equal(page.data.rows.length, 2);
+      assert.equal(page.data.total, 4);
+      assert.equal((await anon.get('/leaderboard?limit=4000')).data.rows.length, 4);
+      assert.equal((await admin.get('/admin/contestants?limit=3')).data.length, 3);
+      assert.equal((await admin.get('/admin/contestants?limit=1000')).data.length, 5);
     } finally {
       await app.close();
     }

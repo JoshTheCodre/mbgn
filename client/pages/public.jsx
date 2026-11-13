@@ -472,6 +472,25 @@ function useBoardFilters() {
   return { q, state, category, update, query: query.toString() };
 }
 
+// Lists load a page at a time, so a contest with thousands of contestants stays quick on a phone.
+const PAGE = 200;
+function usePaging(query) {
+  const [limit, setLimit] = useState(PAGE);
+  useEffect(() => { setLimit(PAGE); }, [query]);
+  const path = `/leaderboard?${query ? `${query}&` : ''}limit=${limit}`;
+  return { path, limit, more: () => setLimit((n) => n + PAGE) };
+}
+
+function ShowMore({ shown, total, limit, onMore }) {
+  if (shown < limit) return null;
+  return (
+    <div className="show-more">
+      <p className="muted small-note">Showing {num(shown)}{total > shown ? ` of ${num(total)}` : ''}</p>
+      <button type="button" className="btn btn-ghost" onClick={onMore}>Show more</button>
+    </div>
+  );
+}
+
 function BoardFilters({ f, filters }) {
   return (
     <div className="filters" role="search">
@@ -498,7 +517,8 @@ function BoardFilters({ f, filters }) {
 
 export const Leaderboard = whileVoting(() => {
   const f = useBoardFilters();
-  const { data, error, reload } = useFetch(`/leaderboard?${f.query}`);
+  const paging = usePaging(f.query);
+  const { data, error, reload } = useFetch(paging.path);
   const previous = useRef(new Map());
   const [flash, setFlash] = useState(new Set());
   useLive('leaderboard', reload);
@@ -539,6 +559,7 @@ export const Leaderboard = whileVoting(() => {
       {data ? <ErrorNote error={error} /> : null}
       {data && !f.query && data.rows.length >= 3 ? <Podium rows={data.rows} /> : null}
       {data ? <RankList rows={data.rows} flash={flash} /> : error ? <LoadFailed error={error} onRetry={reload} what="the leaderboard" /> : <RankSkeleton count={8} />}
+      {data ? <ShowMore shown={data.rows.length} total={f.query ? 0 : data.total} limit={paging.limit} onMore={paging.more} /> : null}
       <p className="muted small-note">Ranked by total verified votes. If two contestants tie, the one who reached that total first stays ahead. Movement compares with 24 hours ago.</p>
     </div>
   );
@@ -546,7 +567,8 @@ export const Leaderboard = whileVoting(() => {
 
 export const Contestants = whileVoting(() => {
   const f = useBoardFilters();
-  const { data, error, reload } = useFetch(`/leaderboard?${f.query}`);
+  const paging = usePaging(f.query);
+  const { data, error, reload } = useFetch(paging.path);
   return (
     <div className="wrap page">
       <div className="page-head">
@@ -576,6 +598,7 @@ export const Contestants = whileVoting(() => {
           ))}
         </ul>
       )}
+      {data ? <ShowMore shown={data.rows.length} total={f.query ? 0 : data.total} limit={paging.limit} onMore={paging.more} /> : null}
     </div>
   );
 });

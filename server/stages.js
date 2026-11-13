@@ -1,4 +1,4 @@
-import { audit, notifyUser, publishActivity } from './competition.js';
+import { audit, notifyMany, publishActivity } from './competition.js';
 import { getSetting, setSetting, tx } from './db.js';
 
 // Moves the contest between taking applications and voting. Returns false when it was already
@@ -22,18 +22,18 @@ export async function changeStage(ctx, phase, actorId = null) {
   return true;
 }
 
+// Every approved contestant hears about it. Saved all at once; the emails go out in batches.
 export async function tellContestantsVotingOpened(ctx) {
   const { db, config } = ctx;
   const recipients = await db.prepare("SELECT user_id, email, stage_name, code FROM contestants WHERE status = 'approved'").all();
-  for (const r of recipients) {
-    const link = `${config.publicUrl}/c/${r.code}`;
-    await notifyUser(ctx, r.user_id, 'announcement', `Voting is open! Share your link now: ${link}`);
-    await ctx.mailer.send({
-      to: r.email,
-      subject: 'Voting is open!',
-      text: `Hello ${r.stage_name},\n\nRegistration has closed and voting is now open. Share your voting link with your supporters now:\n\n${link}`,
-    });
-  }
+  const link = (r) => `${config.publicUrl}/c/${r.code}`;
+  await notifyMany(ctx, recipients.map((r) => ({ userId: r.user_id, message: `Voting is open! Share your link now: ${link(r)}` })), 'announcement');
+  await ctx.mailer.queue(recipients.map((r) => ({
+    to: r.email,
+    subject: 'Voting is open!',
+    text: `Hello ${r.stage_name},\n\nRegistration has closed and voting is now open. Share your voting link with your supporters now:\n\n${link(r)}`,
+  })));
+  ctx.background(ctx.mailer.sendQueued());
   return recipients.length;
 }
 

@@ -69,6 +69,8 @@ export async function runDueJobs(ctx) {
   if (await claimJob(ctx.db, 'job_reconcile', 5 * 60000)) await reconcilePending(ctx);
   await startVotingIfDue(ctx);
   await closeRoundsIfDue(ctx);
+  // Any emails still waiting from a message to everyone, a batch at a time.
+  await ctx.mailer.sendQueued({ budgetMs: 20000 });
 }
 
 export function createApp(ctx) {

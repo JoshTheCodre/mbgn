@@ -141,9 +141,8 @@ Everything below is on the control panel at `/admin`, so nobody needs to change 
 - **Votes bought in person:** on the Payments & votes tab, admins record votes someone paid for directly,
   with cash, a transfer or POS: the contestant, number of votes, how they paid and the voter's
   name. The amount is the normal price, bulk deals included. They become an ordinary paid payment, so
-  they count at once, show in revenue (and separately
-  as "in person" on the overview), and the buyer gets a proof of vote and receipt. Each records the
-  admin who took the money. Only while voting is open.
+  they count at once, show in revenue (and separately as "in person" on the overview), and the buyer
+  gets a proof of vote and receipt. Each records the admin who took the money. Only while voting is open.
 - **Votes by hand:** on a contestant's details, admins can add or remove votes for corrections. Each change
   needs a reason, and stays in that contestant's log, the audit log and the contestants export. These
   votes have no payment behind them.
@@ -209,6 +208,11 @@ new version starts. A contest whose prices an admin has already changed is left 
   only. Contestants' private alerts go only to connections logged in as that contestant.
 - **Ranking.** Most valid votes first; on a tie, whoever reached that total first stays ahead.
   Movement compares with hourly rank snapshots from 24 hours ago.
+- **Large contests.** Built for thousands of contestants and over a hundred thousand votes. Lists load
+  200 at a time with "Show more". Messages to everyone (voting opening, round results, announcements)
+  are saved in a few large writes, and their emails are queued and sent in batches in the background,
+  continuing on later visits, so no request runs out of time. Recording a payment's votes, re-ranking
+  3,000 contestants included, took about 13 ms in testing.
 
 ## Limits to know about
 

@@ -244,6 +244,9 @@ CREATE TABLE IF NOT EXISTS outbox (
   status TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+-- Messages to everyone are queued and sent in batches; claimed_at shows which a server is sending.
+ALTER TABLE outbox ADD COLUMN IF NOT EXISTS claimed_at TEXT;
+CREATE INDEX IF NOT EXISTS outbox_queue ON outbox(status, id);
 
 CREATE TABLE IF NOT EXISTS referral_visits (
   contestant_id INTEGER NOT NULL REFERENCES contestants(id),

@@ -1,4 +1,4 @@
-import { audit, notifyUser, publishActivity, recomputeRanks } from './competition.js';
+import { audit, notifyMany, publishActivity, recomputeRanks } from './competition.js';
 import { getSetting, nowIso, tx } from './db.js';
 
 export function roundView(r) {
@@ -77,10 +77,9 @@ async function tellContestants(ctx, round, { safe, probation, eliminated }) {
     ...probation.map((c) => [c, `You are on probation after ${round.name}. You stay in, but if you miss the next round's target you will be eliminated. Share your voting link now.`]),
     ...eliminated.map((c) => [c, `You have been eliminated at the end of ${round.name}. Thank you for taking part.`]),
   ];
-  for (const [c, message] of messages) {
-    await notifyUser(ctx, c.user_id, 'round', message);
-    await ctx.mailer.send({ to: c.email, subject: `${round.name} results`, text: `Hello ${c.stage_name},\n\n${message}` });
-  }
+  await notifyMany(ctx, messages.map(([c, message]) => ({ userId: c.user_id, message })), 'round');
+  await ctx.mailer.queue(messages.map(([c, message]) => ({ to: c.email, subject: `${round.name} results`, text: `Hello ${c.stage_name},\n\n${message}` })));
+  await ctx.mailer.sendQueued();
 }
 
 // Rounds end on visits, since the site has no clock of its own. Only while voting is on.
