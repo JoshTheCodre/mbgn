@@ -242,15 +242,15 @@ function FollowerCheck({ accounts, response, onFinished }) {
 }
 
 function CheckResult({ accounts, response, testMode, onRetry }) {
-  const { outcome, minFollowers, results, email, whatsappGroup } = response;
+  const { outcome, minFollowers, results, whatsappGroup } = response;
   const hasMissing = results.some((r) => r.status === 'missing');
   return (
     <div className={`check-card check-${outcome}`}>
       {outcome === 'passed' ? <div className="check-seal" aria-hidden="true">✓</div> : null}
       <p className="eyebrow">Your result</p>
       <h1>{{ passed: 'Congratulations, you passed!', review: 'Our team will take it from here', failed: 'You are not there yet' }[outcome]}</h1>
-      {outcome === 'passed' ? <p className="muted">Your application is now with our review team. We will send more information to <b>{email}</b>.</p> : null}
-      {outcome === 'review' ? <p className="muted">We could not finish the check automatically, so our team will look at your accounts and email <b>{email}</b>.</p> : null}
+      {outcome === 'passed' ? <p className="muted">Your application is now with our review team. Once you’re approved, we’ll message you on WhatsApp.</p> : null}
+      {outcome === 'review' ? <p className="muted">We could not finish the check automatically, so our team will look at your accounts. Once you’re approved, we’ll message you on WhatsApp.</p> : null}
       {outcome === 'failed' ? (
         <p className="muted">
           You need at least <b>{num(minFollowers)}</b> followers on the account you chose. Your application has not been sent, so you can try another of your accounts, or try again once you get there.
@@ -269,7 +269,7 @@ function CheckResult({ accounts, response, testMode, onRetry }) {
             <WhatsAppGroup group={whatsappGroup} />
           </div>
         ) : null}
-        {outcome === 'passed' && !whatsappGroup ? <p className="note">Your WhatsApp group link will be sent to your email soon.</p> : null}
+        {outcome === 'passed' && !whatsappGroup ? <p className="note">Your WhatsApp group link will be sent to you on WhatsApp soon.</p> : null}
         {outcome === 'failed'
           ? <button type="button" className="btn btn-primary btn-wide" onClick={onRetry}>Try another account</button>
           : <Link to="/dashboard" className="btn btn-ghost btn-wide">Go to my dashboard</Link>}

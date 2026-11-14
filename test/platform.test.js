@@ -19,6 +19,7 @@ import { applyAdminLogin, clearTestData } from '../server/golive.js';
 import { createMailer } from '../server/mailer.js';
 import { tellContestantsVotingOpened } from '../server/stages.js';
 import { sendDueWhatsApp, waNumber } from '../server/whatsapp.js';
+import { DEFAULT_MESSAGES, renderMessage } from '../shared/whatsapp-messages.js';
 import { createSiteClient, runOnce } from '../whatsapp-sender/src/sender.js';
 
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000001e221bc330000000049454e44ae426082', 'hex');
@@ -2238,6 +2239,49 @@ describe('WhatsApp messages', () => {
       for (const key of ['EVOLUTION_URL', 'EVOLUTION_API_KEY', 'EVOLUTION_INSTANCE']) {
         if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
       }
+    }
+  });
+
+  test('messages are written in Markdown and come out in WhatsApp formatting', () => {
+    const text = renderMessage('# Welcome {name}\n\nYour code: **{code}**, __really__ ~~not~~ yours.\n\n{group}\n\nBye {unknown}', { name: 'Ada', code: 'MBG1', group: '' });
+    assert.equal(text, '*Welcome Ada*\n\nYour code: *MBG1*, _really_ ~not~ yours.\n\nBye {unknown}');
+  });
+
+  test('admins can change the wording; new messages use it, and it can go back to the default', async () => {
+    const app = await boot({ whatsappSenderToken: TOKEN });
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      assert.equal((await admin.get('/admin/whatsapp/messages')).data.messages.accepted.custom, false);
+
+      const { data } = await admin.req('PUT', '/admin/whatsapp/messages/accepted', { body: { text: 'Hi **{name}**! Code: {code}' } });
+      assert.equal(data.messages.accepted.custom, true);
+      const { code } = await makeContestant(app, admin, 'Worded');
+      assert.equal((await rows(app))[0].body, `Hi *Worded*! Code: ${code}`);
+
+      await admin.req('PUT', '/admin/whatsapp/messages/accepted', { body: { text: '' } });
+      const back = (await admin.get('/admin/whatsapp/messages')).data.messages.accepted;
+      assert.deepEqual([back.custom, back.text], [false, DEFAULT_MESSAGES.accepted]);
+      assert.equal((await admin.req('PUT', '/admin/whatsapp/messages/nope', { body: { text: 'x' } })).status, 404);
+      assert.equal((await admin.req('PUT', '/admin/whatsapp/messages/accepted', { body: { text: 'x'.repeat(3001) } })).status, 400);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('someone who waited for a group gets its link on WhatsApp, not by email', async () => {
+    const app = await boot({ whatsappSenderToken: TOKEN });
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const { id } = await makeContestant(app, admin, 'Waiter');
+      assert.equal((await admin.post('/admin/whatsapp-groups', { name: 'Batch 1', url: 'https://chat.whatsapp.com/WaitedInvite', capacity: 10 })).data.placed, 1);
+      const [link] = await rows(app, `contestant_id = ${id} AND kind = 'group_link'`);
+      assert.ok(link.body.includes('https://chat.whatsapp.com/WaitedInvite'));
+      const emails = await app.ctx.db.prepare("SELECT COUNT(*)::int AS n FROM outbox WHERE subject = 'Your MBGN WhatsApp group'").get();
+      assert.equal(emails.n, 0);
+    } finally {
+      await app.close();
     }
   });
 

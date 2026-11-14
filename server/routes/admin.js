@@ -14,7 +14,7 @@ import { changeStage, startVotingIfDue, tellContestantsVotingOpened } from '../s
 import { recordInPersonSale } from '../payments.js';
 import { voidVote } from '../votes.js';
 import {
-  queueAccepted, queueMissingAccepted, retryFailed, sendDueWhatsApp, whatsappOverview,
+  messageSettings, queueAccepted, queueMissingAccepted, retryFailed, saveMessage, sendDueWhatsApp, whatsappOverview,
 } from '../whatsapp.js';
 import { normalizeCode, socialLink, themeSettings } from './public.js';
 import { THEME_IDS } from '../../shared/themes.js';
@@ -708,6 +708,17 @@ export function adminRouter(ctx) {
     await audit(ctx, req.user.id, 'whatsapp.accepted', `Queued ${queued} acceptance messages`);
     ctx.background(sendDueWhatsApp(ctx));
     res.json({ queued });
+  });
+
+  router.get('/whatsapp/messages', async (_req, res) => {
+    res.json(await messageSettings(ctx));
+  });
+
+  // New wording for one message; empty goes back to the default. Messages already waiting keep theirs.
+  router.put('/whatsapp/messages/:kind', async (req, res) => {
+    await saveMessage(ctx, req.params.kind, req.body?.text);
+    await audit(ctx, req.user.id, 'whatsapp.message', req.params.kind);
+    res.json(await messageSettings(ctx));
   });
 
   router.post('/whatsapp/retry-failed', async (req, res) => {

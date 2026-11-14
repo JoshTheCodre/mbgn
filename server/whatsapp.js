@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { HttpError, asyncRouter, rateLimit } from './auth.js';
+import { DEFAULT_MESSAGES, MESSAGE_KINDS, renderMessage } from '../shared/whatsapp-messages.js';
 import { getSetting, nowIso, setSetting } from './db.js';
 import { groupById } from './groups.js';
 
@@ -43,28 +44,41 @@ async function votingNote(db) {
   return `Voting opens ${when}, and we'll message you when it does. Then send your link to your friends, family and followers and ask them to vote for you. They can also search your code on the site.`;
 }
 
-export async function acceptedText(ctx, c) {
-  const { db, config } = ctx;
-  const group = await groupById(db, c.whatsapp_group_id);
-  return [
-    `Congratulations ${c.stage_name}! 🎉`,
-    'You have been accepted into Most Beautiful Girl Online Nigeria.',
-    `Your contestant code: *${c.code}*\nYour voting link: ${config.publicUrl}/c/${c.code}`,
-    ...(group ? [`Join the contestants' WhatsApp group for updates:\n${group.invite_url}`] : []),
-    await votingNote(db),
-    `Your dashboard: ${config.publicUrl}/dashboard`,
-  ].join('\n\n');
+// ---- The wording, as edited in admin (or the default) ----
+
+const messageKey = (kind) => `whatsapp_message_${kind}`;
+const template = async (db, kind) => (await getSetting(db, messageKey(kind))) || DEFAULT_MESSAGES[kind];
+const groupLine = (url) => `Join the contestants' WhatsApp group for updates:\n${url}`;
+
+function fills(ctx, c) {
+  return { name: c.stage_name, code: c.code, link: `${ctx.config.publicUrl}/c/${c.code}`, dashboard: `${ctx.config.publicUrl}/dashboard` };
 }
 
-export function votingOpenText(ctx, c) {
-  const link = `${ctx.config.publicUrl}/c/${c.code}`;
-  return [
-    `Voting is now open, ${c.stage_name}! 🗳️`,
-    'Send this to everyone you know, and post it on your status and socials:',
-    `"Please vote for me, ${c.stage_name}, in Most Beautiful Girl Online Nigeria! ${link} (my code is ${c.code})"`,
-    'The more people share your link, the higher you climb.',
-    `Your dashboard: ${ctx.config.publicUrl}/dashboard`,
-  ].join('\n\n');
+export async function acceptedText(ctx, c) {
+  const group = await groupById(ctx.db, c.whatsapp_group_id);
+  return renderMessage(await template(ctx.db, 'accepted'), {
+    ...fills(ctx, c), group: group ? groupLine(group.invite_url) : '', voting: await votingNote(ctx.db),
+  });
+}
+
+// For admin: each message's wording, whether it was changed, and example fill-ins for the preview.
+export async function messageSettings(ctx) {
+  const messages = {};
+  for (const kind of Object.keys(MESSAGE_KINDS)) {
+    const saved = await getSetting(ctx.db, messageKey(kind));
+    messages[kind] = { text: saved || DEFAULT_MESSAGES[kind], custom: Boolean(saved) };
+  }
+  const example = fills(ctx, { stage_name: 'Ada Queen', code: `${ctx.config.codePrefix}0001` });
+  const groupUrl = 'https://chat.whatsapp.com/ExampleInvite';
+  return { messages, example: { ...example, group: groupLine(groupUrl), group_link: groupUrl, voting: await votingNote(ctx.db) } };
+}
+
+// Empty (or the default again) goes back to the default.
+export async function saveMessage(ctx, kind, text) {
+  if (!MESSAGE_KINDS[kind]) throw new HttpError(404, 'There is no such message.');
+  const value = String(text ?? '').replace(/\r\n/g, '\n').trim();
+  if (value.length > 3000) throw new HttpError(400, 'Keep the message under 3,000 characters.');
+  await setSetting(ctx.db, messageKey(kind), value === DEFAULT_MESSAGES[kind] ? '' : value);
 }
 
 // One of each kind per contestant, however many times something asks.
@@ -105,10 +119,21 @@ export async function queueMissingAccepted(ctx) {
   return rows.length;
 }
 
+// For someone who waited for a group with room. False if it can't go on WhatsApp.
+export async function queueGroupLink(ctx, c, group) {
+  const to = waNumber(c.whatsapp);
+  if (!enabled(ctx) || !to) return false;
+  // She may not have a code yet, so only her name and the link.
+  const body = renderMessage(await template(ctx.db, 'group_link'), { name: c.stage_name, group_link: group.invite_url });
+  await queue(ctx.db, [{ contestantId: c.id, kind: 'group_link', to, body }]);
+  return true;
+}
+
 export async function queueVotingOpen(ctx) {
   if (!enabled(ctx)) return 0;
+  const wording = await template(ctx.db, 'voting_open');
   const recipients = await ctx.db.prepare("SELECT id, stage_name, code, whatsapp FROM contestants WHERE status = 'approved'").all();
-  const rows = recipients.map((c) => ({ contestantId: c.id, kind: 'voting_open', to: waNumber(c.whatsapp), body: votingOpenText(ctx, c) }))
+  const rows = recipients.map((c) => ({ contestantId: c.id, kind: 'voting_open', to: waNumber(c.whatsapp), body: renderMessage(wording, fills(ctx, c)) }))
     .filter((r) => r.to);
   await queue(ctx.db, rows);
   return rows.length;

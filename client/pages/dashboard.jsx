@@ -84,7 +84,7 @@ function GroupPanel({ data }) {
     );
   }
   if (data.status === 'pending' && data.verification === 'passed') {
-    return <p className="note">Your WhatsApp group link will be sent to your email soon.</p>;
+    return <p className="note">Your WhatsApp group link will be sent to you on WhatsApp soon.</p>;
   }
   return null;
 }
@@ -93,7 +93,7 @@ function NotYetLive({ data, onRead, onSaved }) {
   const copy = {
     pending: [
       data.verification === 'passed' ? 'You passed the follower check' : 'Your application is being reviewed',
-      `${data.verification === 'review' ? 'Our team is looking at your social media accounts. ' : ''}We will email you as soon as a decision is made. Once approved, your contestant code and voting link appear here.`,
+      `${data.verification === 'review' ? 'Our team is looking at your social media accounts. ' : ''}Once you're approved, we'll message you on WhatsApp, and your contestant code and voting link appear here.`,
     ],
     rejected: ['Your application was not approved', data.statusReason ?? ''],
     suspended: ['Your profile is suspended', data.statusReason ?? ''],

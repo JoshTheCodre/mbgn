@@ -1013,6 +1013,11 @@ select option { background: var(--surface); }
 .wa-failures { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .wa-failures li { display: grid; gap: 2px; padding: 8px 12px; background: var(--bg); border-radius: var(--radius-s); overflow-wrap: anywhere; }
 .wa-failures small { color: var(--bad-text); }
+.wa-wording { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.wa-wording summary { cursor: pointer; font-weight: 600; margin-bottom: 10px; }
+.wa-editor { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9rem; line-height: 1.5; }
+.wa-preview { max-width: 420px; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45;
+  background: #dcf8c6; color: #111b21; border-radius: 10px 10px 10px 2px; }
 
 .show-more { display: grid; justify-items: center; gap: 6px; margin: 18px 0 8px; }
 .show-more .small-note { margin: 0; }

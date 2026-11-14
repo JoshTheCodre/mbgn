@@ -1,4 +1,5 @@
 import { tx } from './db.js';
+import { queueGroupLink, sendDueWhatsApp } from './whatsapp.js';
 
 const OPEN_WITH_ROOM = `SELECT g.* FROM whatsapp_groups g
   WHERE g.closed = 0 AND (SELECT COUNT(*) FROM contestants c WHERE c.whatsapp_group_id = g.id) < g.capacity
@@ -20,20 +21,23 @@ const WAITING = `whatsapp_group_id IS NULL AND verification IS NOT NULL
 
 export const countWaiting = async (db) => (await db.prepare(`SELECT COUNT(*) AS n FROM contestants WHERE ${WAITING}`).get()).n;
 
-// Runs when an admin makes room, for anyone who joined while every group was full.
+// Runs when an admin makes room, for anyone who joined while every group was full. The link goes
+// on WhatsApp; by email only where WhatsApp messages aren't set up.
 export async function placeWaiting(ctx) {
   const { db } = ctx;
-  const waiting = await db.prepare(`SELECT id, email, stage_name FROM contestants WHERE ${WAITING} ORDER BY id LIMIT 200`).all();
+  const waiting = await db.prepare(`SELECT id, email, stage_name, whatsapp FROM contestants WHERE ${WAITING} ORDER BY id LIMIT 200`).all();
   let placed = 0;
   for (const c of waiting) {
     const group = await tx(db, () => assignGroup(db, c.id));
     if (!group) break;
     placed += 1;
+    if (await queueGroupLink(ctx, c, group)) continue;
     await ctx.mailer.send({
       to: c.email,
       subject: 'Your MBGN WhatsApp group',
       text: `Hello ${c.stage_name},\n\nYour WhatsApp group is ready. Join it here:\n\n${group.invite_url}`,
     });
   }
+  if (placed) ctx.background(sendDueWhatsApp(ctx));
   return placed;
 }

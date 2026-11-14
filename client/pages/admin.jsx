@@ -6,6 +6,7 @@ import {
 } from '../ui.jsx';
 import { THEMES } from '../themes.js';
 import { bulkPrice } from '../../shared/pricing.js';
+import { FILLS, MESSAGE_KINDS, renderMessage } from '../../shared/whatsapp-messages.js';
 
 const TABS = [
   ['overview', 'Overview'],
@@ -1032,7 +1033,7 @@ function JoiningPanels() {
         <p className="muted">People who pass the check get the link marked “Giving out now”. When a group is full, the next one on the list takes over.</p>
         <ErrorNote error={error} />
         {message ? <p className="note note-good">{message}</p> : null}
-        {!current ? <p className="note note-error">No group has room. {data.waiting ? `Waiting for a link: ${num(data.waiting)}. ` : ''}Add a group below, and anyone waiting gets the link by email.</p> : null}
+        {!current ? <p className="note note-error">No group has room. {data.waiting ? `Waiting for a link: ${num(data.waiting)}. ` : ''}Add a group below, and anyone waiting gets the link on WhatsApp.</p> : null}
         {nearlyFull ? <p className="note">{current.name} is nearly full. Add the next group so nobody has to wait.</p> : null}
         {data.groups.length ? <ul className="group-rows">{data.groups.map((g) => <GroupRow key={g.id} group={g} onSave={saveGroup} />)}</ul> : null}
         <p className="muted small-note">“Places given out” counts people who received the link. WhatsApp does not tell the site who actually joined, so mark a group as full yourself if it fills up sooner.</p>
@@ -1205,7 +1206,7 @@ function CompetitionTab({ onChange }) {
               className="btn btn-primary btn-small"
               onClick={() => setAction({
                 title: 'End registration and start voting',
-                description: `New applications stop and voting opens for everyone straight away. ${num(data.approvedContestants)} approved contestants will be told by email.${waiting ? ` ${num(waiting)} applications are still waiting: you can still approve them afterwards.` : ''}`,
+                description: `New applications stop and voting opens for everyone straight away. ${num(data.approvedContestants)} approved contestants will be told on WhatsApp.${waiting ? ` ${num(waiting)} applications are still waiting: you can still approve them afterwards.` : ''}`,
                 confirm: 'Start voting',
                 needsReason: false,
                 run: () => api('/admin/phase/voting', { method: 'POST' }),
@@ -1368,7 +1369,7 @@ function senderStatus(data) {
   return { tone: '', text: 'The sender is connecting to WhatsApp…' };
 }
 
-const WHATSAPP_KINDS = { accepted: 'Acceptance', voting_open: 'Voting open' };
+const WHATSAPP_KINDS = { accepted: 'Acceptance', group_link: 'Group link', voting_open: 'Voting open' };
 
 function WhatsAppPanel() {
   const { data, error: loadError, reload } = useFetch('/admin/whatsapp');
@@ -1441,7 +1442,70 @@ function WhatsAppPanel() {
           </ul>
         </>
       ) : null}
+      <WhatsAppWording />
     </section>
+  );
+}
+
+// WhatsApp's formatting, shown the way the phone shows it. Escaped first, so nothing typed runs.
+function whatsAppHtml(text) {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/\*(\S(?:[^*\n]*\S)?)\*/g, '<strong>$1</strong>')
+    .replace(/(^|[\s(])_(\S(?:[^_\n]*\S)?)_/g, '$1<em>$2</em>')
+    .replace(/~(\S(?:[^~\n]*\S)?)~/g, '<s>$1</s>');
+}
+
+function WhatsAppWording() {
+  const { data, error: loadError, reload } = useFetch('/admin/whatsapp/messages');
+  const [kind, setKind] = useState('accepted');
+  const [draft, setDraft] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [note, setNote] = useState(null);
+  if (!data) return <ErrorNote error={loadError} />;
+
+  const saved = data.messages[kind];
+  const text = draft ?? saved.text;
+  async function save(value, done) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/admin/whatsapp/messages/${kind}`, { method: 'PUT', body: { text: value } });
+      setDraft(null);
+      setNote(done);
+      reload();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <details className="wa-wording">
+      <summary>Edit the messages</summary>
+      <Field label="Message">
+        <select value={kind} onChange={(e) => { setKind(e.target.value); setDraft(null); setNote(null); }}>
+          {Object.entries(MESSAGE_KINDS).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
+        </select>
+      </Field>
+      <textarea className="wa-editor" rows={14} value={text} onChange={(e) => { setDraft(e.target.value); setNote(null); }} spellCheck />
+      <p className="muted small-note">
+        Write <code>**bold**</code>, <code>_italic_</code>, <code>~~strike~~</code> or <code># Heading</code>. Fill-ins:{' '}
+        {MESSAGE_KINDS[kind].fills.map((f, i) => <span key={f}>{i ? ', ' : ''}<code>{`{${f}}`}</code> {FILLS[f]}</span>)}.
+      </p>
+      <p className="field-label">Preview</p>
+      <div className="wa-preview" dangerouslySetInnerHTML={{ __html: whatsAppHtml(renderMessage(text, data.example)) }} />
+      <ErrorNote error={error} />
+      {note ? <p className="note note-good">{note}</p> : null}
+      <div className="wa-actions">
+        <button type="button" className="btn btn-primary btn-small" disabled={busy || draft === null}
+          onClick={() => save(text, 'Saved. Messages from now on use it.')}>Save</button>
+        {draft !== null ? <button type="button" className="btn btn-ghost btn-small" disabled={busy} onClick={() => setDraft(null)}>Undo changes</button> : null}
+        {saved.custom && draft === null ? (
+          <button type="button" className="btn btn-ghost btn-small" disabled={busy} onClick={() => save('', 'Back to the original wording.')}>Back to default</button>
+        ) : null}
+      </div>
+    </details>
   );
 }
 
