@@ -19,7 +19,8 @@ In Coolify, open the PostgreSQL database:
    `/var/lib/postgresql/data` to `/var/lib/postgresql`.
 2. **A new password.** The first one was shared in a chat, so change it before the database is
    reachable from the internet. Save, then restart the database.
-3. **SSL on.** The site only connects encrypted, and checks it's really your server.
+3. **SSL on.** The site connects encrypted, so passwords, phone numbers and payments never cross
+   the internet readable.
 4. **Make it publicly available**, on a public port other than 5432 (for example 54321). Vercel's
    servers have no fixed address, so the database can't be limited to them; the password and
    SSL protect it.
@@ -55,7 +56,7 @@ using Neon until step 3.
 Then check the site will be able to use it. This changes nothing:
 
 ```bash
-powershell -ExecutionPolicy Bypass -File scripts\switch-db-to-vps.ps1 -Server root@162.35.44.225 -CheckOnly
+powershell -ExecutionPolicy Bypass -File scripts\switch-db-to-vps.ps1 -CheckOnly
 ```
 
 It asks for Coolify's **Postgres URL (public)** and shows what it found.
@@ -70,11 +71,16 @@ It asks for Coolify's **Postgres URL (public)** and shows what it found.
 3. **Switch the site:**
 
    ```bash
-   powershell -ExecutionPolicy Bypass -File scripts\switch-db-to-vps.ps1 -Server root@162.35.44.225
+   powershell -ExecutionPolicy Bypass -File scripts\switch-db-to-vps.ps1
    ```
 
-   It checks the connection first, keeps Neon's address in `.secrets\`, saves `DATABASE_URL` and
-   `DATABASE_CA_CERT` on Vercel, moves the site to Washington DC, deploys, and checks the live site.
+   It asks for Coolify's **Postgres URL (public)**, checks the connection first, keeps Neon's
+   address in `.secrets\`, saves `DATABASE_URL` on Vercel (encrypted: `sslmode=no-verify`), moves
+   the site to Washington DC, deploys, and checks the live site.
+
+   For a stricter connection that also checks the server's certificate, add
+   `-VerifyCertificate -Server root@162.35.44.225`: it fetches Coolify's certificate authority over
+   ssh and saves it on Vercel as `DATABASE_CA_CERT`.
 4. **Resume voting** in admin.
 5. **Check nothing was left behind on Neon:**
    `ssh -t root@162.35.44.225 "bash copy-from-neon.sh check"`

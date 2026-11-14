@@ -54,9 +54,10 @@ without them, or with a Paystack test key. `APP_SECRET` must stay the same on ev
 the network-based fraud checks compare values made with it.
 
 The database and WhatsApp can run on our VPS under Coolify instead: see
-[scripts/vps/README.md](scripts/vps/README.md). For a database with its own certificate authority,
-like Coolify's, `DATABASE_CA_CERT` holds that authority's certificate (line breaks may be written
-as `\n`), and the site then only connects encrypted to a server that authority signed.
+[scripts/vps/README.md](scripts/vps/README.md). The site reaches it encrypted (`sslmode=no-verify`
+in `DATABASE_URL`). For a stricter connection, `DATABASE_CA_CERT` holds the certificate of the
+database's own certificate authority, like Coolify's (line breaks may be written as `\n`), and the
+site then only connects to a server that authority signed.
 `DB_POOL_MAX` (default 5) is how many connections each server keeps.
 
 ## Going live
