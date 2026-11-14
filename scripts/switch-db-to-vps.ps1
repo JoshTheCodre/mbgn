@@ -1,34 +1,33 @@
-# Moves the live site's database from Neon to the one Coolify runs on your VPS. Everything runs
-# from this PC; nothing is needed on the VPS but the database itself.
-#   1. copies everything from Neon into the VPS database (Neon is only read)
-#   2. points the site on Vercel at the VPS database, moves the site's server code to Washington DC
-#      (next to the VPS), and deploys
-#   3. checks nothing new reached Neon during the switch
-#
-# Try it first with -Test: it does step 1 only. The live site isn't touched, and you can run it
-# as often as you like.
+# Moves the live site onto the database Coolify runs on your VPS, starting empty (the site hasn't
+# launched, so nothing is carried over). Everything runs from this PC:
+#   1. empties the VPS database and builds the site's tables in it
+#   2. points the site on Vercel at it, moves the site's server code to Washington DC (next to the
+#      VPS), and deploys
+# The admin login stays the same: it comes from ADMIN_EMAIL and ADMIN_PASSWORD on Vercel.
 #
 # From the project folder, signed in to Vercel (npx vercel login):
-#   powershell -ExecutionPolicy Bypass -File scripts\switch-db-to-vps.ps1 -Test
 #   powershell -ExecutionPolicy Bypass -File scripts\switch-db-to-vps.ps1
-# For the real switch, pause voting in admin first, and resume it after.
 #
-# To go back to Neon:
-#   powershell -ExecutionPolicy Bypass -File scripts\switch-db-to-vps.ps1 -Back
+# Once switched, running it again does nothing, so live data can't be wiped by accident.
+# -Force empties it anyway.
 #
-# Options:  -Force   copy even if the VPS database has newer data than Neon (from testing)
+# After changing the database's password in Coolify, give the site the new address (nothing is
+# emptied):
+#   powershell -ExecutionPolicy Bypass -File scripts\switch-db-to-vps.ps1 -NewAddress
 
-param(
-  [switch]$Test,
-  [switch]$Back,
-  [switch]$Force
-)
+param([switch]$Force, [switch]$NewAddress)
 
 $ErrorActionPreference = 'Stop'
+# Any stop shows as one plain message, not PowerShell's error details.
+trap {
+  Write-Host ''
+  Write-Host $_.Exception.Message -ForegroundColor Red
+  exit 1
+}
 Set-Location (Split-Path $PSScriptRoot -Parent)
 $site = 'https://www.mbgn.com.ng'
-$neonFile = '.secrets\neon-database-url.txt'
 $vpsFile = '.secrets\vps-database-url.txt'
+$switchedFile = '.secrets\switched-to-vps.txt'
 New-Item -ItemType Directory -Force '.secrets' | Out-Null
 
 function Save-Secret([string]$File, [string]$Value) {
@@ -51,7 +50,7 @@ function Set-VercelEnv([string]$Name, [string]$Value) {
   cmd /c "npx vercel env rm $Name production --yes >nul 2>&1"
   if ($Value) {
     $Value | npx vercel env add $Name production | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Vercel did not accept $Name. Check you are signed in (npx vercel login) and try again." }
+    if ($LASTEXITCODE -ne 0) { throw "Vercel did not accept $Name. Sign in with: npx vercel login. Then run this again." }
   }
 }
 
@@ -62,155 +61,141 @@ function Set-Region([string]$Region) {
   [IO.File]::WriteAllText((Resolve-Path 'vercel.json'), $updated)
 }
 
+# Runs a helper script with the address passed privately, and returns its JSON result.
+# A brief internet hiccup is tried again.
+function Invoke-Helper([string]$Script, [hashtable]$Env) {
+  foreach ($attempt in 1..3) {
+    foreach ($k in $Env.Keys) { Set-Item "Env:$k" $Env[$k] }
+    $result = $null
+    try {
+      node $Script | ForEach-Object {
+        if ($_ -like '{*') { $result = $_ } else { Write-Host "  $_" }
+      }
+    } finally {
+      foreach ($k in $Env.Keys) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
+    }
+    $parsed = if (-not $result) { [pscustomobject]@{ error = 'It stopped without saying why (see above).' } }
+      else { try { $result | ConvertFrom-Json } catch { [pscustomobject]@{ error = $result } } }
+    if (-not ($parsed.error -match 'ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|Connection terminated|timeout') -or $attempt -eq 3) { return $parsed }
+    Write-Host '  Internet hiccup. Trying again...' -ForegroundColor Yellow
+    Start-Sleep -Seconds 5
+  }
+}
+
+# Asks for Coolify's public address and turns it into the one the site uses.
+function Read-VpsAddress {
+  Write-Host ''
+  Write-Host 'Paste your VPS database address.'
+  Write-Host '  Where: Coolify > your database > Postgres URL (public)'
+  Write-Host '  Right-click to paste. Nothing shows. Press Enter.'
+  $raw = Read-Secret 'VPS address'
+  $address = ([regex]::Match($raw, 'postgres(ql)?://[^''"\s]+')).Value
+  if (-not $address) { throw "That's not a database address. It should start with postgres://" }
+  $hostName = ([regex]::Match($address, '^postgres(?:ql)?://.*@([^:/?#@]+)')).Groups[1].Value
+  if ($hostName -notmatch '\.') {
+    throw "Wrong address: that one only works inside the VPS.`nIn Coolify, copy 'Postgres URL (public)' instead. It contains 162.35.44.225."
+  }
+  # The site's data is in its own database, "mbgn", not Coolify's default one.
+  $address = $address -replace '^(postgres(?:ql)?://[^/?#]+)(/[^?#]*)?', '$1/mbgn'
+  # Encrypted, without needing Coolify's certificate file: sslmode=no-verify.
+  $parts = $address -split '\?', 2
+  $query = @(if ($parts.Count -gt 1) { $parts[1] -split '&' | Where-Object { $_ -and $_ -notmatch '^(ssl|uselibpqcompat=)' } })
+  $parts[0] + '?' + (@($query) + 'sslmode=no-verify' -join '&')
+}
+
+# Deploys, then checks the live site answers.
 function Publish-Site {
   Write-Host ''
-  Write-Host 'Deploying the site...'
-  npx vercel --prod --yes
-  if ($LASTEXITCODE -ne 0) {
-    throw 'The deploy failed, so the live site still runs as before. Fix the error above and run this again.'
-  }
+  Write-Host 'Deploying the site (a minute or two)...'
+  # Straight to the screen, so it shows and isn't mistaken for this function's answer.
+  npx vercel --prod --yes | Out-Host
+  if ($LASTEXITCODE -ne 0) { throw 'The deploy failed. Run this command to try again:  npx vercel --prod --yes' }
   Write-Host ''
   Write-Host 'Checking the live site...'
-  foreach ($i in 1..6) {
+  foreach ($i in 1..8) {
     try {
       $res = Invoke-WebRequest "$site/api/competition?check=$(Get-Random)" -UseBasicParsing -TimeoutSec 20
-      if ($res.StatusCode -eq 200) { Write-Host '  The site is up and reading its database.' -ForegroundColor Green; return }
+      if ($res.StatusCode -eq 200) { return $true }
     } catch { Start-Sleep -Seconds 5 }
   }
-  Write-Host "  The site isn't answering properly. Check $site now; to undo, run this again with -Back." -ForegroundColor Red
+  $false
 }
 
-# Runs one of the helper scripts with addresses passed privately, and returns its JSON result.
-function Invoke-Helper([string]$Script, [hashtable]$Env) {
-  foreach ($k in $Env.Keys) { Set-Item "Env:$k" $Env[$k] }
-  $result = $null
-  try {
-    node $Script | ForEach-Object {
-      if ($_ -like '{*') { $result = $_ } else { Write-Host "  $_" }
-    }
-  } finally {
-    foreach ($k in $Env.Keys) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
-  }
-  if (-not $result) { return [pscustomobject]@{ error = 'It stopped without saying why (see above).' } }
-  try { $result | ConvertFrom-Json } catch { [pscustomobject]@{ error = $result } }
-}
-
-# ---- Going back to Neon ----
-if ($Back) {
-  if (-not (Test-Path $neonFile)) { throw "Neon's address wasn't kept ($neonFile is missing). Put it back on Vercel by hand: DATABASE_URL." }
-  $neon = (Get-Content $neonFile -Raw).Trim()
-  Write-Host 'This points the live site back at Neon.'
-  Write-Host 'Anything that came in since the switch (votes, payments, sign-ups) stays only on the VPS.' -ForegroundColor Yellow
-  if (-not (Confirm-Step 'Go back to Neon?')) { exit 1 }
-  Set-VercelEnv 'DATABASE_URL' $neon
-  Set-VercelEnv 'DATABASE_CA_CERT' ''
-  Set-Region 'fra1'
-  Publish-Site
+# ---- A new address (after a password change): nothing is emptied ----
+if ($NewAddress) {
+  $url = Read-VpsAddress
   Write-Host ''
-  Write-Host 'The site is back on Neon, in Frankfurt. Commit vercel.json so the next deploy keeps it.'
+  Write-Host 'Checking the new address...'
+  $check = Invoke-Helper 'scripts\reset-db.mjs' @{ MBGN_TO_URL = $url; MBGN_CHECK = '1' }
+  if ($check.error) { throw "Couldn't connect with it: $($check.error)`nCheck the address, and that the database was restarted after the change." }
+  if (-not $check.encrypted) { throw 'Not encrypted. Turn on SSL for the database in Coolify.' }
+  if ($check.tables -lt 1) { throw "That database is empty. It's not the one the site uses." }
+  Save-Secret $vpsFile $url
+  Write-Host 'Works.' -ForegroundColor Green
+  Write-Host 'Saving it on Vercel...'
+  Set-VercelEnv 'DATABASE_URL' $url
+  if (Publish-Site) {
+    Write-Host ''
+    Write-Host 'Done! Your live site uses the new address. Nothing was deleted.' -ForegroundColor Green
+  } else {
+    Write-Host "The site isn't answering yet. Open $site in a minute; if it still fails, tell your developer." -ForegroundColor Red
+  }
   exit 0
 }
 
-# ---- The two addresses ----
-# The VPS database: asked once, then kept in .secrets\ (which never leaves this PC).
+if ((Test-Path $switchedFile) -and -not $Force) {
+  Write-Host 'Your live site already uses the VPS database. Nothing to do.' -ForegroundColor Green
+  Write-Host 'Changed the database password? Run this with -NewAddress.'
+  exit 0
+}
+
+# ---- The VPS database address: asked once, then kept in .secrets\ (never leaves this PC) ----
+$saveVps = $false
 if (Test-Path $vpsFile) {
   $url = (Get-Content $vpsFile -Raw).Trim()
-  Write-Host "Using the VPS database address kept in $vpsFile (delete that file to give a new one)."
+  Write-Host 'Using your saved VPS database address.'
 } else {
-  $raw = Read-Secret "Paste Coolify's 'Postgres URL (public)' for the database (it stays hidden)"
-  $url = ([regex]::Match($raw, 'postgres(ql)?://[^''"\s]+')).Value
-  if (-not $url) { throw "That doesn't look like a database address. It starts with postgres://" }
-  $hostName = ([regex]::Match($url, '^postgres(?:ql)?://[^@/]+@([^:/?#]+)')).Groups[1].Value
-  if ($hostName -notmatch '\.') {
-    throw "That's the internal address, which only works inside the VPS. In Coolify, turn on 'Make it publicly available' and copy the public one."
-  }
-  # MBGN's data goes in its own database, "mbgn" (made if needed), not Coolify's default "postgres".
-  $url = $url -replace '^(postgres(?:ql)?://[^/?#]+)(/[^?#]*)?', '$1/mbgn'
-  # Encrypted: Coolify's own SSL settings in the address are replaced by sslmode=no-verify, which
-  # encrypts without needing Coolify's certificate file.
-  $parts = $url -split '\?', 2
-  $query = @(if ($parts.Count -gt 1) { $parts[1] -split '&' | Where-Object { $_ -and $_ -notmatch '^(ssl|uselibpqcompat=)' } })
-  $url = $parts[0] + '?' + (@($query) + 'sslmode=no-verify' -join '&')
-  Save-Secret $vpsFile $url
+  $url = Read-VpsAddress
+  $saveVps = $true
 }
 
-# Neon: kept in .secrets\ too, for copying and for -Back.
-if (Test-Path $neonFile) {
-  $neon = (Get-Content $neonFile -Raw).Trim()
-} else {
-  $neon = ''
-  $pulled = Join-Path ([IO.Path]::GetTempPath()) "mbgn-env-$([guid]::NewGuid().ToString('N')).txt"
-  try {
-    cmd /c "npx vercel env pull `"$pulled`" --environment=production --yes >nul 2>&1"
-    $line = if (Test-Path $pulled) { Get-Content $pulled | Where-Object { $_ -match '^DATABASE_URL=' } | Select-Object -First 1 } else { $null }
-    if ($line) { $neon = ($line -replace '^DATABASE_URL=', '').Trim().Trim('"') }
-  } finally {
-    # The pulled file holds every production secret, so it goes straight away.
-    Remove-Item -Force $pulled -ErrorAction SilentlyContinue
-  }
-  if ($neon -notmatch 'neon\.tech') {
-    $neon = Read-Secret "Paste Neon's connection string (Vercel > Settings > Environment Variables > DATABASE_URL; it stays hidden)"
-    if ($neon -notmatch '^postgres') { throw "That doesn't look like a database address. It starts with postgres://" }
-  }
-  Save-Secret $neonFile $neon
-}
-
-# ---- Voting should be paused for the real switch ----
-$neonNow = Invoke-Helper 'scripts\check-db.mjs' @{ MBGN_CHECK_URL = $neon }
-if ($neonNow.error) { throw "Couldn't read Neon: $($neonNow.error)" }
-if ($neonNow.votingOpen -and -not $Test) {
-  Write-Host ''
-  Write-Host 'Voting is open. Votes paid during the switch would be left behind on Neon.' -ForegroundColor Yellow
-  Write-Host 'Pause voting in admin now, then come back here.'
-  if (-not (Confirm-Step 'Voting is paused (or you accept the risk)?')) { exit 1 }
-}
-
-# ---- 1. Copy ----
 Write-Host ''
-Write-Host 'Copying Neon into the VPS database. Neon is only read.'
-$copy = Invoke-Helper 'scripts\copy-db.mjs' @{ MBGN_FROM_URL = $neon; MBGN_TO_URL = $url; MBGN_FORCE = $(if ($Force) { '1' } else { '' }) }
-if ($copy.error) {
-  Write-Host "  Not copied: $($copy.error)" -ForegroundColor Red
-  Write-Host '  If it could not connect: check SSL is on and "Make it publicly available" is on in Coolify, and the database was restarted.'
-  Write-Host "  If you changed the database's password since, delete $vpsFile and run this again."
+Write-Host 'Your live site will start on an EMPTY database on the VPS.' -ForegroundColor Yellow
+Write-Host '  Contestants, votes, payments and contest settings start from zero.'
+Write-Host '  Your admin login stays the same.'
+if (-not (Confirm-Step 'Go ahead?')) { exit 1 }
+
+# ---- 1. Get the VPS database ready ----
+Write-Host ''
+Write-Host 'Getting the VPS database ready...'
+$ready = Invoke-Helper 'scripts\reset-db.mjs' @{ MBGN_TO_URL = $url; MBGN_CONFIRM = 'yes' }
+if ($ready.error) {
+  Write-Host "Failed: $($ready.error)" -ForegroundColor Red
+  Write-Host 'Check in Coolify: SSL on, public access on, database restarted.'
+  if (-not $saveVps) {
+    # The saved address may be out of date (a new password), so it's asked for again next time.
+    Remove-Item $vpsFile -ErrorAction SilentlyContinue
+    Write-Host 'Next time, paste the VPS address again.'
+  }
   exit 1
 }
-if (-not $copy.encrypted) { throw 'The connection to the VPS database was not encrypted. In Coolify, turn on SSL for the database.' }
-Write-Host ("  Copied in {0}s, encrypted: {1} contestants, {2} accounts, {3} votes, {4} payments." -f `
-  $copy.seconds, $copy.contestants, $copy.accounts, $copy.votes, $copy.payments) -ForegroundColor Green
+if (-not $ready.encrypted) { throw 'Not encrypted. Turn on SSL for the database in Coolify.' }
+if ($saveVps) { Save-Secret $vpsFile $url }
+Write-Host "Ready: $($ready.tables) tables, empty, encrypted." -ForegroundColor Green
 
-if ($Test) {
-  Write-Host ''
-  Write-Host 'Test done. The live site still uses Neon. When ready, run this again without -Test.'
-  exit 0
-}
-
-# ---- 2. Switch ----
+# ---- 2. Switch the live site ----
 Write-Host ''
-if (-not (Confirm-Step 'Switch the live site to the VPS database now?')) { exit 1 }
-Write-Host 'Saving DATABASE_URL on Vercel...'
+Write-Host 'Saving the new address on Vercel...'
 Set-VercelEnv 'DATABASE_URL' $url
+Save-Secret $switchedFile (Get-Date -Format 'yyyy-MM-dd HH:mm')
 # An earlier certificate setting would make the site insist on it, so it goes.
 Set-VercelEnv 'DATABASE_CA_CERT' ''
-Write-Host '  Saved' -ForegroundColor Green
 Set-Region 'iad1'
-Publish-Site
-
-# ---- 3. Did anything reach Neon during the switch? ----
-$after = Invoke-Helper 'scripts\check-db.mjs' @{ MBGN_CHECK_URL = $neon }
-$missed = @()
-foreach ($k in 'contestants', 'accounts', 'votes', 'payments') {
-  if (-not $after.error -and $after.$k -gt $copy.$k) { $missed += "$($after.$k - $copy.$k) $k" }
-}
+$up = Publish-Site
 Write-Host ''
-if ($missed.Count) {
-  Write-Host "These reached Neon after the copy and are not on the VPS: $($missed -join ', '). Tell your developer." -ForegroundColor Yellow
+if ($up) {
+  Write-Host 'Done! Your live site now uses the VPS database.' -ForegroundColor Green
+  Write-Host '  Log in to admin with your usual login, and set up the contest (prices, dates, WhatsApp groups).'
 } else {
-  Write-Host 'Nothing reached Neon after the copy. Nothing was missed.' -ForegroundColor Green
+  Write-Host "The site isn't answering yet. Open $site in a minute; if it still fails, tell your developer." -ForegroundColor Red
 }
-
-Write-Host ''
-Write-Host 'Done. Now:' -ForegroundColor Green
-Write-Host '  1. Resume voting in admin.'
-Write-Host '  2. Commit vercel.json (now iad1), so later deploys keep the site next to the VPS.'
-Write-Host '  Keep Neon for a week before deleting anything there. To go back: run this with -Back.'

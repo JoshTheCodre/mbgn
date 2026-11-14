@@ -39,46 +39,38 @@ Any PostgreSQL version Coolify offers is fine. Recommended too:
   Coolify's S3 Storages (endpoint `https://<account id>.r2.cloudflarestorage.com`). Neon kept
   backups for you; here, this is what does it.
 
-### 2. Test (safe at any time)
+### 2. Switch the site to it
 
+The site hasn't launched, so it starts on the VPS database empty: nothing comes over from Neon.
 From the project folder:
 
 ```bash
-powershell -ExecutionPolicy Bypass -File scripts\switch-db-to-vps.ps1 -Test
+powershell -ExecutionPolicy Bypass -File scripts\switch-db-to-vps.ps1
 ```
 
 The first time, it asks for Coolify's **Postgres URL (public)** (shown on the database page once
-it's publicly available) and, if it can't read it from Vercel, Neon's connection string (Vercel >
-Settings > Environment Variables > `DATABASE_URL`). Both are kept in `.secrets\`, which never
-leaves your PC. Then it copies everything from Neon into a database called `mbgn` on the VPS, made
-by the site's own code, and checks every table arrived. Neon is only read, and the live site keeps
-using Neon.
+it's publicly available) and keeps it in `.secrets\`, which never leaves your PC. It asks once more
+before doing anything, then:
 
-### 3. Switch (a quiet hour, about 10 minutes)
+1. empties the VPS database (a database called `mbgn`, made if needed) and builds the site's
+   tables in it with the site's own code;
+2. saves `DATABASE_URL` on Vercel (encrypted: `sslmode=no-verify`), moves the site's server code
+   to Washington DC, deploys, and checks the live site.
 
-1. **Pause voting** in admin.
-2. **Run the script without -Test:**
+Then log in to admin with the usual login (it comes from `ADMIN_EMAIL` and `ADMIN_PASSWORD` on
+Vercel) and set up the contest: prices, dates, WhatsApp groups. Commit `vercel.json` (it now says
+`iad1`), so later deploys keep the site next to the VPS.
 
-   ```bash
-   powershell -ExecutionPolicy Bypass -File scripts\switch-db-to-vps.ps1
-   ```
+Once switched, running the script again does nothing, so live data can't be wiped by accident.
 
-   It copies again (so the VPS has everything up to now), asks before switching, saves
-   `DATABASE_URL` on Vercel (encrypted: `sslmode=no-verify`), moves the site to Washington DC,
-   deploys, checks the live site, and checks nothing reached Neon during the switch. If it says the
-   VPS has newer data from your testing, add `-Force`.
-3. **Resume voting** in admin.
-4. **Commit** `vercel.json` (it now says `iad1`), so later deploys keep the site next to the VPS.
-
-If the database password changes later, delete `.secrets\vps-database-url.txt` so the script asks
-for the new address.
-
-Keep Neon for a week. To go back to it at any point (anything that came in since the switch stays
-only on the VPS):
+**After changing the database's password** in Coolify (save, restart), give the site the new
+address. Nothing is emptied:
 
 ```bash
-powershell -ExecutionPolicy Bypass -File scripts\switch-db-to-vps.ps1 -Back
+powershell -ExecutionPolicy Bypass -File scripts\switch-db-to-vps.ps1 -NewAddress
 ```
+
+It asks for the new **Postgres URL (public)**, checks it works, saves it on Vercel and deploys.
 
 ## WhatsApp, through Evolution API
 
