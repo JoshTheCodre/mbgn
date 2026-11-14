@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { attachDatabasePool } from '@vercel/functions';
 import pg from 'pg';
 
 // Counts and sums come back from Postgres as text unless told otherwise.
@@ -357,9 +358,29 @@ INSERT INTO packages (votes, price)
   WHERE NOT EXISTS (SELECT 1 FROM packages);
 `;
 
-function pgDriver(connectionString) {
-  const pool = new pg.Pool({ connectionString, max: 5, idleTimeoutMillis: 10000, connectionTimeoutMillis: 15000 });
+export function pgPoolOptions(connectionString, { databaseCa = null, dbPoolMax = 5 } = {}) {
+  const options = { connectionString, max: dbPoolMax, idleTimeoutMillis: 10000, connectionTimeoutMillis: 15000, keepAlive: true };
+  if (databaseCa) {
+    // SSL settings written in the address would replace these, so they are taken out of it.
+    const url = new URL(connectionString);
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(ssl|uselibpqcompat$)/i.test(key)) url.searchParams.delete(key);
+    }
+    options.connectionString = url.toString();
+    // Encrypted, and only a server whose certificate this authority signed is accepted. The name
+    // on the certificate isn't checked: a self-run database's certificate names its internal host,
+    // not the address used from outside, and this authority signs only this server's certificates.
+    options.ssl = { ca: databaseCa, rejectUnauthorized: true, checkServerIdentity: () => undefined };
+  }
+  return options;
+}
+
+function pgDriver(connectionString, settings) {
+  const pool = new pg.Pool(pgPoolOptions(connectionString, settings));
   pool.on('error', (err) => console.error('Database connection error:', err.message));
+  // On Vercel, idle connections are closed before a function is paused, instead of being left open
+  // on the database until it notices. That matters for a database with a fixed connection limit.
+  if (process.env.VERCEL) attachDatabasePool(pool);
   const shape = (result) => ({ rows: result.rows, changes: result.rowCount ?? 0 });
 
   return {
@@ -397,7 +418,7 @@ const toPostgres = (sql) => {
 
 // Tests pass their own driver, so they can run against an in-memory Postgres.
 export async function openDb(config) {
-  const driver = config.dbDriver ?? pgDriver(config.databaseUrl);
+  const driver = config.dbDriver ?? pgDriver(config.databaseUrl, config);
   const current = new AsyncLocalStorage();
   const run = (sql, params) => (current.getStore() ?? driver).query(toPostgres(sql), params);
   // Writers take turns anyway, so they wait here rather than each holding a

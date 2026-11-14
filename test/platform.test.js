@@ -9,7 +9,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { createApp, createContext } from '../server/app.js';
 import { formatCode } from '../server/competition.js';
 import { loadConfig } from '../server/config.js';
-import { setSetting } from '../server/db.js';
+import { pgPoolOptions, setSetting } from '../server/db.js';
 import { createFollowerChecker, findFollowers } from '../server/followers.js';
 import { socialLink } from '../server/routes/public.js';
 import { bulkPrice, upsellOffers } from '../shared/pricing.js';
@@ -1024,6 +1024,36 @@ describe('production safety', () => {
     assert.throws(() => loadConfig({ nodeEnv: 'production', appSecret: undefined, paystack }), /APP_SECRET/);
     assert.throws(() => loadConfig({ nodeEnv: 'production', appSecret: 'x', paystack }), /PAYMENT_EMAIL/);
     assert.throws(() => loadConfig({ nodeEnv: 'test', databaseUrl: null }), /DATABASE_URL/);
+  });
+
+  test('a database with its own certificate authority is reached encrypted and checked; Neon as before', () => {
+    const neon = 'postgres://u:p@ep-x.eu-central-1.aws.neon.tech/neondb?sslmode=require';
+    assert.deepEqual(Object.keys(pgPoolOptions(neon)).sort(), ['connectionString', 'connectionTimeoutMillis', 'idleTimeoutMillis', 'keepAlive', 'max']);
+    assert.equal(pgPoolOptions(neon).connectionString, neon);
+
+    const vps = 'postgres://postgres:p@203.0.113.10:54321/mbgn?sslmode=require&sslrootcert=ca.crt&application_name=mbgn';
+    const options = pgPoolOptions(vps, { databaseCa: 'CERT', dbPoolMax: 3 });
+    // SSL settings in the address would replace the checked connection, so they're taken out.
+    assert.equal(options.connectionString, 'postgres://postgres:p@203.0.113.10:54321/mbgn?application_name=mbgn');
+    assert.equal(options.ssl.ca, 'CERT');
+    assert.equal(options.ssl.rejectUnauthorized, true);
+    assert.equal(options.max, 3);
+
+    const pem = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----';
+    const base = { nodeEnv: 'test', databaseUrl: vps };
+    assert.equal(loadConfig({ ...base, databaseCa: pem }).databaseCa, pem);
+    assert.equal(loadConfig(base).databaseCa, null);
+    assert.equal(loadConfig(base).dbPoolMax, 5);
+    assert.throws(() => loadConfig({ ...base, databaseCa: 'not a certificate' }), /DATABASE_CA_CERT/);
+    assert.throws(() => loadConfig({ ...base, dbPoolMax: 0 }), /DB_POOL_MAX/);
+    // Pasted into Vercel on one line, with its line breaks written as \n.
+    const saved = process.env.DATABASE_CA_CERT;
+    try {
+      process.env.DATABASE_CA_CERT = pem.replace(/\n/g, '\\n');
+      assert.equal(loadConfig(base).databaseCa, pem);
+    } finally {
+      if (saved === undefined) delete process.env.DATABASE_CA_CERT; else process.env.DATABASE_CA_CERT = saved;
+    }
   });
 });
 

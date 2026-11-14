@@ -35,8 +35,18 @@ export function loadConfig(overrides = {}) {
   const paymentEmail = overrides.paymentEmail ?? env.PAYMENT_EMAIL?.trim();
   if (production && !paymentEmail) throw new Error('PAYMENT_EMAIL is required in production: Paystack needs a customer email on every payment.');
 
-  const databaseUrl = overrides.databaseUrl ?? env.DATABASE_URL;
+  const databaseUrl = overrides.databaseUrl ?? (env.DATABASE_URL?.trim() || undefined);
   if (!databaseUrl && !overrides.dbDriver) throw new Error('DATABASE_URL is required. See the README.');
+  // For a database with its own certificate authority, like the one Coolify runs on the VPS: that
+  // authority's certificate, so the connection is encrypted and the server checked. Neon needs none.
+  // Accepts the certificate as is, or with its line breaks written as \n.
+  const databaseCa = overrides.databaseCa ?? (env.DATABASE_CA_CERT?.replace(/\\n/g, '\n').trim() || null);
+  if (databaseCa && !databaseCa.includes('-----BEGIN CERTIFICATE-----')) {
+    throw new Error('DATABASE_CA_CERT must be a certificate, starting with -----BEGIN CERTIFICATE-----.');
+  }
+  // Connections each server keeps to the database. Every Vercel instance has its own set.
+  const dbPoolMax = Number(overrides.dbPoolMax ?? env.DB_POOL_MAX ?? 5);
+  if (!Number.isInteger(dbPoolMax) || dbPoolMax < 1) throw new Error('DB_POOL_MAX must be a whole number of 1 or more.');
 
   const r2 = overrides.r2 ?? (env.R2_ACCOUNT_ID
     ? {
@@ -73,6 +83,8 @@ export function loadConfig(overrides = {}) {
     publicUrl: (overrides.publicUrl ?? env.PUBLIC_URL ?? vercelUrl ?? `http://localhost:${env.PORT ?? 3000}`).replace(/\/$/, ''),
     dataDir,
     databaseUrl,
+    databaseCa,
+    dbPoolMax,
     dbDriver: overrides.dbDriver ?? null,
     r2,
     uploadDir: overrides.uploadDir ?? path.join(dataDir, 'uploads'),

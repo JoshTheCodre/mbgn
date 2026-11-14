@@ -27,7 +27,25 @@ does not officially support this, and it can ban numbers that send a lot of mess
 
 For no ban risk at all, WhatsApp's official Cloud API is the route. Evolution API can use it too.
 
-## Setup
+## Setup: the quick way (Ubuntu or Debian VPS)
+
+The token is already in `.secrets/whatsapp-sender-token.txt` (kept out of git). From the project
+folder on your PC, signed in to Vercel, run:
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts\whatsapp-vps.ps1 -Server root@YOUR_VPS_IP
+```
+
+It saves the token on Vercel, deploys the site, copies this folder to the VPS, installs Node.js
+and pm2 there, starts the sender, and shows the QR code to scan with the contest phone. When the
+VPS asks, give its password (twice). Run it again any time to update the sender; the WhatsApp
+login on the VPS is kept. Add `-PairingNumber 2348012345678` to link with a code instead of a QR.
+With Evolution API running in Coolify, add `-EvolutionUrl https://...` instead: the phone is then
+linked in Evolution's manager (see [scripts/vps/README.md](../scripts/vps/README.md)).
+
+Then do step 6 below (catch up). The steps below are the same thing by hand.
+
+## Setup by hand
 
 1. **Make a token** (a long random secret):
 

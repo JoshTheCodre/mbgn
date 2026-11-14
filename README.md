@@ -53,6 +53,12 @@ settings, a live `PAYSTACK_SECRET_KEY` and `PAYMENT_EMAIL`. Without demo mode, t
 without them, or with a Paystack test key. `APP_SECRET` must stay the same on every server copy, because
 the network-based fraud checks compare values made with it.
 
+The database and WhatsApp can run on our VPS under Coolify instead: see
+[scripts/vps/README.md](scripts/vps/README.md). For a database with its own certificate authority,
+like Coolify's, `DATABASE_CA_CERT` holds that authority's certificate (line breaks may be written
+as `\n`), and the site then only connects encrypted to a server that authority signed.
+`DB_POOL_MAX` (default 5) is how many connections each server keeps.
+
 ## Going live
 
 The site ran as a demo until November 2026. To switch it to real money:
