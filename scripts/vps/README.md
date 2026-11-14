@@ -9,82 +9,69 @@ The two parts are independent: do WhatsApp first, the database first, or only on
 
 ## The database
 
+Everything runs from your PC with one script. Nothing needs doing on the VPS itself.
+
 ### 1. Set it up in Coolify (once)
 
 In Coolify, open the PostgreSQL database:
 
-1. **Version 18.** Under General, Image must be `postgres:18-alpine` (Neon runs 18, and the copy
-   needs the same or newer). While it holds no MBGN data, it's fine to delete it and create a new
-   one with that image. If version 18 won't start, change the Persistent Storage path from
-   `/var/lib/postgresql/data` to `/var/lib/postgresql`.
-2. **A new password.** The first one was shared in a chat, so change it before the database is
-   reachable from the internet. Save, then restart the database.
-3. **SSL on.** The site connects encrypted, so passwords, phone numbers and payments never cross
+1. **A new password.** The first one was shared in a chat, so change it before the database is
+   reachable from the internet.
+2. **SSL on.** The site connects encrypted, so passwords, phone numbers and payments never cross
    the internet readable.
-4. **Make it publicly available**, on a public port other than 5432 (for example 54321). Vercel's
+3. **Make it publicly available**, on a public port other than 5432 (for example 54321). Vercel's
    servers have no fixed address, so the database can't be limited to them; the password and
    SSL protect it.
-5. **Custom PostgreSQL configuration:**
+4. **Save, then restart** the database.
 
-   ```
-   max_connections = 200
-   idle_session_timeout = '10min'
-   ```
+Any PostgreSQL version Coolify offers is fine. Recommended too:
 
-   Every Vercel server keeps up to 5 connections, and the second line clears any left behind by
-   servers Vercel froze.
-6. **Backups.** Under Backups, add a daily schedule, saved to S3 storage: add your R2 bucket in
-   Coolify's S3 Storages (endpoint `https://<account id>.r2.cloudflarestorage.com`). Neon kept
-   backups for you; here, this is what does it.
+- **Custom PostgreSQL configuration** (then restart):
 
-### 2. Copy the data (a test run is safe at any time)
+  ```
+  max_connections = 200
+  idle_session_timeout = '10min'
+  ```
 
-From the project folder on your PC:
+  Every Vercel server keeps up to 5 connections, and the second line clears any left behind by
+  servers Vercel froze.
+- **Backups.** Under Backups, add a daily schedule, saved to S3 storage: add your R2 bucket in
+  Coolify's S3 Storages (endpoint `https://<account id>.r2.cloudflarestorage.com`). Neon kept
+  backups for you; here, this is what does it.
 
-```bash
-scp scripts/vps/copy-from-neon.sh root@162.35.44.225:
-```
+### 2. Test (safe at any time)
 
-```bash
-ssh -t root@162.35.44.225 "bash copy-from-neon.sh"
-```
-
-It asks for Neon's connection string (on Vercel: Settings > Environment Variables > `DATABASE_URL`)
-and copies everything into a database called `mbgn` on the VPS. Neon is only read. The site keeps
-using Neon until step 3.
-
-Then check the site will be able to use it. This changes nothing:
+From the project folder:
 
 ```bash
-powershell -ExecutionPolicy Bypass -File scripts\switch-db-to-vps.ps1 -CheckOnly
+powershell -ExecutionPolicy Bypass -File scripts\switch-db-to-vps.ps1 -Test
 ```
 
-It asks for Coolify's **Postgres URL (public)** and shows what it found.
+The first time, it asks for Coolify's **Postgres URL (public)** (shown on the database page once
+it's publicly available) and, if it can't read it from Vercel, Neon's connection string (Vercel >
+Settings > Environment Variables > `DATABASE_URL`). Both are kept in `.secrets\`, which never
+leaves your PC. Then it copies everything from Neon into a database called `mbgn` on the VPS, made
+by the site's own code, and checks every table arrived. Neon is only read, and the live site keeps
+using Neon.
 
 ### 3. Switch (a quiet hour, about 10 minutes)
 
-1. **Pause voting** in admin. (During registration there's no voting to pause. Sign-ups in the
-   minutes between the copy and the switch stay on Neon, and step 5 lists them.)
-2. **Copy again**, so the VPS has everything up to now:
-   `ssh -t root@162.35.44.225 "bash copy-from-neon.sh"`
-   (add `FORCE=1` before `bash` if it says the VPS has newer data from your testing).
-3. **Switch the site:**
+1. **Pause voting** in admin.
+2. **Run the script without -Test:**
 
    ```bash
    powershell -ExecutionPolicy Bypass -File scripts\switch-db-to-vps.ps1
    ```
 
-   It asks for Coolify's **Postgres URL (public)**, checks the connection first, keeps Neon's
-   address in `.secrets\`, saves `DATABASE_URL` on Vercel (encrypted: `sslmode=no-verify`), moves
-   the site to Washington DC, deploys, and checks the live site.
+   It copies again (so the VPS has everything up to now), asks before switching, saves
+   `DATABASE_URL` on Vercel (encrypted: `sslmode=no-verify`), moves the site to Washington DC,
+   deploys, checks the live site, and checks nothing reached Neon during the switch. If it says the
+   VPS has newer data from your testing, add `-Force`.
+3. **Resume voting** in admin.
+4. **Commit** `vercel.json` (it now says `iad1`), so later deploys keep the site next to the VPS.
 
-   For a stricter connection that also checks the server's certificate, add
-   `-VerifyCertificate -Server root@162.35.44.225`: it fetches Coolify's certificate authority over
-   ssh and saves it on Vercel as `DATABASE_CA_CERT`.
-4. **Resume voting** in admin.
-5. **Check nothing was left behind on Neon:**
-   `ssh -t root@162.35.44.225 "bash copy-from-neon.sh check"`
-6. **Commit** `vercel.json` (it now says `iad1`), so later deploys keep the site next to the VPS.
+If the database password changes later, delete `.secrets\vps-database-url.txt` so the script asks
+for the new address.
 
 Keep Neon for a week. To go back to it at any point (anything that came in since the switch stays
 only on the VPS):

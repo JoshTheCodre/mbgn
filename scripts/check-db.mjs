@@ -32,7 +32,9 @@ try {
       (SELECT count(*)::int FROM contestants) AS contestants,
       (SELECT count(*)::int FROM users) AS accounts,
       (SELECT count(*)::int FROM votes) AS votes,
-      (SELECT count(*)::int FROM payments) AS payments`);
+      (SELECT count(*)::int FROM payments) AS payments,
+      coalesce((SELECT value FROM settings WHERE key = 'competition_phase'), '') = 'voting'
+        AND coalesce((SELECT value FROM settings WHERE key = 'voting_status'), '') = 'open' AS "votingOpen"`);
     Object.assign(info, counts);
   }
   console.log(JSON.stringify({ ...info, connectMs, queryMs }));
