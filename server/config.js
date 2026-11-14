@@ -84,6 +84,8 @@ export function loadConfig(overrides = {}) {
     // A reserved domain that Paystack accepts, for testing only.
     paymentEmail: paymentEmail ?? 'votes@example.com',
     smtpUrl: overrides.smtpUrl ?? env.SMTP_URL ?? null,
+    // Shared with whatsapp-sender/. Until it is set, no WhatsApp messages are written down.
+    whatsappSenderToken: overrides.whatsappSenderToken ?? (env.WHATSAPP_SENDER_TOKEN?.trim() || null),
     mailFrom: env.MAIL_FROM ?? 'MBGN <no-reply@mbgn.example>',
     adminEmail: overrides.adminEmail ?? env.ADMIN_EMAIL ?? null,
     adminPassword: overrides.adminPassword ?? env.ADMIN_PASSWORD ?? null,

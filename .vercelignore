@@ -11,3 +11,5 @@ node_modules/
 .next/
 .claude/
 .neon
+# The WhatsApp sender runs on its own machine, not on Vercel.
+whatsapp-sender/

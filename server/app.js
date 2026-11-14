@@ -16,6 +16,7 @@ import { adminRouter } from './routes/admin.js';
 import { contestantRouter, votingRouter } from './routes/member.js';
 import { photoHandler, publicRouter } from './routes/public.js';
 import { createActivityAggregator } from './votes.js';
+import { whatsappSenderRouter } from './whatsapp.js';
 
 export async function createContext(config) {
   const db = await openDb(config);
@@ -112,6 +113,7 @@ export function createApp(ctx) {
   app.use('/api', sameOriginWrites(ctx), express.json({ limit: '100kb' }), attachUser(ctx));
   app.use('/api', router);
   app.use('/api/admin', adminRouter(ctx));
+  app.use('/api/whatsapp', whatsappSenderRouter(ctx));
   app.use('/api', votingRouter(ctx));
   app.use('/api/me', contestantRouter(ctx));
   app.use('/api', (_req, _res, next) => next(new HttpError(404, 'Not found.')));

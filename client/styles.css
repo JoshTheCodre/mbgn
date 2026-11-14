@@ -1004,6 +1004,16 @@ select option { background: var(--surface); }
 .transfer-waiting .spinner { margin-bottom: 6px; }
 .transfer-waiting p { margin: 0; overflow-wrap: anywhere; }
 
+/* Admin: WhatsApp messages */
+.wa-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+.wa-counts > div { display: flex; flex-direction: column-reverse; gap: 2px; min-width: 0; padding: 10px 12px; background: var(--bg); border-radius: var(--radius-s); }
+.wa-counts dt { color: var(--muted); font-size: .78rem; }
+.wa-counts dd { margin: 0; font-size: 1.4rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.wa-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.wa-failures { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.wa-failures li { display: grid; gap: 2px; padding: 8px 12px; background: var(--bg); border-radius: var(--radius-s); overflow-wrap: anywhere; }
+.wa-failures small { color: var(--bad-text); }
+
 .show-more { display: grid; justify-items: center; gap: 6px; margin: 18px 0 8px; }
 .show-more .small-note { margin: 0; }
 .in-person { margin-bottom: 16px; }

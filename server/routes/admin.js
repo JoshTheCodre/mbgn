@@ -13,6 +13,9 @@ import { closeRound, roundStanding, roundView } from '../rounds.js';
 import { changeStage, startVotingIfDue, tellContestantsVotingOpened } from '../stages.js';
 import { recordInPersonSale } from '../payments.js';
 import { voidVote } from '../votes.js';
+import {
+  queueAccepted, queueMissingAccepted, retryFailed, whatsappOverview,
+} from '../whatsapp.js';
 import { normalizeCode, socialLink, themeSettings } from './public.js';
 import { THEME_IDS } from '../../shared/themes.js';
 
@@ -191,6 +194,7 @@ export function adminRouter(ctx) {
       return await getContestant(c.id);
     });
     await sendApproval(updated);
+    await queueAccepted(ctx, updated);
     changed();
     res.json(contestantView(updated));
   });
@@ -693,6 +697,23 @@ export function adminRouter(ctx) {
   });
 
   // ---- Announcements and public notifications ----
+  // ---- WhatsApp messages (sent by whatsapp-sender/) ----
+  router.get('/whatsapp', async (_req, res) => {
+    res.json(await whatsappOverview(ctx));
+  });
+
+  router.post('/whatsapp/send-accepted', async (req, res) => {
+    const queued = await queueMissingAccepted(ctx);
+    await audit(ctx, req.user.id, 'whatsapp.accepted', `Queued ${queued} acceptance messages`);
+    res.json({ queued });
+  });
+
+  router.post('/whatsapp/retry-failed', async (req, res) => {
+    const retried = await retryFailed(ctx);
+    await audit(ctx, req.user.id, 'whatsapp.retry', `Retrying ${retried} messages`);
+    res.json({ retried });
+  });
+
   router.get('/announcements', async (_req, res) => {
     res.json(await db.prepare('SELECT * FROM announcements ORDER BY id DESC LIMIT 100').all());
   });

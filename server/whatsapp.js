@@ -1,0 +1,198 @@
+import crypto from 'node:crypto';
+import { HttpError, asyncRouter, rateLimit } from './auth.js';
+import { getSetting, nowIso, setSetting } from './db.js';
+import { groupById } from './groups.js';
+
+// WhatsApp messages to contestants. This site only writes them down. A separate sender
+// (whatsapp-sender/, using Baileys or Evolution API) runs on an always-on machine, collects them
+// over a link secured by WHATSAPP_SENDER_TOKEN and sends them from the contest's own number.
+// Nothing is written down until that token is set, so switching it on later doesn't flood anyone
+// with old news; "Message accepted contestants" in admin catches up the ones accepted before.
+
+const MAX_ATTEMPTS = 3;
+const STALE_MS = 10 * 60000;
+
+// As WhatsApp wants it: country code and digits. 0803..., 803... and +234803... are one number.
+export function waNumber(raw) {
+  const digits = String(raw ?? '').replace(/\D/g, '');
+  if (digits.length === 13 && digits.startsWith('234')) return digits;
+  if (digits.length === 11 && digits.startsWith('0')) return `234${digits.slice(1)}`;
+  if (digits.length === 10 && !digits.startsWith('0')) return `234${digits}`;
+  // Numbers from elsewhere, already with their country code.
+  if (digits.length >= 11 && digits.length <= 15 && !digits.startsWith('0')) return digits;
+  return null;
+}
+
+const enabled = (ctx) => Boolean(ctx.config.whatsappSenderToken);
+
+function lagosDate(iso) {
+  return new Date(iso).toLocaleDateString('en-NG', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Africa/Lagos' });
+}
+
+async function votingNote(db) {
+  if (await getSetting(db, 'competition_phase') === 'voting') {
+    return 'Voting is open now! Send your link to your friends, family and followers and ask them to vote for you. They can also search your code on the site.';
+  }
+  const endsAt = await getSetting(db, 'registration_ends_at');
+  const when = await getSetting(db, 'auto_start_voting') === '1' && endsAt && new Date(endsAt) > new Date()
+    ? `on ${lagosDate(endsAt)}` : 'soon';
+  return `Voting opens ${when}, and we'll message you when it does. Then send your link to your friends, family and followers and ask them to vote for you. They can also search your code on the site.`;
+}
+
+export async function acceptedText(ctx, c) {
+  const { db, config } = ctx;
+  const group = await groupById(db, c.whatsapp_group_id);
+  return [
+    `Congratulations ${c.stage_name}! 🎉`,
+    'You have been accepted into Most Beautiful Girl Online Nigeria.',
+    `Your contestant code: *${c.code}*\nYour voting link: ${config.publicUrl}/c/${c.code}`,
+    ...(group ? [`Join the contestants' WhatsApp group for updates:\n${group.invite_url}`] : []),
+    await votingNote(db),
+    `Your dashboard: ${config.publicUrl}/dashboard`,
+  ].join('\n\n');
+}
+
+export function votingOpenText(ctx, c) {
+  const link = `${ctx.config.publicUrl}/c/${c.code}`;
+  return [
+    `Voting is now open, ${c.stage_name}! 🗳️`,
+    'Send this to everyone you know, and post it on your status and socials:',
+    `"Please vote for me, ${c.stage_name}, in Most Beautiful Girl Online Nigeria! ${link} (my code is ${c.code})"`,
+    'The more people share your link, the higher you climb.',
+    `Your dashboard: ${ctx.config.publicUrl}/dashboard`,
+  ].join('\n\n');
+}
+
+// One of each kind per contestant, however many times something asks.
+async function queue(db, rows) {
+  for (let i = 0; i < rows.length; i += 500) {
+    const chunk = rows.slice(i, i + 500);
+    const at = nowIso();
+    await db.prepare(`INSERT INTO whatsapp_outbox (contestant_id, kind, to_number, body, created_at)
+      VALUES ${chunk.map(() => '(?, ?, ?, ?, ?)').join(', ')} ON CONFLICT (contestant_id, kind) DO NOTHING`)
+      .run(...chunk.flatMap((r) => [r.contestantId, r.kind, r.to, r.body, at]));
+  }
+}
+
+async function acceptedRows(ctx, contestants) {
+  const rows = [];
+  for (const c of contestants) {
+    const to = waNumber(c.whatsapp);
+    if (to && c.code) rows.push({ contestantId: c.id, kind: 'accepted', to, body: await acceptedText(ctx, c) });
+  }
+  return rows;
+}
+
+export async function queueAccepted(ctx, contestant) {
+  if (!enabled(ctx)) return 0;
+  const rows = await acceptedRows(ctx, [contestant]);
+  await queue(ctx.db, rows);
+  return rows.length;
+}
+
+// Approved contestants who have not had their acceptance message: everyone accepted before
+// WhatsApp was set up.
+export async function queueMissingAccepted(ctx) {
+  if (!enabled(ctx)) throw new HttpError(409, 'WhatsApp messages are not set up yet.');
+  const missing = await ctx.db.prepare(`SELECT * FROM contestants c WHERE status = 'approved'
+    AND NOT EXISTS (SELECT 1 FROM whatsapp_outbox o WHERE o.contestant_id = c.id AND o.kind = 'accepted')`).all();
+  const rows = await acceptedRows(ctx, missing);
+  await queue(ctx.db, rows);
+  return rows.length;
+}
+
+export async function queueVotingOpen(ctx) {
+  if (!enabled(ctx)) return 0;
+  const recipients = await ctx.db.prepare("SELECT id, stage_name, code, whatsapp FROM contestants WHERE status = 'approved'").all();
+  const rows = recipients.map((c) => ({ contestantId: c.id, kind: 'voting_open', to: waNumber(c.whatsapp), body: votingOpenText(ctx, c) }))
+    .filter((r) => r.to);
+  await queue(ctx.db, rows);
+  return rows.length;
+}
+
+// ---- What the admin panel shows ----
+
+export async function whatsappOverview(ctx) {
+  const { db } = ctx;
+  const counts = await db.prepare(`SELECT
+    COUNT(*) FILTER (WHERE status IN ('queued', 'sending')) AS waiting,
+    COUNT(*) FILTER (WHERE status = 'sent') AS sent,
+    COUNT(*) FILTER (WHERE status = 'failed') AS failed FROM whatsapp_outbox`).get();
+  const failures = await db.prepare(`SELECT o.id, o.kind, o.to_number, o.error, o.created_at, c.code, c.stage_name
+    FROM whatsapp_outbox o JOIN contestants c ON c.id = o.contestant_id
+    WHERE o.status = 'failed' ORDER BY o.id DESC LIMIT 20`).all();
+  const missing = (await db.prepare(`SELECT COUNT(*) AS n FROM contestants c WHERE status = 'approved'
+    AND NOT EXISTS (SELECT 1 FROM whatsapp_outbox o WHERE o.contestant_id = c.id AND o.kind = 'accepted')`).get()).n;
+  let sender = null;
+  try { sender = JSON.parse(await getSetting(db, 'whatsapp_sender') || 'null'); } catch { /* shown as never seen */ }
+  return {
+    configured: enabled(ctx),
+    sender,
+    waiting: Number(counts.waiting),
+    sent: Number(counts.sent),
+    failed: Number(counts.failed),
+    missingAccepted: Number(missing),
+    failures: failures.map((f) => ({
+      id: f.id, kind: f.kind, to: f.to_number, error: f.error, createdAt: f.created_at, contestant: { code: f.code, name: f.stage_name },
+    })),
+  };
+}
+
+export async function retryFailed(ctx) {
+  const { changes } = await ctx.db.prepare("UPDATE whatsapp_outbox SET status = 'queued', attempts = 0, error = NULL WHERE status = 'failed'").run();
+  return changes;
+}
+
+// ---- The sender's side ----
+
+function tokenMatches(expected, header) {
+  const given = /^Bearer (.+)$/.exec(header ?? '')?.[1] ?? '';
+  const digest = (value) => crypto.createHash('sha256').update(value).digest();
+  return crypto.timingSafeEqual(digest(expected), digest(given));
+}
+
+export function whatsappSenderRouter(ctx) {
+  const { db, config } = ctx;
+  const router = asyncRouter();
+  router.use(rateLimit({ windowMs: 60000, max: 600 * config.rateLimitScale }));
+  router.use((req, _res, next) => {
+    // Switched off until the token is set, so the routes don't exist.
+    if (!config.whatsappSenderToken) return next(new HttpError(404, 'Not found.'));
+    if (!tokenMatches(config.whatsappSenderToken, req.headers.authorization)) return next(new HttpError(401, 'Wrong sender token.'));
+    next();
+  });
+
+  // The sender says how it is (shown in admin) and, once connected, takes the next messages.
+  router.post('/poll', async (req, res) => {
+    const states = ['starting', 'waiting_for_scan', 'connected', 'reconnecting', 'logged_out'];
+    const state = states.includes(req.body?.state) ? req.body.state : 'starting';
+    const account = typeof req.body?.account === 'string' ? req.body.account.replace(/\D/g, '').slice(0, 15) : null;
+    await setSetting(db, 'whatsapp_sender', JSON.stringify({ state, account, transport: String(req.body?.transport ?? '').slice(0, 20), seenAt: nowIso() }));
+    if (state !== 'connected') return res.json({ messages: [] });
+
+    // A message a sender took and never reported on goes back in the queue.
+    await db.prepare("UPDATE whatsapp_outbox SET status = 'queued' WHERE status = 'sending' AND claimed_at < ?")
+      .run(new Date(Date.now() - STALE_MS).toISOString());
+    const limit = Math.min(Math.max(Number(req.body?.limit) || 1, 1), 20);
+    const messages = await db.prepare(`UPDATE whatsapp_outbox SET status = 'sending', claimed_at = ?, attempts = attempts + 1
+      WHERE id IN (SELECT id FROM whatsapp_outbox WHERE status = 'queued' ORDER BY id LIMIT ? FOR UPDATE SKIP LOCKED)
+      RETURNING id, to_number, body`).all(nowIso(), limit);
+    res.json({ messages: messages.map((m) => ({ id: m.id, to: m.to_number, text: m.body })) });
+  });
+
+  router.post('/messages/:id/result', async (req, res) => {
+    const id = Number(req.params.id);
+    const message = Number.isInteger(id) ? await db.prepare("SELECT * FROM whatsapp_outbox WHERE id = ? AND status = 'sending'").get(id) : null;
+    if (!message) throw new HttpError(404, 'That message is not waiting for a result.');
+    if (req.body?.sent === true) {
+      await db.prepare("UPDATE whatsapp_outbox SET status = 'sent', sent_at = ?, error = NULL WHERE id = ?").run(nowIso(), id);
+    } else {
+      const error = typeof req.body?.error === 'string' ? req.body.error.slice(0, 300) : 'Not sent.';
+      const giveUp = req.body?.final === true || message.attempts >= MAX_ATTEMPTS;
+      await db.prepare('UPDATE whatsapp_outbox SET status = ?, error = ? WHERE id = ?').run(giveUp ? 'failed' : 'queued', error, id);
+    }
+    res.json({ ok: true });
+  });
+
+  return router;
+}

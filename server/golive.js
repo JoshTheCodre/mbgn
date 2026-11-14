@@ -28,6 +28,7 @@ export async function clearTestData(ctx) {
     await run('DELETE FROM referral_visits');
     await run('DELETE FROM activity');
     await run('DELETE FROM notifications');
+    await run('DELETE FROM whatsapp_outbox');
     await run('DELETE FROM results');
     await run('DELETE FROM rounds');
     if (demo.length) {

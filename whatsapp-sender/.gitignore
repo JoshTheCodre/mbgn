@@ -1,0 +1,4 @@
+node_modules/
+.env
+# The saved WhatsApp login. Anyone with this folder can use the contest's WhatsApp.
+auth/

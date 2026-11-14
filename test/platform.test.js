@@ -17,6 +17,9 @@ import { hashPassword } from '../server/auth.js';
 import { seedDemoData } from '../server/demo-data.js';
 import { applyAdminLogin, clearTestData } from '../server/golive.js';
 import { createMailer } from '../server/mailer.js';
+import { tellContestantsVotingOpened } from '../server/stages.js';
+import { waNumber } from '../server/whatsapp.js';
+import { createSiteClient, runOnce } from '../whatsapp-sender/src/sender.js';
 
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000001e221bc330000000049454e44ae426082', 'hex');
 
@@ -1998,6 +2001,145 @@ describe('Large contests', () => {
       assert.equal((await anon.get('/leaderboard?limit=4000')).data.rows.length, 4);
       assert.equal((await admin.get('/admin/contestants?limit=3')).data.length, 3);
       assert.equal((await admin.get('/admin/contestants?limit=1000')).data.length, 5);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('WhatsApp messages', () => {
+  const TOKEN = 'wa-test-token';
+  // Stands in for WhatsApp in the real sender loop, recording what would have gone out.
+  const fakeWhatsApp = (answer = () => ({ sent: true })) => {
+    const sent = [];
+    return {
+      sent,
+      name: 'test',
+      state: 'connected',
+      account: '2348000000000',
+      async send(to, text) {
+        sent.push({ to, text });
+        return answer(to, text);
+      },
+    };
+  };
+  const quiet = { info() {}, warn() {}, error() {} };
+  const rows = (app, where = 'TRUE') => app.ctx.db.prepare(`SELECT * FROM whatsapp_outbox WHERE ${where} ORDER BY id`).all();
+
+  test('numbers are written the way WhatsApp wants them', () => {
+    for (const raw of ['0805 123 4567', '+234 805 123 4567', '8051234567', '234-805-123-4567']) assert.equal(waNumber(raw), '2348051234567');
+    assert.equal(waNumber('+44 7700 900123'), '447700900123');
+    assert.equal(waNumber('12345'), null);
+  });
+
+  test('nothing is queued and the sender has no way in until the token is set', async () => {
+    const app = await boot();
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      await makeContestant(app, admin, 'NoWhatsApp');
+      assert.equal((await rows(app)).length, 0);
+      const site = createSiteClient({ siteUrl: app.base, token: 'anything' });
+      await assert.rejects(runOnce({ site, transport: fakeWhatsApp(), log: quiet }), { status: 404 });
+      assert.equal((await admin.get('/admin/whatsapp')).data.configured, false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('an accepted contestant gets their code, voting link and group link, sent once by the sender', async () => {
+    const app = await boot({ whatsappSenderToken: TOKEN });
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      await admin.post('/admin/whatsapp-groups', { name: 'Batch 1', url: 'https://chat.whatsapp.com/BatchOneInvite', capacity: 1000 });
+      const { id, code } = await makeContestant(app, admin, 'Welcomed');
+      const [queued] = await rows(app);
+      const contestant = await app.ctx.db.prepare('SELECT whatsapp FROM contestants WHERE id = ?').get(id);
+      assert.equal(queued.kind, 'accepted');
+      assert.equal(queued.to_number, `234${contestant.whatsapp.slice(1)}`);
+      for (const part of [code, `http://localhost/c/${code}`, 'https://chat.whatsapp.com/BatchOneInvite']) assert.ok(queued.body.includes(part), part);
+
+      // A wrong token is refused.
+      await assert.rejects(runOnce({ site: createSiteClient({ siteUrl: app.base, token: 'wrong' }), transport: fakeWhatsApp(), log: quiet }), { status: 401 });
+
+      const site = createSiteClient({ siteUrl: app.base, token: TOKEN });
+      const whatsapp = fakeWhatsApp();
+      // Until the phone is linked, nothing is handed out, and admin sees why.
+      whatsapp.state = 'waiting_for_scan';
+      assert.equal(await runOnce({ site, transport: whatsapp, log: quiet }), 0);
+      assert.equal((await admin.get('/admin/whatsapp')).data.sender.state, 'waiting_for_scan');
+
+      whatsapp.state = 'connected';
+      assert.equal(await runOnce({ site, transport: whatsapp, log: quiet }), 1);
+      assert.equal(await runOnce({ site, transport: whatsapp, log: quiet }), 0);
+      assert.equal(whatsapp.sent.length, 1);
+      assert.equal(whatsapp.sent[0].text, queued.body);
+      const { data: overview } = await admin.get('/admin/whatsapp');
+      assert.deepEqual([overview.waiting, overview.sent, overview.failed, overview.sender.account], [0, 1, 0, '2348000000000']);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('when voting opens, each accepted contestant gets one "vote for me" message', async () => {
+    const app = await boot({ whatsappSenderToken: TOKEN });
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const { code } = await makeContestant(app, admin, 'Opener');
+      await makeContestant(app, admin, 'Opener2');
+      await tellContestantsVotingOpened(app.ctx);
+      await tellContestantsVotingOpened(app.ctx);
+      const open = await rows(app, "kind = 'voting_open'");
+      assert.equal(open.length, 2);
+      assert.ok(open.some((m) => m.body.includes(`Please vote for me`) && m.body.includes(`http://localhost/c/${code}`)));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('a number not on WhatsApp is not retried, other failures are, and admin can try again', async () => {
+    const app = await boot({ whatsappSenderToken: TOKEN });
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      await makeContestant(app, admin, 'NotOnWa');
+      const site = createSiteClient({ siteUrl: app.base, token: TOKEN });
+
+      await runOnce({ site, transport: fakeWhatsApp(() => ({ sent: false, final: true, error: 'This number is not on WhatsApp.' })), log: quiet });
+      let { data } = await admin.get('/admin/whatsapp');
+      assert.equal(data.failed, 1);
+      assert.equal(data.failures[0].error, 'This number is not on WhatsApp.');
+      assert.equal(await runOnce({ site, transport: fakeWhatsApp(), log: quiet }), 0);
+
+      assert.equal((await admin.post('/admin/whatsapp/retry-failed')).data.retried, 1);
+      // A passing problem is tried again, up to three times.
+      const flaky = fakeWhatsApp(() => ({ sent: false, error: 'Connection dropped' }));
+      for (let i = 0; i < 3; i += 1) assert.equal(await runOnce({ site, transport: flaky, log: quiet }), 1);
+      assert.equal(await runOnce({ site, transport: flaky, log: quiet }), 0);
+      ({ data } = await admin.get('/admin/whatsapp'));
+      assert.equal(data.failed, 1);
+      assert.equal(data.failures[0].error, 'Connection dropped');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('contestants accepted before WhatsApp was set up can be caught up, once', async () => {
+    const app = await boot();
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      await makeContestant(app, admin, 'EarlyOne');
+      await makeContestant(app, admin, 'EarlyTwo');
+      assert.equal((await admin.post('/admin/whatsapp/send-accepted')).status, 409);
+
+      app.ctx.config.whatsappSenderToken = TOKEN;
+      assert.equal((await admin.get('/admin/whatsapp')).data.missingAccepted, 2);
+      assert.equal((await admin.post('/admin/whatsapp/send-accepted')).data.queued, 2);
+      assert.equal((await admin.post('/admin/whatsapp/send-accepted')).data.queued, 0);
+      assert.equal((await rows(app, "kind = 'accepted'")).length, 2);
     } finally {
       await app.close();
     }

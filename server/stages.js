@@ -1,5 +1,6 @@
 import { audit, notifyMany, publishActivity } from './competition.js';
 import { getSetting, setSetting, tx } from './db.js';
+import { queueVotingOpen } from './whatsapp.js';
 
 // Moves the contest between taking applications and voting. Returns false when it was already
 // in that stage, so two servers reaching the countdown together only start voting once.
@@ -34,6 +35,7 @@ export async function tellContestantsVotingOpened(ctx) {
     text: `Hello ${r.stage_name},\n\nRegistration has closed and voting is now open. Share your voting link with your supporters now:\n\n${link(r)}`,
   })));
   ctx.background(ctx.mailer.sendQueued());
+  await queueVotingOpen(ctx);
   return recipients.length;
 }
 

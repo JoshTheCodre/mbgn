@@ -1344,6 +1344,101 @@ function CompetitionTab({ onChange }) {
   );
 }
 
+// What the sender (whatsapp-sender/) last reported, in plain words.
+function senderStatus(data) {
+  const s = data.sender;
+  if (!data.configured) {
+    return { tone: 'note-error', text: 'Not set up yet. Set WHATSAPP_SENDER_TOKEN on Vercel, then start the sender in the whatsapp-sender folder. Its README explains each step.' };
+  }
+  if (!s) return { tone: '', text: 'Set up on the site. Waiting for the sender to start for the first time.' };
+  if (Date.now() - Date.parse(s.seenAt) > 2 * 60000) {
+    return { tone: 'note-error', text: `The sender is offline. Last heard from ${dateTime(s.seenAt)}. Messages wait here until it is back.` };
+  }
+  if (s.state === 'connected') return { tone: 'note-good', text: `Sending from ${s.account ? `+${s.account}` : 'the contest’s number'}.` };
+  if (s.state === 'waiting_for_scan') {
+    return { tone: '', text: 'The sender is waiting to be linked. On the contest phone, open WhatsApp, go to Linked devices, and scan the QR code on the sender’s screen.' };
+  }
+  if (s.state === 'logged_out') return { tone: 'note-error', text: 'WhatsApp logged the sender out. It is showing a new QR code to scan.' };
+  return { tone: '', text: 'The sender is connecting to WhatsApp…' };
+}
+
+const WHATSAPP_KINDS = { accepted: 'Acceptance', voting_open: 'Voting open' };
+
+function WhatsAppPanel() {
+  const { data, error: loadError, reload } = useFetch('/admin/whatsapp');
+  const [error, setError] = useState(null);
+  const [note, setNote] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  // The sender checks in every few seconds, so the status keeps itself current.
+  useEffect(() => {
+    const timer = setInterval(reload, 15000);
+    return () => clearInterval(timer);
+  }, [reload]);
+
+  async function act(path, report) {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      setNote(report(await api(path, { method: 'POST' })));
+      reload();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!data) {
+    return <section className="panel"><h2>WhatsApp messages</h2>{loadError ? <ErrorNote error={loadError} /> : <Loading />}</section>;
+  }
+  const status = senderStatus(data);
+  return (
+    <section className="panel whatsapp-panel">
+      <h2>WhatsApp messages</h2>
+      <p className="muted">Each accepted contestant gets their code, voting link and WhatsApp group link. When voting opens, each gets a ready-to-forward “vote for me” message.</p>
+      <p className={`note ${status.tone}`} role="status">{status.text}</p>
+      <dl className="wa-counts">
+        <div><dt>Waiting to send</dt><dd>{num(data.waiting)}</dd></div>
+        <div><dt>Sent</dt><dd>{num(data.sent)}</dd></div>
+        <div><dt>Could not send</dt><dd>{num(data.failed)}</dd></div>
+      </dl>
+      <ErrorNote error={error} />
+      {note ? <p className="note note-good">{note}</p> : null}
+      {data.configured ? (
+        <div className="wa-actions">
+          {data.missingAccepted ? (
+            <button type="button" className="btn btn-primary btn-small" disabled={busy}
+              onClick={() => act('/admin/whatsapp/send-accepted', ({ queued }) => `Queued ${plural(queued, 'acceptance message')}.`)}>
+              Message {plural(data.missingAccepted, 'accepted contestant')} who haven’t had one
+            </button>
+          ) : null}
+          {data.failed ? (
+            <button type="button" className="btn btn-ghost btn-small" disabled={busy}
+              onClick={() => act('/admin/whatsapp/retry-failed', ({ retried }) => `Trying ${plural(retried, 'message')} again.`)}>
+              Try the failed ones again
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {data.failures.length ? (
+        <>
+          <h3>Could not send</h3>
+          <ul className="wa-failures">
+            {data.failures.map((f) => (
+              <li key={f.id}>
+                <b>{f.contestant.name}</b> <span className="muted">{f.contestant.code} · +{f.to} · {WHATSAPP_KINDS[f.kind] ?? f.kind}</span>
+                <small>{f.error}</small>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 function MessagesTab() {
   const announcements = useFetch('/admin/announcements');
   const activity = useFetch('/admin/activity');
@@ -1388,6 +1483,7 @@ function MessagesTab() {
   return (
     <div className="admin-columns">
       <ErrorNote error={error} />
+      <WhatsAppPanel />
       <section className="panel">
         <h2>Announcement to contestants</h2>
         <form className="stack" onSubmit={announce}>
