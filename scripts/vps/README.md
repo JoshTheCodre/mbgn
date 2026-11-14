@@ -74,21 +74,26 @@ It asks for the new **Postgres URL (public)**, checks it works, saves it on Verc
 
 ## WhatsApp, through Evolution API
 
-1. **In Coolify:** New > Service > **Evolution API**, then deploy. Note its address, and its API key
-   (in the service's environment variables, `AUTHENTICATION_API_KEY`). The key opens everything, so
-   keep it private.
-2. **Link the contest phone:** open `<its address>/manager`, sign in with the API key, create an
-   instance called `mbgn` (Baileys), and scan its QR code from the contest phone: WhatsApp >
-   Linked devices > Link a device. Use a dedicated number (see `whatsapp-sender/README.md` on
-   ban risk).
-3. **Start the sender** (it takes messages from the site's queue and hands them to Evolution, one
-   every 6 seconds). From the project folder:
+Evolution holds the WhatsApp connection; the site sends through it itself. No ssh, no extra app.
+
+1. **Evolution API in Coolify:** New > Service > **Evolution API**. Its domain must start with
+   `https://` and end with its port, for example `https://mbgn.useqitt.app:8080`, or it gets no
+   certificate. Deploy. Its API key is in the service's environment variables
+   (`AUTHENTICATION_API_KEY`). The key opens everything, so keep it private.
+2. **Link the contest phone:** open `https://<its domain>/manager`, sign in with the API key,
+   create an instance (Baileys), and scan its QR code from the contest phone: WhatsApp > Linked
+   devices > Link a device. Use a dedicated number (see `whatsapp-sender/README.md` on ban risk).
+3. **Connect the site.** From the project folder:
 
    ```bash
-   powershell -ExecutionPolicy Bypass -File scripts\whatsapp-vps.ps1 -Server root@162.35.44.225 -EvolutionUrl https://EVOLUTION_ADDRESS
+   powershell -ExecutionPolicy Bypass -File scripts\whatsapp-site.ps1
    ```
 
-   It asks for the API key (hidden), checks the instance, saves the sender token on Vercel, deploys,
-   and installs the sender on the VPS.
-4. **Catch up:** in admin, Messages > WhatsApp messages, press **Message accepted contestants who
-   haven't had one**.
+   It asks for the API key and instance name, checks them, saves `EVOLUTION_URL`,
+   `EVOLUTION_API_KEY` and `EVOLUTION_INSTANCE` on Vercel, and deploys.
+4. **Catch up:** in admin, Messages > WhatsApp messages shows "Connected". Press **Message accepted
+   contestants who haven't had one**.
+
+From then on, an accepted contestant gets their message straight away. Bigger sends (like "voting
+is open" to everyone) go out about 8 a minute, spaced out to protect the number, while the site has
+visitors.

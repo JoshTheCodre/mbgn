@@ -1348,7 +1348,13 @@ function CompetitionTab({ onChange }) {
 function senderStatus(data) {
   const s = data.sender;
   if (!data.configured) {
-    return { tone: 'note-error', text: 'Not set up yet. Set WHATSAPP_SENDER_TOKEN on Vercel, then start the sender in the whatsapp-sender folder. Its README explains each step.' };
+    return { tone: 'note-error', text: 'Not set up yet. Run scripts\\whatsapp-site.ps1 to connect Evolution API (see scripts/vps/README.md).' };
+  }
+  // Sent by this site through Evolution API, whose state is asked live.
+  if (s?.direct) {
+    if (s.state === 'connected') return { tone: 'note-good', text: 'Connected. Sending through Evolution API from the contest’s number, about 8 a minute.' };
+    if (s.state === 'unreachable') return { tone: 'note-error', text: `Can’t reach Evolution API (${s.error}). Messages wait here until it’s back.` };
+    return { tone: 'note-error', text: 'The contest phone isn’t connected. Open Evolution’s manager and reconnect it (scan the QR code). Messages wait here until then.' };
   }
   if (!s) return { tone: '', text: 'Set up on the site. Waiting for the sender to start for the first time.' };
   if (Date.now() - Date.parse(s.seenAt) > 2 * 60000) {

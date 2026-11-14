@@ -44,6 +44,11 @@ export function loadConfig(overrides = {}) {
   if (databaseCa && !databaseCa.includes('-----BEGIN CERTIFICATE-----')) {
     throw new Error('DATABASE_CA_CERT must be a certificate, starting with -----BEGIN CERTIFICATE-----.');
   }
+  // Evolution API, for WhatsApp messages sent by this site (see server/whatsapp.js).
+  const evo = { url: env.EVOLUTION_URL?.trim().replace(/\/+$/, ''), apiKey: env.EVOLUTION_API_KEY?.trim(), instance: env.EVOLUTION_INSTANCE?.trim() };
+  const evolution = overrides.evolution !== undefined ? overrides.evolution : (evo.url && evo.apiKey && evo.instance ? evo : null);
+  if (!evolution && (evo.url || evo.apiKey || evo.instance)) throw new Error('EVOLUTION_URL, EVOLUTION_API_KEY and EVOLUTION_INSTANCE are needed together.');
+  if (production && evolution && !evolution.url.startsWith('https://')) throw new Error('EVOLUTION_URL must start with https://');
   // Connections each server keeps to the database. Every Vercel instance has its own set.
   const dbPoolMax = Number(overrides.dbPoolMax ?? env.DB_POOL_MAX ?? 5);
   if (!Number.isInteger(dbPoolMax) || dbPoolMax < 1) throw new Error('DB_POOL_MAX must be a whole number of 1 or more.');
@@ -98,6 +103,10 @@ export function loadConfig(overrides = {}) {
     smtpUrl: overrides.smtpUrl ?? env.SMTP_URL ?? null,
     // Shared with whatsapp-sender/. Until it is set, no WhatsApp messages are written down.
     whatsappSenderToken: overrides.whatsappSenderToken ?? (env.WHATSAPP_SENDER_TOKEN?.trim() || null),
+    evolution,
+    // Messages sent per batch, and the gap between them: about 8 a minute.
+    whatsappBatch: overrides.whatsappBatch ?? 8,
+    whatsappGapMs: overrides.whatsappGapMs ?? 6000,
     mailFrom: env.MAIL_FROM ?? 'MBGN <no-reply@mbgn.example>',
     adminEmail: overrides.adminEmail ?? env.ADMIN_EMAIL ?? null,
     adminPassword: overrides.adminPassword ?? env.ADMIN_PASSWORD ?? null,

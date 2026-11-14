@@ -18,7 +18,7 @@ import { seedDemoData } from '../server/demo-data.js';
 import { applyAdminLogin, clearTestData } from '../server/golive.js';
 import { createMailer } from '../server/mailer.js';
 import { tellContestantsVotingOpened } from '../server/stages.js';
-import { waNumber } from '../server/whatsapp.js';
+import { sendDueWhatsApp, waNumber } from '../server/whatsapp.js';
 import { createSiteClient, runOnce } from '../whatsapp-sender/src/sender.js';
 
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000001e221bc330000000049454e44ae426082', 'hex');
@@ -2153,6 +2153,91 @@ describe('WhatsApp messages', () => {
       assert.equal(data.failures[0].error, 'Connection dropped');
     } finally {
       await app.close();
+    }
+  });
+
+  // Stands in for an Evolution API server, answering only for the instance "MBG Messager".
+  async function fakeEvolution() {
+    const evo = { state: 'open', sent: [], calls: 0, notOnWhatsApp: new Set() };
+    const server = http.createServer((req, res) => {
+      evo.calls += 1;
+      const reply = (status, body) => res.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
+      if (req.headers.apikey !== 'evo-key') return reply(401, { message: 'Unauthorized' });
+      if (req.method === 'GET' && req.url === '/instance/connectionState/MBG%20Messager') return reply(200, { instance: { state: evo.state } });
+      if (req.method !== 'POST' || req.url !== '/message/sendText/MBG%20Messager') return reply(404, {});
+      let body = '';
+      req.on('data', (d) => { body += d; });
+      req.on('end', () => {
+        const msg = JSON.parse(body);
+        if (evo.notOnWhatsApp.has(msg.number)) return reply(400, { response: { message: [{ exists: false, number: msg.number }] } });
+        evo.sent.push({ ...msg, at: Date.now() });
+        reply(201, { status: 'PENDING' });
+      });
+    });
+    await new Promise((resolve) => { server.listen(0, '127.0.0.1', resolve); });
+    evo.url = `http://127.0.0.1:${server.address().port}`;
+    evo.close = () => new Promise((resolve) => { server.close(resolve); });
+    return evo;
+  }
+  const wait = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+  test('through Evolution API, the site sends them itself: only when connected, spaced out, one batch at a time', async () => {
+    const evo = await fakeEvolution();
+    const app = await boot({ evolution: { url: evo.url, apiKey: 'evo-key', instance: 'MBG Messager' }, whatsappGapMs: 30 });
+    try {
+      const admin = client(app.base);
+      await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+
+      // The phone isn't linked: messages wait, and admin says why.
+      evo.state = 'close';
+      const { code } = await makeContestant(app, admin, 'DirectOne');
+      await makeContestant(app, admin, 'DirectTwo');
+      await makeContestant(app, admin, 'DirectThree');
+      await wait(100);
+      assert.equal(evo.sent.length, 0);
+      let { data } = await admin.get('/admin/whatsapp');
+      assert.deepEqual([data.configured, data.sender.direct, data.sender.state, data.waiting], [true, true, 'reconnecting', 3]);
+
+      // Linked: two servers at once still send one batch, a message every 30ms.
+      evo.state = 'open';
+      const [first] = await rows(app);
+      evo.notOnWhatsApp.add(first.to_number);
+      const runs = await Promise.all([sendDueWhatsApp(app.ctx, { max: 3 }), sendDueWhatsApp(app.ctx, { max: 3 })]);
+      assert.deepEqual(runs.map((r) => r.sent).sort(), [0, 2]);
+      assert.ok(runs.some((r) => r.busy));
+      assert.ok(evo.sent[1].at - evo.sent[0].at >= 25, 'spaced out');
+      assert.ok(evo.sent.every((m) => m.text.includes('Congratulations')));
+
+      ({ data } = await admin.get('/admin/whatsapp'));
+      assert.deepEqual([data.sender.state, data.sent, data.failed, data.failures[0].error], ['connected', 2, 1, 'This number is not on WhatsApp.']);
+      assert.ok((await rows(app, "status = 'failed'"))[0].body.includes(code));
+
+      // Nothing waiting: Evolution isn't even asked.
+      await wait(50);
+      const calls = evo.calls;
+      assert.deepEqual(await sendDueWhatsApp(app.ctx), { sent: 0 });
+      assert.equal(evo.calls, calls);
+    } finally {
+      await app.close();
+      await evo.close();
+    }
+  });
+
+  test('Evolution settings go together, and the live site only talks to it over https', () => {
+    const saved = { ...process.env };
+    const base = { nodeEnv: 'test', databaseUrl: 'postgres://u:p@localhost/x' };
+    try {
+      process.env.EVOLUTION_URL = 'https://evo.example.com/';
+      assert.throws(() => loadConfig(base), /needed together/);
+      process.env.EVOLUTION_API_KEY = 'k';
+      process.env.EVOLUTION_INSTANCE = 'MBG Messager';
+      assert.deepEqual(loadConfig(base).evolution, { url: 'https://evo.example.com', apiKey: 'k', instance: 'MBG Messager' });
+      process.env.EVOLUTION_URL = 'http://evo.example.com';
+      assert.throws(() => loadConfig({ ...base, nodeEnv: 'production', appSecret: 'x', paystack: { secretKey: 'sk_live_x', baseUrl: 'x' }, paymentEmail: 'a@b.c' }), /https/);
+    } finally {
+      for (const key of ['EVOLUTION_URL', 'EVOLUTION_API_KEY', 'EVOLUTION_INSTANCE']) {
+        if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
+      }
     }
   });
 

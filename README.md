@@ -89,8 +89,8 @@ The site ran as a demo until November 2026. To switch it to real money:
 6. On the Competition tab, set the registration countdown, check the prices and add a WhatsApp group.
 7. Set `SMTP_URL` so emails are delivered. Without it they only reach the admin email log.
    For WhatsApp messages to contestants (accepted, with code, voting link and group link; and
-   "voting is open"), set `WHATSAPP_SENDER_TOKEN` and run the sender in `whatsapp-sender/` on an
-   always-on machine. Its README explains each step.
+   "voting is open"), connect Evolution API with `scripts\whatsapp-site.ps1` (see
+   [scripts/vps/README.md](scripts/vps/README.md)). The site then sends them itself.
 8. Neon's free plan can only restore the last 6 hours, and a busy site can use up its monthly compute
    hours, so move to a paid plan for the live contest.
 

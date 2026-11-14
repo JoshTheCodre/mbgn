@@ -16,7 +16,7 @@ import { adminRouter } from './routes/admin.js';
 import { contestantRouter, votingRouter } from './routes/member.js';
 import { photoHandler, publicRouter } from './routes/public.js';
 import { createActivityAggregator } from './votes.js';
-import { whatsappSenderRouter } from './whatsapp.js';
+import { sendDueWhatsApp, whatsappSenderRouter } from './whatsapp.js';
 
 export async function createContext(config) {
   const db = await openDb(config);
@@ -72,6 +72,8 @@ export async function runDueJobs(ctx) {
   await closeRoundsIfDue(ctx);
   // Any emails still waiting from a message to everyone, a batch at a time.
   await ctx.mailer.sendQueued({ budgetMs: 20000 });
+  // Then WhatsApp messages, through Evolution API, a spaced-out batch at a time.
+  await sendDueWhatsApp(ctx);
 }
 
 export function createApp(ctx) {
