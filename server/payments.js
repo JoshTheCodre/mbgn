@@ -3,7 +3,7 @@ import { HttpError, hashIp } from './auth.js';
 import { photoUrl, raiseFlag, votingState } from './competition.js';
 import { getSetting, nowIso, tx } from './db.js';
 import { recordPaidVotes } from './votes.js';
-import { bulkPrice } from '../shared/pricing.js';
+import { bulkPrice, paymentCharges } from '../shared/pricing.js';
 
 export const MAX_VOTES_PER_PAYMENT = 100000;
 
@@ -161,14 +161,17 @@ export async function startPayment(ctx, { code, quantity, voterName, method = 'a
   const contestant = await db.prepare("SELECT id, code FROM contestants WHERE code = ? AND status = 'approved'").get(code);
   if (!contestant) throw new HttpError(404, 'No active contestant has that code.');
   const amount = await priceFor(db, quantity);
+  // The voter pays the charges, so the votes' whole amount arrives.
+  const fee = paymentCharges(amount);
+  const total = amount + fee;
 
   let reference = newReference();
 
   const ipHash = hashIp(config, ip);
   const { lastInsertRowid: paymentId } = await db.prepare(`
-    INSERT INTO payments (reference, email, voter_name, vote_contestant_id, vote_quantity, via_link, ip_hash, amount, provider, return_to, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
-    .run(reference, email, name, contestant.id, quantity, viaLink ? 1 : 0, ipHash, amount, provider.name, `/c/${contestant.code}`, nowIso());
+    INSERT INTO payments (reference, email, voter_name, vote_contestant_id, vote_quantity, via_link, ip_hash, amount, fee, provider, return_to, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
+    .run(reference, email, name, contestant.id, quantity, viaLink ? 1 : 0, ipHash, amount, fee, provider.name, `/c/${contestant.code}`, nowIso());
 
   const tenMinutesAgo = new Date(Date.now() - 600000).toISOString();
   const attempts = (await db.prepare(`SELECT COUNT(*) AS n FROM payments
@@ -181,9 +184,9 @@ export async function startPayment(ctx, { code, quantity, voterName, method = 'a
   if (method === 'transfer' && provider.chargeTransfer) {
     try {
       const expiresAt = new Date(Date.now() + TRANSFER_MINUTES * 60000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-      const transfer = await provider.chargeTransfer({ reference, amount, description, customerEmail: checkoutEmail(config, reference), expiresAt });
+      const transfer = await provider.chargeTransfer({ reference, amount: total, description, customerEmail: checkoutEmail(config, reference), expiresAt });
       await db.prepare('UPDATE payments SET transfer_details = ? WHERE id = ?').run(JSON.stringify(transfer), paymentId);
-      return { reference, transfer, votes: quantity, amount };
+      return { reference, transfer, votes: quantity, amount, fee, total };
     } catch (err) {
       // Pay with Transfer is switched off on the Paystack account, or Paystack had a moment. Its own
       // checkout can still take the transfer. Paystack keeps the failed attempt's reference, so a new one.
@@ -196,14 +199,14 @@ export async function startPayment(ctx, { code, quantity, voterName, method = 'a
   try {
     const { checkoutUrl, providerRef } = await provider.init({
       reference,
-      amount,
+      amount: total,
       description,
       customerEmail: checkoutEmail(config, reference),
       redirectUrl: `${config.publicUrl}/pay/return/${reference}`,
       channels: PAY_METHODS[method],
     });
     await db.prepare('UPDATE payments SET provider_ref = ? WHERE id = ?').run(providerRef ?? null, paymentId);
-    return { reference, checkoutUrl, votes: quantity, amount };
+    return { reference, checkoutUrl, votes: quantity, amount, fee, total };
   } catch (err) {
     console.error('Could not start payment:', err.message);
     await db.prepare("UPDATE payments SET status = 'failed' WHERE id = ?").run(paymentId);
@@ -222,6 +225,8 @@ export async function paymentView(db, payment) {
     voterName: payment.voter_name,
     receiptNo: receipt?.receipt_no ?? null,
     amount: payment.amount,
+    fee: payment.fee ?? 0,
+    total: payment.amount + (payment.fee ?? 0),
     status: payment.status,
     votes: payment.vote_quantity,
     votesStatus: payment.votes_status,
@@ -258,13 +263,15 @@ export async function settlePayment(ctx, reference) {
   }
 
   if (result.status === 'PAID') {
-    if (result.currency !== 'NGN' || !(result.amountPaid >= payment.amount)) {
+    // The votes and the charges on them, all of it.
+    const expected = payment.amount + (payment.fee ?? 0);
+    if (result.currency !== 'NGN' || !(result.amountPaid >= expected)) {
       await tx(db, async () => {
         await db.prepare("UPDATE payments SET status = 'review', paid_amount = ? WHERE id = ?").run(result.amountPaid, payment.id);
         await raiseFlag(ctx, {
           kind: 'payment_mismatch',
           severity: 'high',
-          details: `${reference}: expected NGN ${payment.amount}, provider reports ${result.currency} ${result.amountPaid}. No votes counted.`,
+          details: `${reference}: expected NGN ${expected}, provider reports ${result.currency} ${result.amountPaid}. No votes counted.`,
           paymentId: payment.id,
         });
       });

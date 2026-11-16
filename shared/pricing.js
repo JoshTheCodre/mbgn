@@ -23,3 +23,12 @@ export function upsellOffers(votes, votePrice, packages) {
     return { votes: size, price, extra: price - now, saving: Math.max(0, size * votePrice - price) };
   });
 }
+
+// Paystack's fee on a Nigerian payment (1.5% + NGN 100, the NGN 100 waived under NGN 2,500, never
+// more than NGN 2,000), paid by the voter on top of the votes. Worked out so that once Paystack
+// takes its fee from the total, the whole vote amount is left.
+export function paymentCharges(amount) {
+  let total = Math.ceil(amount / 0.985);
+  if (total >= 2500) total = Math.ceil((amount + 100) / 0.985);
+  return Math.min(total - amount, 2000);
+}

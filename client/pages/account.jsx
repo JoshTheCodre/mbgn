@@ -4,7 +4,7 @@ import {
   api, dateTime, naira, num, plural, registrationOpen, useApp, useFetch,
 } from '../lib.jsx';
 import {
-  BrandLogo, CopyButton, Dialog, ErrorNote, Field, FollowerRow, Loading, PLATFORM_NAMES, PinInput, WhatsAppGroup,
+  BrandLogo, CopyButton, Dialog, ErrorNote, Field, FollowerRow, Loading, PLATFORM_NAMES, PinInput, ShareButton, WhatsAppGroup,
 } from '../ui.jsx';
 
 export function AdminLogin() {
@@ -120,6 +120,17 @@ async function shrinkPhoto(file) {
 }
 
 // `current` shows the photo already on file, for someone changing it.
+// Kept brief: 150 characters at most, with what's left shown as she types.
+export const BIO_MAX = 150;
+export function BioField({ defaultValue = '' }) {
+  const [length, setLength] = useState(defaultValue.length);
+  return (
+    <Field label={`Short biography (not more than ${BIO_MAX} characters)`} hint={`${BIO_MAX - length} characters left. A line or two supporters will read on your profile.`}>
+      <textarea name="bio" rows={3} minLength={20} maxLength={BIO_MAX} defaultValue={defaultValue} required onChange={(e) => setLength(e.target.value.length)} />
+    </Field>
+  );
+}
+
 export function PhotoPicker({ required = true, current = null, hint = 'JPG, PNG or WebP, up to 5 MB. Only the review team sees it until you are approved.' }) {
   const [photo, setPhoto] = useState(null);
   const [dragging, setDragging] = useState(false);
@@ -241,20 +252,26 @@ function FollowerCheck({ accounts, response, onFinished }) {
   );
 }
 
-function CheckResult({ accounts, response, testMode, onRetry }) {
+function CheckResult({ accounts, response, testMode }) {
   const { outcome, minFollowers, results, whatsappGroup } = response;
   const hasMissing = results.some((r) => r.status === 'missing');
   return (
     <div className={`check-card check-${outcome}`}>
       {outcome === 'passed' ? <div className="check-seal" aria-hidden="true">✓</div> : null}
       <p className="eyebrow">Your result</p>
-      <h1>{{ passed: 'Congratulations, you passed!', review: 'Our team will take it from here', failed: 'You are not there yet' }[outcome]}</h1>
-      {outcome === 'passed' ? <p className="muted">Your application is now with our review team. Once you’re approved, we’ll message you on WhatsApp.</p> : null}
+      <h1>{{ passed: 'Congratulations, you’re in!', review: 'Our team will take it from here', failed: 'Our team will review your application' }[outcome]}</h1>
+      {outcome === 'passed' ? (
+        <>
+          <p className="muted">You passed the follower check, so you’re now a contestant. We’ve sent your code and voting link to your WhatsApp too.</p>
+          <p className="check-code">Your contestant code <b>{response.code}</b></p>
+          <ShareButton url={response.link} name={response.name} label="Share your voting link" />
+        </>
+      ) : null}
       {outcome === 'review' ? <p className="muted">We could not finish the check automatically, so our team will look at your accounts. Once you’re approved, we’ll message you on WhatsApp.</p> : null}
       {outcome === 'failed' ? (
         <p className="muted">
-          You need at least <b>{num(minFollowers)}</b> followers on the account you chose. Your application has not been sent, so you can try another of your accounts, or try again once you get there.
-          {hasMissing ? ' If we could not find an account, check the spelling.' : ''}
+          Your accounts are below <b>{num(minFollowers)}</b> followers, so our team will look at your application and decide. Once you’re approved, we’ll message you on WhatsApp.
+          {hasMissing ? ' If we could not find an account, our team will check it.' : ''}
         </p>
       ) : null}
       <ul className="follower-rows">
@@ -270,10 +287,7 @@ function CheckResult({ accounts, response, testMode, onRetry }) {
           </div>
         ) : null}
         {outcome === 'passed' && !whatsappGroup ? <p className="note">Your WhatsApp group link will be sent to you on WhatsApp soon.</p> : null}
-        {outcome === 'failed'
-          ? <button type="button" className="btn btn-primary btn-wide" onClick={onRetry}>Try another account</button>
-          : <Link to="/dashboard" className="btn btn-ghost btn-wide">Go to my dashboard</Link>}
-        {outcome === 'failed' ? <Link to="/" className="btn btn-ghost btn-wide">Back to the home page</Link> : null}
+        <Link to="/dashboard" className="btn btn-ghost btn-wide">Go to my dashboard</Link>
       </div>
     </div>
   );
@@ -337,18 +351,12 @@ export function Register() {
     }
   }
 
-  function tryAgain() {
-    setResponse(null);
-    setStep('form');
-    window.scrollTo(0, 0);
-  }
-
-  const minFollowers = num(competition?.minFollowers ?? 800);
+  const minFollowers = num(competition?.minFollowers ?? 500);
 
   return (
     <div className="wrap page register">
       {step === 'checking' ? <FollowerCheck accounts={accounts} response={response} onFinished={() => { setStep('result'); window.scrollTo(0, 0); }} /> : null}
-      {step === 'result' ? <CheckResult accounts={accounts} response={response} testMode={competition?.followerCheckIsTest} onRetry={tryAgain} /> : null}
+      {step === 'result' ? <CheckResult accounts={accounts} response={response} testMode={competition?.followerCheckIsTest} /> : null}
       {/* Stays in the page during the check, so nothing is lost if they need to change an account. */}
       <div hidden={step !== 'form'}>
       <header className="register-head">
@@ -398,9 +406,7 @@ export function Register() {
             </Field>
             <Field label="Town or city"><input name="location" required /></Field>
           </div>
-          <Field label="Short biography" hint="A few lines supporters will read on your profile.">
-            <textarea name="bio" rows={4} minLength={20} maxLength={600} required />
-          </Field>
+          <BioField />
         </fieldset>
         <fieldset>
           <legend>Contact details (private)</legend>
@@ -590,7 +596,7 @@ async function proofImage(payment) {
   text('voted for', top + 70, 40, '#cbbfd6', 500);
   text(payment.contestant.name, top + 170, 92, '#fff', 800);
   text(payment.contestant.code, top + 240, 44, '#d9b45a', 700);
-  text(`${payment.votes.toLocaleString('en-NG')} vote${payment.votes === 1 ? '' : 's'} · ₦${payment.amount.toLocaleString('en-NG')}`, top + 340, 52, '#fff', 700);
+  text(`${payment.votes.toLocaleString('en-NG')} vote${payment.votes === 1 ? '' : 's'} · ₦${payment.total.toLocaleString('en-NG')}`, top + 340, 52, '#fff', 700);
   text(new Date(payment.paidAt ?? Date.now()).toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' }), top + 410, 34, '#cbbfd6', 500);
   if (payment.receiptNo) text(`Receipt ${payment.receiptNo}`, top + 460, 30, '#cbbfd6', 500);
   text(`Vote too at ${window.location.host}/c/${payment.contestant.code}`, H - 90, 32, '#d9b45a', 600);
@@ -629,7 +635,7 @@ function ProofOfVote({ payment, onDone }) {
         <p className="proof-voter"><b>{payment.voterName ?? 'A supporter'}</b> voted for</p>
         <p className="proof-name">{contestant.name}</p>
         <p className="proof-code">{contestant.code}</p>
-        <p className="proof-votes">{plural(payment.votes, 'vote')} · {naira(payment.amount)}</p>
+        <p className="proof-votes">{plural(payment.votes, 'vote')} · {naira(payment.total)}</p>
         <p className="proof-meta">
           {dateTime(payment.paidAt)}
           {payment.receiptNo ? <><br />Receipt {payment.receiptNo}</> : null}
@@ -857,7 +863,7 @@ export function PayTransfer() {
   return (
     <div className="wrap page narrow pay-transfer">
       <p className="eyebrow">{plural(payment.votes, 'vote')} for {contestant.name} · {contestant.code}</p>
-      <h1>Send exactly {naira(payment.amount)}</h1>
+      <h1>Send exactly {naira(payment.total)}</h1>
       <p className="muted">Transfer from any bank app, OPay, PalmPay or Moniepoint. Your votes count as soon as the money arrives.</p>
       <div className="transfer-card">
         <div className="transfer-row">
@@ -865,8 +871,8 @@ export function PayTransfer() {
           <CopyButton value={transfer.accountNumber} label="account number" />
         </div>
         <div className="transfer-row">
-          <div><small>Amount</small><b>{naira(payment.amount)}</b></div>
-          <CopyButton value={String(payment.amount)} label="amount" />
+          <div><small>Amount</small><b>{naira(payment.total)}</b></div>
+          <CopyButton value={String(payment.total)} label="amount" />
         </div>
         <div className="transfer-row">
           <div><small>Bank · Account name</small><b>{[transfer.bankName, transfer.accountName].filter(Boolean).join(' · ')}</b></div>
@@ -926,7 +932,7 @@ export function PaySim() {
   return (
     <div className="wrap page narrow">
       <p className="eyebrow">Simulated checkout</p>
-      <h1>{data ? naira(data.amount) : '…'}</h1>
+      <h1>{data ? naira(data.total) : "…"}</h1>
       <p className="muted">This stands in for Paystack’s checkout while no key is configured. No real money moves.</p>
       <ErrorNote error={error ?? payError} />
       {data ? <p>{plural(data.votes, 'vote')} for {data.contestant.name}</p> : null}

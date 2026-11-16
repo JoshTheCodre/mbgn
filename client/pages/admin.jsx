@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, dateTime, naira, num, plural, useApp, useFetch, useLive } from '../lib.jsx';
 import {
-  Dialog, ErrorNote, Field, Loading, PLATFORM_NAMES, Portrait,
+  Dialog, ErrorNote, Field, Loading, PLATFORM_NAMES, Portrait, PushToggle,
 } from '../ui.jsx';
 import { THEMES } from '../themes.js';
 import { bulkPrice } from '../../shared/pricing.js';
@@ -39,6 +39,7 @@ export function Admin() {
         <h1>Control panel</h1>
         <button type="button" className="btn btn-ghost btn-small" onClick={logout}>Log out</button>
       </div>
+      <PushToggle what="You’ll hear about every new application." />
       <div className="tabs admin-tabs" role="tablist">
         {TABS.map(([key, label]) => (
           <button key={key} type="button" role="tab" aria-selected={tab === key} className={tab === key ? 'active' : ''} onClick={() => { setTab(key); reload(); }}>
@@ -202,6 +203,7 @@ function ContestantsTab({ onChange }) {
                   <strong>{c.stageName}</strong> <em className={`tag tag-${c.status}`}>{c.status}</em>
                   {c.verification === 'passed' ? <em className="tag tag-approved">Followers passed</em> : null}
                   {c.verification === 'review' ? <em className="tag tag-review">Check followers by hand</em> : null}
+                  {c.verification === 'failed' ? <em className="tag tag-review">Below follower minimum</em> : null}
                   {c.onProbation ? <em className="tag tag-review">On probation</em> : null}
                   {c.pendingStageName || c.pendingPhotoUrl ? <em className="tag tag-review">Profile change waiting</em> : null}
                   <small>{c.code ?? 'No code yet'}{c.position ? ` · position ${c.position} · ${num(c.totalVotes)} votes` : ''}</small>
@@ -1447,6 +1449,154 @@ function WhatsAppPanel() {
   );
 }
 
+// Admins' own WhatsApp message: to contestants who match what's picked, or to chosen ones.
+const CUSTOM_FILLS = ['name', 'code', 'link', 'votes', 'position', 'dashboard'];
+const CUSTOM_FILL_HELP = { ...FILLS, votes: 'her total votes', position: 'her position on the leaderboard' };
+
+function WhatsAppCompose() {
+  const { competition } = useApp();
+  const history = useFetch('/admin/whatsapp/broadcasts');
+  const [mode, setMode] = useState('match');
+  const [filters, setFilters] = useState({ status: 'approved', minVotes: '', maxVotes: '', top: '', state: '', verification: '' });
+  const [chosen, setChosen] = useState([]);
+  const [search, setSearch] = useState('');
+  const [found, setFound] = useState([]);
+  const [text, setText] = useState('');
+  const [reach, setReach] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [note, setNote] = useState(null);
+
+  const audience = mode === 'pick' ? { ids: chosen.map((c) => c.id) } : filters;
+  const audienceKey = JSON.stringify(audience);
+  // Who it would reach, worked out again as the choice changes.
+  useEffect(() => {
+    if (mode === 'pick' && !chosen.length) { setReach({ count: 0, noWhatsApp: 0, names: [], example: null }); return undefined; }
+    const timer = setTimeout(() => {
+      api('/admin/whatsapp/audience', { body: { audience } }).then(setReach, () => setReach(null));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [audienceKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (search.trim().length < 2) { setFound([]); return undefined; }
+    const timer = setTimeout(() => {
+      api(`/admin/contestants?q=${encodeURIComponent(search.trim())}&limit=8`).then(setFound, () => setFound([]));
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const set = (key) => (e) => setFilters({ ...filters, [key]: e.target.value });
+  async function send() {
+    if (!window.confirm(`Send this WhatsApp message to ${plural(reach?.count ?? 0, 'contestant')}?`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { queued } = await api('/admin/whatsapp/broadcasts', { body: { audience, text } });
+      setNote(`Sending to ${plural(queued, 'contestant')}, about 8 a minute.`);
+      setText('');
+      history.reload();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="panel wa-compose">
+      <h2>Send a WhatsApp message</h2>
+      <div className="tabs wa-who" role="radiogroup" aria-label="Who gets it">
+        <button type="button" role="radio" aria-checked={mode === 'match'} className={mode === 'match' ? 'active' : ''} onClick={() => setMode('match')}>Contestants who match</button>
+        <button type="button" role="radio" aria-checked={mode === 'pick'} className={mode === 'pick' ? 'active' : ''} onClick={() => setMode('pick')}>Chosen contestants</button>
+      </div>
+
+      {mode === 'match' ? (
+        <div className="wa-filters">
+          <Field label="Status">
+            <select value={filters.status} onChange={set('status')}>
+              <option value="approved">Approved</option>
+              <option value="pending">Waiting for review</option>
+              <option value="rejected">Rejected</option>
+              <option value="eliminated">Eliminated</option>
+              <option value="any">Everyone</option>
+            </select>
+          </Field>
+          <Field label="Votes from"><input type="number" min="0" value={filters.minVotes} onChange={set('minVotes')} placeholder="Any" /></Field>
+          <Field label="Votes up to"><input type="number" min="0" value={filters.maxVotes} onChange={set('maxVotes')} placeholder="Any" /></Field>
+          <Field label="In the top"><input type="number" min="1" value={filters.top} onChange={set('top')} placeholder="Any" /></Field>
+          <Field label="State">
+            <select value={filters.state} onChange={set('state')}>
+              <option value="">Any</option>
+              {(competition?.states ?? []).map((s) => <option key={s}>{s}</option>)}
+            </select>
+          </Field>
+          <Field label="Follower check">
+            <select value={filters.verification} onChange={set('verification')}>
+              <option value="">Any</option>
+              <option value="passed">Passed</option>
+              <option value="failed">Below the minimum</option>
+              <option value="review">Couldn’t check</option>
+            </select>
+          </Field>
+        </div>
+      ) : (
+        <div className="wa-pick">
+          <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by name or code" aria-label="Search contestants" />
+          {found.filter((f) => !chosen.some((c) => c.id === f.id)).length ? (
+            <ul className="wa-found">
+              {found.filter((f) => !chosen.some((c) => c.id === f.id)).map((f) => (
+                <li key={f.id}><button type="button" className="btn btn-ghost btn-small" onClick={() => { setChosen([...chosen, f]); setSearch(''); }}>+ {f.stageName} {f.code ? `(${f.code})` : ''}</button></li>
+              ))}
+            </ul>
+          ) : null}
+          {chosen.length ? (
+            <ul className="wa-chosen">
+              {chosen.map((c) => <li key={c.id}>{c.stageName}<button type="button" aria-label={`Remove ${c.stageName}`} onClick={() => setChosen(chosen.filter((x) => x.id !== c.id))}>×</button></li>)}
+            </ul>
+          ) : <p className="muted">Search and add the contestants to message.</p>}
+        </div>
+      )}
+
+      <p className="note" role="status">
+        {reach ? <>Goes to <b>{plural(reach.count, 'contestant')}</b>{reach.names.length ? `: ${reach.names.join(', ')}${reach.count > reach.names.length ? '…' : ''}` : ''}.{reach.noWhatsApp ? ` ${plural(reach.noWhatsApp, 'other')} without a usable WhatsApp number are left out.` : ''}</> : 'Working out who it goes to…'}
+      </p>
+
+      <textarea className="wa-editor" rows={8} value={text} onChange={(e) => { setText(e.target.value); setNote(null); }} placeholder="Write your message. **bold**, _italic_, ~~strike~~ and # Heading work." aria-label="Message" />
+      <p className="muted small-note">
+        Fill-ins: {CUSTOM_FILLS.map((f, i) => <span key={f}>{i ? ', ' : ''}<code>{`{${f}}`}</code> {CUSTOM_FILL_HELP[f]}</span>)}.
+      </p>
+      {text.trim() && reach?.example ? (
+        <>
+          <p className="field-label">Preview</p>
+          <div className="wa-preview" dangerouslySetInnerHTML={{ __html: whatsAppHtml(renderMessage(text, reach.example)) }} />
+        </>
+      ) : null}
+      <ErrorNote error={error} />
+      {note ? <p className="note note-good">{note}</p> : null}
+      <div className="wa-actions">
+        <button type="button" className="btn btn-primary" disabled={busy || !text.trim() || !reach?.count} onClick={send}>
+          {busy ? 'Sending…' : `Send to ${plural(reach?.count ?? 0, 'contestant')}`}
+        </button>
+      </div>
+
+      {history.data?.length ? (
+        <>
+          <h3>Sent before</h3>
+          <ul className="wa-failures">
+            {history.data.map((b) => (
+              <li key={b.id}>
+                <span>{b.body.length > 90 ? `${b.body.slice(0, 90)}…` : b.body}</span>
+                <span className="muted">{dateTime(b.createdAt)} · {plural(b.recipients, 'contestant')} · {num(b.sent)} sent{b.waiting ? `, ${num(b.waiting)} waiting` : ''}{b.failed ? `, ${num(b.failed)} could not send` : ''}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 // WhatsApp's formatting, shown the way the phone shows it. Escaped first, so nothing typed runs.
 function whatsAppHtml(text) {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -1554,6 +1704,7 @@ function MessagesTab() {
     <div className="admin-columns">
       <ErrorNote error={error} />
       <WhatsAppPanel />
+      <WhatsAppCompose />
       <section className="panel">
         <h2>Announcement to contestants</h2>
         <form className="stack" onSubmit={announce}>

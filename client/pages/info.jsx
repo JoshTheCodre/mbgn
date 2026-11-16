@@ -19,7 +19,7 @@ function InfoPage({ eyebrow, title, intro, children }) {
 
 export function Rules() {
   const { competition } = useApp();
-  const minFollowers = num(competition?.minFollowers ?? 800);
+  const minFollowers = num(competition?.minFollowers ?? 500);
   const votePrice = naira(competition?.votePrice ?? 200);
   const deals = [...(competition?.packages ?? [])].sort((a, b) => a.votes - b.votes);
 
@@ -113,7 +113,7 @@ export function Privacy() {
       <section className="info-section">
         <h2>Voters</h2>
         <ul>
-          <li>We ask for your name, which appears on your proof of vote. Only you and the organisers see it.</li>
+          <li>We ask for your name or a nickname. It appears on your proof of vote, and the contestant you vote for sees it with your votes. The public never sees it.</li>
           <li>Payments are handled by Paystack. We never see or store your card details.</li>
           <li>If you ask for an emailed receipt, we use your email address only to send it.</li>
           <li>To spot fraud, we keep a scrambled form of your network address, which cannot be turned back into the address.</li>

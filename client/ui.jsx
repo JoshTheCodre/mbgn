@@ -222,7 +222,7 @@ export const PinInput = (props) => (
 export function Field({ label, hint, children }) {
   return (
     <label className="field">
-      <span className="field-label">{label}</span>
+      {label ? <span className="field-label">{label}</span> : null}
       {children}
       {hint ? <span className="field-hint">{hint}</span> : null}
     </label>
@@ -392,10 +392,17 @@ export function FollowerRow({ platform, account, result, minFollowers }) {
 }
 
 // A contestant's own batch group. The link is only shown to people who have earned it.
+// Once she has tapped to join, it becomes her group chat, so she never joins another group.
 export function WhatsAppGroup({ group }) {
+  const [joined, setJoined] = useState(Boolean(group.joined));
+  function opened() {
+    if (joined) return;
+    setJoined(true);
+    api('/me/group-joined', { method: 'POST' }).catch(() => {});
+  }
   return (
-    <a className="btn btn-whatsapp btn-wide" href={group.url} target="_blank" rel="noreferrer noopener">
-      <BrandLogo name="whatsapp" />Join the WhatsApp group
+    <a className="btn btn-whatsapp btn-wide" href={group.url} target="_blank" rel="noreferrer noopener" onClick={opened}>
+      <BrandLogo name="whatsapp" />{joined ? 'WhatsApp group chat' : 'Join the WhatsApp group'}
     </a>
   );
 }
@@ -664,6 +671,74 @@ export function ThemePicker() {
         <span className="theme-swatch" style={swatch(selected)} />
         Theme
       </button>
+    </div>
+  );
+}
+
+// ---- Phone notifications (push) ----
+// Turned on once per phone or browser. iPhones only allow it once the site is on the Home Screen.
+
+const toBytes = (base64) => Uint8Array.from(atob((base64 + '='.repeat((4 - (base64.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+
+async function pushState() {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  const standalone = window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone;
+  if (ios && !standalone) return 'ios';
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return 'unsupported';
+  if (Notification.permission === 'denied') return 'blocked';
+  const registration = await navigator.serviceWorker.getRegistration();
+  return (await registration?.pushManager.getSubscription()) ? 'on' : 'off';
+}
+
+export function PushToggle({ what }) {
+  const [state, setState] = useState('checking');
+  const [error, setError] = useState(null);
+  useEffect(() => { pushState().then(setState, () => setState('unsupported')); }, []);
+
+  async function turnOn() {
+    setError(null);
+    setState('busy');
+    try {
+      const registration = await navigator.serviceWorker.register('/sw.js');
+      if (await Notification.requestPermission() !== 'granted') {
+        setState(Notification.permission === 'denied' ? 'blocked' : 'off');
+        return;
+      }
+      const { publicKey } = await api('/push/key');
+      const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: toBytes(publicKey) });
+      await api('/push/subscribe', { body: subscription.toJSON() });
+      setState('on');
+    } catch (err) {
+      setError(err.message);
+      setState('off');
+    }
+  }
+
+  async function turnOff() {
+    setState('busy');
+    const subscription = await (await navigator.serviceWorker.getRegistration())?.pushManager.getSubscription();
+    if (subscription) {
+      await api('/push/unsubscribe', { body: { endpoint: subscription.endpoint } }).catch(() => {});
+      await subscription.unsubscribe();
+    }
+    setState('off');
+  }
+
+  if (state === 'checking' || state === 'unsupported') return null;
+  return (
+    <div className={`push-toggle push-${state}`}>
+      <span className="push-bell" aria-hidden="true">🔔</span>
+      <div>
+        {state === 'on' ? <p><b>Notifications are on</b> for this device. {what}</p> : null}
+        {state === 'off' || state === 'busy' ? <p><b>Get notified on this phone.</b> {what}</p> : null}
+        {state === 'blocked' ? <p><b>Notifications are blocked</b> for this site. Allow them in your browser’s site settings, then come back.</p> : null}
+        {state === 'ios' ? <p><b>Get notified on your iPhone:</b> tap Share, then “Add to Home Screen”. Open MBGN from your Home Screen and turn notifications on there.</p> : null}
+        {error ? <p className="push-error">{error}</p> : null}
+      </div>
+      {state === 'off' || state === 'busy'
+        ? <button type="button" className="btn btn-primary btn-small" disabled={state === 'busy'} onClick={turnOn}>{state === 'busy' ? 'Turning on…' : 'Turn on'}</button>
+        : null}
+      {state === 'on' ? <button type="button" className="btn btn-ghost btn-small" onClick={turnOff}>Turn off</button> : null}
     </div>
   );
 }

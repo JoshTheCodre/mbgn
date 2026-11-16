@@ -8,7 +8,11 @@ import {
 } from '../competition.js';
 import { getSetting, nowIso, tx } from '../db.js';
 import { PLATFORMS } from '../followers.js';
-import { assignGroup } from '../groups.js';
+import { approveContestant } from '../approval.js';
+import { groupById } from '../groups.js';
+import { pushAdmins } from '../push.js';
+import { shareImage } from '../share.js';
+import { queueRegistered, sendDueWhatsApp } from '../whatsapp.js';
 import { handleWebhook } from '../payments.js';
 import { closeRoundsIfDue, currentRound, roundView } from '../rounds.js';
 import { startVotingIfDue } from '../stages.js';
@@ -231,6 +235,13 @@ export function publicRouter(ctx) {
     res.json(publicProfile(row, await movementBaseline(db)));
   });
 
+  // The picture in a voting link's preview (see share.js).
+  router.get('/share/:code.jpg', async (req, res) => {
+    const image = await shareImage(ctx, normalizeCode(req.params.code));
+    if (!image) throw new HttpError(404, 'No picture for that code.');
+    res.set({ 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' }).send(image);
+  });
+
   // Counts a visit that arrived through a contestant's shared voting link.
   router.post('/contestants/:code/visit', rateLimit({ windowMs: 60000, max: 30 }), async (req, res) => {
     const row = await db.prepare("SELECT id FROM contestants WHERE code = ? AND status = 'approved'").get(normalizeCode(req.params.code));
@@ -288,7 +299,7 @@ export function publicRouter(ctx) {
     const whatsapp = clean(b.whatsapp, 20);
     const state = clean(b.state, 40);
     const location = clean(b.location, 100);
-    const bio = clean(b.bio, 600);
+    const bio = clean(b.bio, 2000);
 
     if (fullName.length < 2) throw new HttpError(400, 'Please enter your full name.');
     if (!validEmail(email)) throw new HttpError(400, 'Please enter a valid email address.');
@@ -297,6 +308,7 @@ export function publicRouter(ctx) {
     if (!NIGERIAN_STATES.includes(state)) throw new HttpError(400, 'Please choose your state.');
     if (location.length < 2) throw new HttpError(400, 'Please enter your town or city.');
     if (bio.length < 20) throw new HttpError(400, 'Please write a short biography of at least 20 characters.');
+    if (bio.length > 150) throw new HttpError(400, 'Please keep your biography to 150 characters or fewer.');
     checkPin(b.pin);
     // Using someone else's account means disqualification, and applicants say so before the check.
     if (b.ownAccount !== 'yes') throw new HttpError(400, 'Please confirm the social media account belongs to you.');
@@ -321,15 +333,15 @@ export function publicRouter(ctx) {
       if (taken) throw new HttpError(409, `That ${platform === 'tiktok' ? 'TikTok' : platform === 'instagram' ? 'Instagram' : 'Facebook'} account is already part of another application.`);
     }
 
-    // Nothing is stored for someone who does not pass, so they can simply try again later.
+    // Every application is kept, pass or not: one below the follower minimum waits as pending
+    // (verification 'failed') for an admin to approve or reject by hand.
     const minFollowers = Number(await getSetting(db, 'min_followers'));
     const { outcome, results } = await ctx.followers.check(links, minFollowers);
-    if (outcome === 'failed') return res.json({ outcome, results, minFollowers });
 
     const photoFile = `${crypto.randomBytes(16).toString('hex')}.${type.ext}`;
     await ctx.photos.put(photoFile, req.file.buffer, type.mime);
 
-    const { userId, group } = await tx(db, async () => {
+    const { userId, contestantId } = await tx(db, async () => {
       const at = nowIso();
       const { lastInsertRowid: uid } = await db.prepare(`INSERT INTO users (email, name, phone, role, created_at)
         VALUES (?, ?, ?, 'contestant', ?) RETURNING id`).run(email, fullName, phone, at);
@@ -337,23 +349,31 @@ export function publicRouter(ctx) {
         photo_file, tiktok, instagram, facebook, verification, follower_results, pin_hash, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
         .run(uid, fullName, stageName, email, phone, whatsapp, state, location, bio, photoFile, tiktok, instagram, facebook, outcome, JSON.stringify(results), hashPassword(b.pin), at);
-      return { userId: uid, group: outcome === 'passed' ? await assignGroup(db, contestantId) : null };
+      return { userId: uid, contestantId };
     }).catch((err) => {
       // The same email submitted twice at once.
       throw err.code === '23505' ? alreadyJoined() : err;
     });
 
-    const groupLine = group ? `\n\nJoin your WhatsApp group here:\n${group.invite_url}` : '\n\nWe will send your WhatsApp group link to this email address.';
-    await ctx.mailer.send(outcome === 'passed' ? {
-      to: email,
-      subject: 'You passed the MBGN follower check',
-      text: `Congratulations ${stageName},\n\nYou passed the follower check and your application is now with our review team. We will send more information to this email address.${groupLine}`,
-    } : {
-      to: email,
-      subject: 'We received your MBGN application',
-      text: `Hello ${stageName},\n\nWe could not finish checking your followers automatically, so our team will look at your accounts. We will email you as soon as a decision is made.`,
-    });
+    // Past the follower check: approved straight away, with her code, link and group, all sent to
+    // her on WhatsApp. Otherwise she waits for an admin, and hears that her application is in.
+    let contestant = null;
+    if (outcome === 'passed') {
+      contestant = await approveContestant(ctx, contestantId);
+    } else if (await queueRegistered(ctx, { id: contestantId, stage_name: stageName, whatsapp }, null)) {
+      ctx.background(sendDueWhatsApp(ctx, { max: 1 }));
+    } else {
+      await ctx.mailer.send({
+        to: email,
+        subject: 'We received your MBGN application',
+        text: `Hello ${stageName},\n\n${outcome === 'review' ? 'We could not finish checking your followers automatically' : 'Your accounts are below our follower minimum'}, so our team will look at your application. We will let you know as soon as a decision is made.`,
+      });
+    }
+    const group = contestant ? await groupById(db, contestant.whatsapp_group_id) : null;
     ctx.bus.publish('admin', { type: 'registration' });
+    ctx.background(pushAdmins(ctx, contestant
+      ? { title: 'New contestant', body: `${stageName} from ${state} passed the follower check and is in (${contestant.code}).`, url: '/admin' }
+      : { title: 'New application to review', body: `${stageName} from ${state}: ${outcome === 'review' ? 'the follower check could not finish' : 'below the follower minimum'}.`, url: '/admin' }));
 
     // Joining is what identifies a contestant: this browser is recognised from now on.
     await startSession(ctx, res, userId);
@@ -361,7 +381,9 @@ export function publicRouter(ctx) {
       outcome,
       results,
       minFollowers,
-      email,
+      name: stageName,
+      code: contestant?.code ?? null,
+      link: contestant ? `${config.publicUrl}/c/${contestant.code}` : null,
       whatsappGroup: group ? { name: group.name, url: group.invite_url } : null,
     });
   });

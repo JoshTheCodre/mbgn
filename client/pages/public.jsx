@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   ApiError, ago, api, naira, num, plural, registrationOpen, useApp, useFetch, useLive,
 } from '../lib.jsx';
-import { bulkPrice, upsellOffers } from '../../shared/pricing.js';
+import { bulkPrice, paymentCharges, upsellOffers } from '../../shared/pricing.js';
 import {
   ActivityFeed, BrandLogo, CardsSkeleton, CodeTag, CoverSkeleton, Crown, Countdown, Dialog, ErrorNote, Field, LoadFailed,
   Loading, Movement, PLATFORM_NAMES, PageSkeleton, Portrait, ProfileSkeleton, RankSkeleton, CountUp, ShareButton, ShareCard, Timer,
@@ -276,7 +276,7 @@ function RegistrationHome() {
             <ol className="how-steps">
               <li>
                 <h3>Join and pass the follower check</h3>
-                <p>Add your photo and details. You need at least {num(competition?.minFollowers ?? 800)} followers on Instagram, TikTok or Facebook, and we check it on the spot.</p>
+                <p>Add your photo and details. You need at least {num(competition?.minFollowers ?? 500)} followers on Instagram, TikTok or Facebook, and we check it on the spot.</p>
               </li>
               <li>
                 <h3>Get approved</h3>
@@ -784,10 +784,12 @@ function VotePanel({ contestant, viaLink }) {
         <p className="vote-sum">
           {plural(amount, 'vote')} · <b>{naira(priceOf(amount))}</b>
           {rate < votePrice ? <span className="deal-save">Bulk price: {naira(Math.round(rate))} a vote</span> : null}
+          <span className="vote-charges">+ {naira(paymentCharges(priceOf(amount)))} payment charges</span>
         </p>
       ) : null}
-      <Field label="Your name" hint="Shown on your proof of vote. Only you and the organisers see it.">
-        <input value={voterName} onChange={(e) => setVoterName(e.target.value)} maxLength={60} autoComplete="name" required />
+      <Field hint={`${contestant.name} sees this name with your votes.`}>
+        <input value={voterName} onChange={(e) => setVoterName(e.target.value)} maxLength={60} autoComplete="name" required
+          placeholder="Type your name or nickname" aria-label="Your name or nickname" />
       </Field>
 
       {valid ? (
@@ -796,7 +798,7 @@ function VotePanel({ contestant, viaLink }) {
           <button className="btn btn-vote btn-wide" disabled={busy}>
             {busy
               ? (method === 'transfer' ? 'Getting your account number…' : 'Opening checkout…')
-              : `Pay ${naira(priceOf(amount))} ${PAY_OPTIONS.find((o) => o.id === method)?.button ?? 'and vote'}`}
+              : `Pay ${naira(priceOf(amount) + paymentCharges(priceOf(amount)))} ${PAY_OPTIONS.find((o) => o.id === method)?.button ?? 'and vote'}`}
           </button>
         </>
       ) : null}

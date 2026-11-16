@@ -6,6 +6,7 @@
 // {name}-style fill-ins are replaced for each contestant.
 
 export const MESSAGE_KINDS = {
+  registered: { label: 'Application received', fills: ['name', 'group', 'dashboard'] },
   accepted: { label: 'Acceptance', fills: ['name', 'code', 'link', 'group', 'voting', 'dashboard'] },
   group_link: { label: 'Group link', fills: ['name', 'group_link'] },
   voting_open: { label: 'Voting open', fills: ['name', 'code', 'link', 'dashboard'] },
@@ -22,6 +23,15 @@ export const FILLS = {
 };
 
 export const DEFAULT_MESSAGES = {
+  registered: `Hello {name}! 👋
+
+Thank you for applying to Most Beautiful Girl Online Nigeria. Your application is in, and our team is reviewing it.
+
+{group}
+
+Once you're approved, we'll message you here with your contestant code and voting link.
+
+Your dashboard: {dashboard}`,
   accepted: `Congratulations {name}! 🎉
 
 You have been accepted into Most Beautiful Girl Online Nigeria.

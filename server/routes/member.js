@@ -75,7 +75,7 @@ export function votingRouter(ctx) {
         ['Contestant', `${contestant.stage_name} (${contestant.code})`],
         ['Votes', String(payment.vote_quantity)],
         ['Status', outcomes[payment.votes_status] ?? 'Pending'],
-        ['Amount paid', `NGN ${payment.amount.toLocaleString('en-NG')}`],
+        ['Amount paid', `NGN ${(payment.amount + (payment.fee ?? 0)).toLocaleString('en-NG')}`],
         ['Paid with', payment.payment_method ?? payment.provider],
       ],
     });
@@ -161,7 +161,7 @@ export function contestantRouter(ctx) {
       round: round ? { ...roundView(round), ...standing } : null,
       verification: c.verification,
       followerResults: c.follower_results ? JSON.parse(c.follower_results) : [],
-      whatsappGroup: group ? { name: group.name, url: group.invite_url } : null,
+      whatsappGroup: group ? { name: group.name, url: group.invite_url, joined: Boolean(c.group_joined_at) } : null,
       name: c.stage_name,
       fullName: c.full_name,
       photoUrl: photoUrl(c),
@@ -175,9 +175,14 @@ export function contestantRouter(ctx) {
 
     const dayAgo = new Date(Date.now() - 864e5).toISOString();
     const newVotes = (await db.prepare("SELECT COALESCE(SUM(quantity), 0) AS n FROM votes WHERE contestant_id = ? AND status = 'valid' AND created_at >= ?").get(c.id, dayAgo)).n;
-    // Quantities and times only. Never who voted.
-    const history = (await db.prepare("SELECT quantity, created_at, via_link FROM votes WHERE contestant_id = ? AND status = 'valid' ORDER BY id DESC LIMIT 30").all(c.id))
-      .map((v) => ({ quantity: v.quantity, createdAt: v.created_at, viaLink: Boolean(v.via_link) }));
+    // Who voted (the name they typed when voting) and how many, newest first; and her biggest supporters.
+    const supporter = "COALESCE(NULLIF(TRIM(p.voter_name), ''), 'A supporter')";
+    const history = (await db.prepare(`SELECT v.quantity, v.created_at, v.via_link, ${supporter} AS name FROM votes v
+      LEFT JOIN payments p ON p.id = v.payment_id WHERE v.contestant_id = ? AND v.status = 'valid' ORDER BY v.id DESC LIMIT 30`).all(c.id))
+      .map((v) => ({ name: v.name, quantity: v.quantity, createdAt: v.created_at, viaLink: Boolean(v.via_link) }));
+    const topSupporters = (await db.prepare(`SELECT MIN(${supporter}) AS name, SUM(v.quantity) AS votes FROM votes v
+      LEFT JOIN payments p ON p.id = v.payment_id WHERE v.contestant_id = ? AND v.status = 'valid'
+      GROUP BY LOWER(${supporter}) ORDER BY votes DESC, name LIMIT 10`).all(c.id));
 
     const days = [];
     for (let i = 13; i >= 0; i -= 1) days.push(new Date(Date.now() - i * 864e5).toISOString().slice(0, 10));
@@ -202,6 +207,7 @@ export function contestantRouter(ctx) {
       movement24h: before == null || c.position == null ? null : before - c.position,
       newVotes,
       history,
+      topSupporters,
       daily,
       stats: {
         shareOfVotes: grand > 0 ? c.total_votes / grand : 0,
@@ -226,7 +232,7 @@ export function contestantRouter(ctx) {
     const whatsapp = clean(b.whatsapp, 20);
     const state = clean(b.state, 40);
     const location = clean(b.location, 100);
-    const bio = clean(b.bio, 600);
+    const bio = clean(b.bio, 2000);
     if (fullName.length < 2) throw new HttpError(400, 'Please enter your full name.');
     if (!validEmail(email)) throw new HttpError(400, 'Please enter a valid email address.');
     if (!validPhone(phone)) throw new HttpError(400, 'Please enter a valid phone number.');
@@ -234,6 +240,7 @@ export function contestantRouter(ctx) {
     if (!NIGERIAN_STATES.includes(state)) throw new HttpError(400, 'Please choose your state.');
     if (location.length < 2) throw new HttpError(400, 'Please enter your town or city.');
     if (bio.length < 20) throw new HttpError(400, 'Please write a short biography of at least 20 characters.');
+    if (bio.length > 150) throw new HttpError(400, 'Please keep your biography to 150 characters or fewer.');
     if (email !== c.email && await db.prepare('SELECT 1 FROM users WHERE email = ? AND id <> ?').get(email, c.user_id)) {
       throw new HttpError(409, 'Another account already uses that email address.');
     }
@@ -277,6 +284,13 @@ export function contestantRouter(ctx) {
 
   router.post('/notifications/read', async (req, res) => {
     await db.prepare('UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL').run(nowIso(), req.user.id);
+    res.json({ ok: true });
+  });
+
+  // She tapped to join her WhatsApp group: from now on it's offered as her group chat, not a
+  // group to join, so nobody ends up in several groups.
+  router.post('/group-joined', async (req, res) => {
+    await db.prepare('UPDATE contestants SET group_joined_at = COALESCE(group_joined_at, ?) WHERE user_id = ?').run(nowIso(), req.user.id);
     res.json({ ok: true });
   });
 

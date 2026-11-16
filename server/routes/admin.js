@@ -1,20 +1,20 @@
 import {
   HttpError, asyncRouter, hashPassword, requireAdmin, sessionHash, verifyPassword,
 } from '../auth.js';
+import { approveContestant, tellApproved } from '../approval.js';
+import { broadcastHistory, previewAudience, sendBroadcast } from '../broadcasts.js';
 import {
-  allocateCode, audit, notifyMany, notifyUser, photoUrl, publishActivity, recomputeRanks, votingState,
+  audit, notifyMany, notifyUser, photoUrl, publishActivity, recomputeRanks, votingState,
 } from '../competition.js';
 import { getSetting, nowIso, setSetting, tx } from '../db.js';
 import { PLATFORMS, PROVIDERS } from '../followers.js';
-import {
-  assignGroup, countWaiting, groupById, placeWaiting,
-} from '../groups.js';
+import { countWaiting, placeWaiting } from '../groups.js';
 import { closeRound, roundStanding, roundView } from '../rounds.js';
 import { changeStage, startVotingIfDue, tellContestantsVotingOpened } from '../stages.js';
 import { recordInPersonSale } from '../payments.js';
 import { voidVote } from '../votes.js';
 import {
-  messageSettings, queueAccepted, queueMissingAccepted, retryFailed, saveMessage, sendDueWhatsApp, whatsappOverview,
+  messageSettings, queueMissingAccepted, retryFailed, saveMessage, sendDueWhatsApp, whatsappOverview,
 } from '../whatsapp.js';
 import { normalizeCode, socialLink, themeSettings } from './public.js';
 import { THEME_IDS } from '../../shared/themes.js';
@@ -167,43 +167,15 @@ export function adminRouter(ctx) {
     res.json(rows.map(contestantView));
   });
 
-  async function sendApproval(c) {
-    const link = `${config.publicUrl}/c/${c.code}`;
-    const notYet = await getSetting(db, 'competition_phase') === 'registration' ? ' Voting opens when registration closes, so get your supporters ready.' : '';
-    const group = await groupById(db, c.whatsapp_group_id);
-    await notifyUser(ctx, c.user_id, 'approval', `You're in! Your contestant code is ${c.code}. Share your voting link: ${link}.${notYet}`);
-    await ctx.mailer.send({
-      to: c.email,
-      subject: `You're in! Your MBGN code is ${c.code}`,
-      text: `Congratulations ${c.stage_name},\n\nYour application has been approved.\n\nYour permanent contestant code: ${c.code}\nYour personal voting link: ${link}\n${notYet ? `\n${notYet.trim()}\n` : ''}${group ? `\nYour WhatsApp group: ${group.invite_url}\n` : ''}\nLog in to your dashboard to follow your votes and ranking: ${config.publicUrl}/dashboard`,
-    });
-  }
-
   router.post('/contestants/:id/approve', async (req, res) => {
-    const updated = await tx(db, async () => {
-      const c = await getContestant(req.params.id);
-      if (!['pending', 'rejected'].includes(c.status)) throw new HttpError(409, `This contestant is already ${c.status}.`);
-      if (!c.code) {
-        const { seq, code } = await allocateCode(ctx);
-        await db.prepare('UPDATE contestants SET code = ?, code_seq = ? WHERE id = ?').run(code, seq, c.id);
-      }
-      await db.prepare("UPDATE contestants SET status = 'approved', status_reason = NULL, approved_at = ? WHERE id = ?").run(nowIso(), c.id);
-      if (!c.whatsapp_group_id) await assignGroup(db, c.id);
-      await recomputeRanks(db);
-      await audit(ctx, req.user.id, 'contestant.approve', `#${c.id} ${c.stage_name}`);
-      return await getContestant(c.id);
-    });
-    await sendApproval(updated);
-    // Their WhatsApp message goes out straight away, after the response.
-    if (await queueAccepted(ctx, updated)) ctx.background(sendDueWhatsApp(ctx, { max: 1 }));
-    changed();
-    res.json(contestantView(updated));
+    const { id } = await getContestant(req.params.id);
+    res.json(contestantView(await approveContestant(ctx, id, req.user.id)));
   });
 
   router.post('/contestants/:id/resend-code', async (req, res) => {
     const c = await getContestant(req.params.id);
     if (c.status !== 'approved') throw new HttpError(409, 'Only approved contestants have an active code.');
-    await sendApproval(c);
+    await tellApproved(ctx, c, { whatsapp: false });
     await audit(ctx, req.user.id, 'contestant.resend_code', c.code);
     res.json({ ok: true });
   });
@@ -708,6 +680,19 @@ export function adminRouter(ctx) {
     await audit(ctx, req.user.id, 'whatsapp.accepted', `Queued ${queued} acceptance messages`);
     ctx.background(sendDueWhatsApp(ctx));
     res.json({ queued });
+  });
+
+  // Admins' own messages: who they'd reach, sending, and what was sent.
+  router.post('/whatsapp/audience', async (req, res) => {
+    res.json(await previewAudience(ctx, req.body?.audience));
+  });
+
+  router.post('/whatsapp/broadcasts', async (req, res) => {
+    res.status(201).json(await sendBroadcast(ctx, req.body?.audience, req.body?.text, req.user.id));
+  });
+
+  router.get('/whatsapp/broadcasts', async (_req, res) => {
+    res.json(await broadcastHistory(ctx));
   });
 
   router.get('/whatsapp/messages', async (_req, res) => {

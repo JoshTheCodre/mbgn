@@ -2,9 +2,12 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, ago, dateTime, num, plural, shortDate, useApp, useFetch, useLive } from '../lib.jsx';
 import {
-  CodeTag, Countdown, ErrorNote, Field, LoadFailed, Loading, Movement, PinInput, Portrait, CountUp, ShareButtons, Timer, WhatsAppGroup,
+  CodeTag, Countdown, ErrorNote, Field, LoadFailed, Loading, Movement, PinInput, Portrait, CountUp, PushToggle, ShareButtons, Timer, WhatsAppGroup,
 } from '../ui.jsx';
-import { PhotoPicker } from './account.jsx';
+
+const PUSH_WHAT = 'You’ll hear when you get votes, are approved, and other news.';
+const HomeLink = () => <Link to="/" className="home-link">← Home</Link>;
+import { BioField, PhotoPicker } from './account.jsx';
 
 function DailyVotes({ daily }) {
   const [active, setActive] = useState(null);
@@ -78,12 +81,14 @@ function GroupPanel({ data }) {
     return (
       <section className="panel group-panel">
         <h2>Your WhatsApp group</h2>
-        <p className="muted">Join {data.whatsappGroup.name} for updates about your batch.</p>
+        <p className="muted">{data.whatsappGroup.joined
+          ? `You’re in ${data.whatsappGroup.name}. Open the chat for updates about your batch.`
+          : `Join ${data.whatsappGroup.name} for updates about your batch. This is your only group.`}</p>
         <WhatsAppGroup group={data.whatsappGroup} />
       </section>
     );
   }
-  if (data.status === 'pending' && data.verification === 'passed') {
+  if (data.status === 'approved') {
     return <p className="note">Your WhatsApp group link will be sent to you on WhatsApp soon.</p>;
   }
   return null;
@@ -93,7 +98,7 @@ function NotYetLive({ data, onRead, onSaved }) {
   const copy = {
     pending: [
       data.verification === 'passed' ? 'You passed the follower check' : 'Your application is being reviewed',
-      `${data.verification === 'review' ? 'Our team is looking at your social media accounts. ' : ''}Once you're approved, we'll message you on WhatsApp, and your contestant code and voting link appear here.`,
+      `${{ review: 'We couldn’t finish checking your followers automatically, so our team is looking at your accounts. ', failed: 'Your accounts are below our follower minimum, so our team will decide on your application. ' }[data.verification] ?? ''}Once you're approved, we'll message you on WhatsApp, and your contestant code and voting link appear here.`,
     ],
     rejected: ['Your application was not approved', data.statusReason ?? ''],
     suspended: ['Your profile is suspended', data.statusReason ?? ''],
@@ -102,6 +107,8 @@ function NotYetLive({ data, onRead, onSaved }) {
   }[data.status];
   return (
     <div className="wrap page narrow-wide">
+      <HomeLink />
+      <PushToggle what={PUSH_WHAT} />
       <div className="waiting">
         <div className="dash-avatar"><Portrait name={data.name} photoUrl={data.photoUrl} code={data.code ?? data.name} /></div>
         <div>
@@ -217,7 +224,7 @@ function ProfilePanel({ data, onSaved }) {
             <Field label="Phone number"><input name="phone" type="tel" defaultValue={p.phone} autoComplete="tel" required /></Field>
             <Field label="WhatsApp number" hint="You log in with this number."><input name="whatsapp" type="tel" defaultValue={p.whatsapp} required /></Field>
           </div>
-          <Field label="Short biography"><textarea name="bio" rows={4} minLength={20} maxLength={600} defaultValue={p.bio} required /></Field>
+          <BioField defaultValue={p.bio} />
           <ErrorNote error={error} />
           <div className="admin-actions">
             <button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
@@ -338,6 +345,8 @@ export function Dashboard() {
   const { stats } = data;
   return (
     <div className="wrap page dashboard">
+      <HomeLink />
+      <PushToggle what={PUSH_WHAT} />
       <header className="dash-hero">
         {data.photoUrl ? <img className="dash-backdrop" src={data.photoUrl} alt="" aria-hidden="true" /> : null}
         <div className="dash-avatar">
@@ -385,13 +394,24 @@ export function Dashboard() {
         <Notifications items={data.notifications} onRead={markRead} />
       </div>
 
+      {data.topSupporters.length ? (
+        <section className="panel">
+          <h2>Your top supporters</h2>
+          <ol className="history supporters">
+            {data.topSupporters.map((s) => (
+              <li key={s.name}><span><b>{s.name}</b></span><small>{plural(s.votes, 'vote')}</small></li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
+
       <section className="panel">
-        <h2>Voting activity</h2>
-        {data.history.length === 0 ? <p className="muted">Votes will appear here as they arrive. Supporter identities are kept private.</p> : (
+        <h2>Who voted for you</h2>
+        {data.history.length === 0 ? <p className="muted">Votes will appear here as they arrive, with the name each supporter gave.</p> : (
           <ul className="history">
             {data.history.map((v, i) => (
               <li key={`${v.createdAt}-${i}`}>
-                <span><b>+{plural(v.quantity, 'vote')}</b>{v.viaLink ? <em className="tag">via your link</em> : null}</span>
+                <span><b>{v.name}</b> gave <b>{plural(v.quantity, 'vote')}</b>{v.viaLink ? <em className="tag">via your link</em> : null}</span>
                 <small>{dateTime(v.createdAt)}</small>
               </li>
             ))}

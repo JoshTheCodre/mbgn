@@ -28,7 +28,8 @@ export function waNumber(raw) {
   return null;
 }
 
-const enabled = (ctx) => Boolean(ctx.config.whatsappSenderToken || ctx.config.evolution);
+export const whatsappEnabled = (ctx) => Boolean(ctx.config.whatsappSenderToken || ctx.config.evolution);
+const enabled = whatsappEnabled;
 
 function lagosDate(iso) {
   return new Date(iso).toLocaleDateString('en-NG', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Africa/Lagos' });
@@ -82,7 +83,7 @@ export async function saveMessage(ctx, kind, text) {
 }
 
 // One of each kind per contestant, however many times something asks.
-async function queue(db, rows) {
+export async function queue(db, rows) {
   for (let i = 0; i < rows.length; i += 500) {
     const chunk = rows.slice(i, i + 500);
     const at = nowIso();
@@ -117,6 +118,17 @@ export async function queueMissingAccepted(ctx) {
   const rows = await acceptedRows(ctx, missing);
   await queue(ctx.db, rows);
   return rows.length;
+}
+
+// Right after applying (once past the follower check). False if it can't go on WhatsApp.
+export async function queueRegistered(ctx, c, group) {
+  const to = waNumber(c.whatsapp);
+  if (!enabled(ctx) || !to) return false;
+  const body = renderMessage(await template(ctx.db, 'registered'), {
+    name: c.stage_name, group: group ? groupLine(group.invite_url) : '', dashboard: `${ctx.config.publicUrl}/dashboard`,
+  });
+  await queue(ctx.db, [{ contestantId: c.id, kind: 'registered', to, body }]);
+  return true;
 }
 
 // For someone who waited for a group with room. False if it can't go on WhatsApp.

@@ -1,4 +1,5 @@
 import { nowIso, tx } from './db.js';
+import { pushTo } from './push.js';
 
 export async function votingState(db) {
   const rows = await db.prepare("SELECT key, value FROM settings WHERE key IN ('competition_phase', 'voting_status', 'voting_starts_at', 'voting_ends_at')").all();
@@ -114,24 +115,33 @@ export async function audit(ctx, actorId, action, details) {
     .run(actorId ?? null, action, details ?? null, nowIso());
 }
 
+// Each notification also reaches the person's phone, if they turned notifications on (push.js).
+const toPhones = (ctx, userIds, message) => ctx.background(pushTo(ctx, userIds, { title: 'MBGN', body: message, url: '/dashboard' }));
+
 export async function notifyUser(ctx, userId, kind, message) {
   const createdAt = nowIso();
   const { lastInsertRowid: id } = await ctx.db
     .prepare('INSERT INTO notifications (user_id, kind, message, created_at) VALUES (?, ?, ?, ?) RETURNING id')
     .run(userId, kind, message, createdAt);
   ctx.bus.sendToUser(userId, 'notification', { id, kind, message, createdAt });
+  toPhones(ctx, [userId], message);
 }
 
 // The same kind of notification for many people at once, saved in a few large writes.
 export async function notifyMany(ctx, items, kind) {
   const createdAt = nowIso();
+  const byMessage = new Map();
   for (let i = 0; i < items.length; i += 500) {
     const chunk = items.slice(i, i + 500);
     const rows = await ctx.db.prepare(`INSERT INTO notifications (user_id, kind, message, created_at)
       VALUES ${chunk.map(() => '(?, ?, ?, ?)').join(', ')} RETURNING id, user_id, message`)
       .all(...chunk.flatMap((item) => [item.userId, kind, item.message, createdAt]));
-    for (const row of rows) ctx.bus.sendToUser(row.user_id, 'notification', { id: row.id, kind, message: row.message, createdAt });
+    for (const row of rows) {
+      ctx.bus.sendToUser(row.user_id, 'notification', { id: row.id, kind, message: row.message, createdAt });
+      byMessage.set(row.message, [...(byMessage.get(row.message) ?? []), row.user_id]);
+    }
   }
+  for (const [message, userIds] of byMessage) toPhones(ctx, userIds, message);
 }
 
 export async function publishActivity(ctx, { kind, contestantId = null, message, code = null, amount = null }) {

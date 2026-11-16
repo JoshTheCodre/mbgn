@@ -24,6 +24,11 @@ function getServer() {
   return globalThis.mbgnServer;
 }
 
+// For pages rendered on the server (link previews), the same database and settings as the API.
+export async function getContext() {
+  return (await getServer()).ctx;
+}
+
 export async function handleRequest(req, res) {
   const server = await getServer();
   // Serverless functions have no timers to rely on, so visits drive the periodic work.

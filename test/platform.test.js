@@ -7,9 +7,9 @@ import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { PGlite } from '@electric-sql/pglite';
 import { createApp, createContext } from '../server/app.js';
-import { formatCode } from '../server/competition.js';
+import { formatCode, notifyUser } from '../server/competition.js';
 import { loadConfig } from '../server/config.js';
-import { pgPoolOptions, setSetting } from '../server/db.js';
+import { openDb, pgPoolOptions, setSetting } from '../server/db.js';
 import { createFollowerChecker, findFollowers } from '../server/followers.js';
 import { socialLink } from '../server/routes/public.js';
 import { bulkPrice, upsellOffers } from '../shared/pricing.js';
@@ -17,6 +17,8 @@ import { hashPassword } from '../server/auth.js';
 import { seedDemoData } from '../server/demo-data.js';
 import { applyAdminLogin, clearTestData } from '../server/golive.js';
 import { createMailer } from '../server/mailer.js';
+import { sharePreview } from '../server/share.js';
+import sharp from 'sharp';
 import { tellContestantsVotingOpened } from '../server/stages.js';
 import { sendDueWhatsApp, waNumber } from '../server/whatsapp.js';
 import { DEFAULT_MESSAGES, renderMessage } from '../shared/whatsapp-messages.js';
@@ -129,12 +131,14 @@ function registrationForm(name, overrides = {}) {
   return form;
 }
 
-async function makeContestant(app, admin, name) {
+// Passing the follower check approves straight away; anyone else is approved here by the admin.
+async function makeContestant(app, admin, name, overrides) {
   const person = client(app.base);
-  const res = await person.req('POST', '/contestants/register', { form: registrationForm(name) });
+  const res = await person.req('POST', '/contestants/register', { form: registrationForm(name, overrides) });
   assert.equal(res.status, 201);
   const { data: queue } = await admin.get(`/admin/contestants?q=${name}`);
-  const id = queue[0].id;
+  const { id } = queue[0];
+  if (res.data.code) return { person, id, code: res.data.code };
   const { data: approved, status } = await admin.post(`/admin/contestants/${id}/approve`);
   assert.equal(status, 200);
   return { person, id, code: approved.code };
@@ -190,10 +194,17 @@ describe('MBGN platform', () => {
   });
   after(() => app.close());
 
-  test('registration enters the review queue and stays private until approved', async () => {
+  test('passing the follower check approves at once; anyone else waits in the review queue, private until approved', async () => {
+    const passed = await client(app.base).req('POST', '/contestants/register', { form: registrationForm('Straight') });
+    assert.equal(passed.status, 201);
+    assert.match(passed.data.code, /^MBG/);
+    assert.equal(passed.data.link, `http://localhost/c/${passed.data.code}`);
+
+    // Below the minimum (10 followers): kept, as pending, for an admin to decide.
     const person = client(app.base);
-    const res = await person.req('POST', '/contestants/register', { form: registrationForm('Pending') });
+    const res = await person.req('POST', '/contestants/register', { form: registrationForm('Pending', { instagram: '@pending_10' }) });
     assert.equal(res.status, 201);
+    assert.deepEqual([res.data.outcome, res.data.code], ['failed', null]);
 
     const { data: board } = await client(app.base).get('/leaderboard');
     assert.ok(!board.rows.some((r) => r.name === 'Pending'));
@@ -266,7 +277,7 @@ describe('MBGN platform', () => {
     const person = client(app.base);
     const form = registrationForm('Joiner', { whatsapp: '+234 803 555 0101' });
     assert.equal((await person.req('POST', '/contestants/register', { form })).status, 201);
-    assert.equal((await person.get('/me/dashboard')).data.status, 'pending');
+    assert.equal((await person.get('/me/dashboard')).data.status, 'approved');
 
     // A new device: wrong details are refused, the right phone number and PIN bring the dashboard back.
     const phone = client(app.base);
@@ -692,7 +703,9 @@ describe('Paystack integration (against a local stand-in)', () => {
     const { code } = await makeContestant(app, admin, 'PaystackStart');
     const anon = client(app.base);
     const { data } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 2 });
-    assert.equal(sent.amount, 40000);
+    // The voter pays the charges: 400 for the votes and 7, so 400 is left after Paystack's 1.5%.
+    assert.deepEqual([data.amount, data.fee, data.total], [400, 7, 407]);
+    assert.equal(sent.amount, 40700);
     assert.equal(sent.reference, data.reference);
     assert.ok(sent.metadata.cancel_action.endsWith(`/pay/return/${data.reference}?cancelled=1`));
     // Paystack requires an email, so it gets the site's own mailbox with the reference added.
@@ -709,14 +722,15 @@ describe('Paystack integration (against a local stand-in)', () => {
       { number: data.transfer.accountNumber, bank: data.transfer.bankName, name: data.transfer.accountName },
       { number: '1234567890', bank: 'Paystack-Titan', name: 'PAYSTACK CHECKOUT' },
     );
-    assert.equal(charged.amount, 60000);
+    assert.equal(charged.amount, 61000);
     assert.equal(charged.reference, data.reference);
     const minutes = (Date.parse(charged.bank_transfer.account_expires_at) - Date.now()) / 60000;
     assert.ok(minutes > 55 && minutes <= 60);
-    assert.equal((await anon.get(`/payments/${data.reference}`)).data.transfer.accountNumber, '1234567890');
+    const opened = (await anon.get(`/payments/${data.reference}`)).data;
+    assert.deepEqual([opened.transfer.accountNumber, opened.amount, opened.fee, opened.total], ['1234567890', 600, 10, 610]);
 
     status = 'success';
-    paidAmount = 600;
+    paidAmount = 610;
     const body = eventFor(data.reference);
     await webhook(body, sign(body));
     const { data: view } = await anon.get(`/payments/${data.reference}`);
@@ -801,7 +815,8 @@ describe('Paystack integration (against a local stand-in)', () => {
     const anon = client(app.base);
     const { data } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 10 });
     status = 'success';
-    paidAmount = 100;
+    // The votes' amount alone isn't enough: the charges are part of what must arrive.
+    paidAmount = data.amount;
     const { data: result } = await anon.post(`/payments/${data.reference}/verify`);
     assert.equal(result.status, 'review');
     assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 0);
@@ -884,7 +899,7 @@ describe('Contest stages', () => {
       const { code, person, id } = await makeContestant(app, admin, 'EarlyBird');
       const earlyMail = (await app.ctx.db.prepare("SELECT body FROM outbox WHERE subject LIKE 'You''re in%'").get()).body;
       assert.ok(earlyMail.includes('Voting opens when registration closes'));
-      const waiting = await client(app.base).req('POST', '/contestants/register', { form: registrationForm('StillWaiting') });
+      const waiting = await client(app.base).req('POST', '/contestants/register', { form: registrationForm('StillWaiting', { instagram: '@stillwaiting_offline' }) });
       assert.equal(waiting.status, 201);
 
       const vote = () => anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 1 });
@@ -964,7 +979,7 @@ describe('Cloudflare R2 photos (against a local stand-in)', () => {
       const admin = client(app.base);
       await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
       const person = client(app.base);
-      assert.equal((await person.req('POST', '/contestants/register', { form: registrationForm('Bucket') })).status, 201);
+      assert.equal((await person.req('POST', '/contestants/register', { form: registrationForm('Bucket', { instagram: '@bucket_offline' }) })).status, 201);
 
       const { data: [row] } = await admin.get('/admin/contestants?q=Bucket');
       const key = `/photos/${row.photoUrl.split('/').pop()}`;
@@ -1072,19 +1087,20 @@ describe('Follower check and WhatsApp groups', () => {
   });
   after(() => app.close());
 
-  test('not enough followers saves nothing and leaves the person free to try again', async () => {
+  test('below 500 followers is kept as pending for an admin to decide, never thrown away', async () => {
     const person = client(app.base);
-    const res = await join(person, 'Under', { instagram: '@under_799', tiktok: '@under_12' });
-    assert.equal(res.status, 200);
+    const res = await join(person, 'Under', { instagram: '@under_499', tiktok: '@under_12' });
+    assert.equal(res.status, 201);
     assert.equal(res.data.outcome, 'failed');
-    assert.equal(res.data.minFollowers, 800);
-    assert.deepEqual(res.data.results.map((r) => [r.platform, r.followers]), [['instagram', 799], ['tiktok', 12]]);
-    assert.equal(person.cookie, '');
-    assert.equal(await app.ctx.db.prepare("SELECT 1 FROM users WHERE email = 'under@test.local'").get(), undefined);
+    assert.equal(res.data.minFollowers, 500);
+    assert.deepEqual(res.data.results.map((r) => [r.platform, r.followers]), [['instagram', 499], ['tiktok', 12]]);
+    const { data: [row] } = await admin.get('/admin/contestants?q=Under');
+    assert.deepEqual([row.status, row.verification, row.code], ['pending', 'failed', null]);
+    assert.equal((await person.get('/me/dashboard')).data.status, 'pending');
 
-    const again = await join(person, 'Under', { instagram: '@under_800' });
-    assert.equal(again.status, 201);
-    assert.equal(again.data.outcome, 'passed');
+    // The admin decides: approving gives her a code like anyone else.
+    assert.match((await admin.post(`/admin/contestants/${row.id}/approve`)).data.code, /^MBG/);
+    assert.equal((await join(client(app.base), 'Exactly', { instagram: '@exactly_500' })).data.outcome, 'passed');
   });
 
   test('one account with enough is a pass, and an account that does not exist is not', async () => {
@@ -1094,7 +1110,7 @@ describe('Follower check and WhatsApp groups', () => {
     const early = await join(client(app.base), 'EarlyPass', { instagram: '@earlypass_900', tiktok: '@earlypass_5000', facebook: 'earlypass_1' });
     assert.deepEqual(early.data.results.map((r) => [r.platform, r.status]), [['instagram', 'found'], ['tiktok', 'skipped'], ['facebook', 'skipped']]);
     const missing = await join(client(app.base), 'Ghost', { instagram: '@ghost_notfound' });
-    assert.equal(missing.status, 200);
+    assert.equal(missing.status, 201);
     assert.equal(missing.data.outcome, 'failed');
     assert.equal(missing.data.results[0].status, 'missing');
   });
@@ -1351,7 +1367,7 @@ describe('Prices, proof of vote and admin controls', () => {
     assert.ok(await app.ctx.db.prepare("SELECT 1 FROM audit_log WHERE action = 'votes.adjust' AND details LIKE '%+500: Paid by bank transfer'").get());
     assert.match((await admin.get('/admin/export/contestants.csv')).data, /Votes added by admins/);
 
-    const pending = await client(app.base).req('POST', '/contestants/register', { form: registrationForm('NotYet') });
+    const pending = await client(app.base).req('POST', '/contestants/register', { form: registrationForm('NotYet', { instagram: '@notyet_offline' }) });
     assert.equal(pending.status, 201);
     const { data: [waiting] } = await admin.get('/admin/contestants?q=NotYet');
     assert.equal((await adjust(waiting.id, { quantity: 5, reason: 'early' })).status, 409);
@@ -1645,7 +1661,7 @@ describe('Contestant PIN, profile and rounds', () => {
 
   test('contestants can correct their registration, and a new public name or photo waits for an admin', async () => {
     const person = client(app.base);
-    assert.equal((await person.req('POST', '/contestants/register', { form: registrationForm('Editor') })).status, 201);
+    assert.equal((await person.req('POST', '/contestants/register', { form: registrationForm('Editor', { instagram: '@editor_offline' }) })).status, 201);
     const edit = (person, overrides = {}) => {
       const form = new FormData();
       const fields = {
@@ -2017,7 +2033,7 @@ describe('Large contests', () => {
       const admin = client(app.base);
       await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
       for (const name of ['Pageone', 'Pagetwo', 'Pagethree', 'Pagefour']) await makeContestant(app, admin, name);
-      await client(app.base).req('POST', '/contestants/register', { form: registrationForm('Waiting') });
+      await client(app.base).req('POST', '/contestants/register', { form: registrationForm('Waiting', { instagram: '@waiting_offline' }) });
 
       const sent = await admin.post('/admin/announcements', { title: 'Big news', body: 'Round two starts tomorrow.' });
       assert.equal(sent.data.recipients, 4);
@@ -2299,6 +2315,170 @@ describe('WhatsApp messages', () => {
       assert.equal((await admin.post('/admin/whatsapp/send-accepted')).data.queued, 2);
       assert.equal((await admin.post('/admin/whatsapp/send-accepted')).data.queued, 0);
       assert.equal((await rows(app, "kind = 'accepted'")).length, 2);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('Push notifications, supporters, sharing and custom WhatsApp messages', () => {
+  const pushed = [];
+  const pushSend = async (device, payload) => { pushed.push({ endpoint: device.endpoint, ...JSON.parse(payload) }); };
+  const device = (name) => ({ endpoint: `https://push.example.com/${name}`, keys: { p256dh: 'BKey', auth: 'Auth' } });
+  const settle = () => new Promise((resolve) => { setTimeout(resolve, 50); });
+  const login = async (app) => {
+    const admin = client(app.base);
+    await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+    return admin;
+  };
+
+  test('admins get a push for every new application; contestants for their notifications', async () => {
+    pushed.length = 0;
+    const app = await boot({ pushSend });
+    try {
+      const admin = await login(app);
+      assert.equal((await client(app.base).post('/push/subscribe', device('nobody'))).status, 401);
+      assert.match((await admin.get('/push/key')).data.publicKey, /^[A-Za-z0-9_-]{80,}$/);
+      assert.equal((await admin.post('/push/subscribe', device('admin-phone'))).status, 200);
+
+      const person = client(app.base);
+      await person.req('POST', '/contestants/register', { form: registrationForm('Pushy') });
+      await settle();
+      assert.deepEqual(pushed.map((p) => [p.endpoint, p.title]), [['https://push.example.com/admin-phone', 'New contestant']]);
+      assert.match(pushed[0].body, /Pushy from Lagos passed the follower check/);
+
+      // Her phone gets what her dashboard shows, and a phone that has gone is forgotten.
+      assert.equal((await person.post('/push/subscribe', device('pushy-phone'))).status, 200);
+      const { id } = await app.ctx.db.prepare("SELECT user_id AS id FROM contestants WHERE stage_name = 'Pushy'").get();
+      pushed.length = 0;
+      await notifyUser(app.ctx, id, 'note', 'You got 5 new votes.');
+      await settle();
+      assert.deepEqual(pushed.map((p) => [p.endpoint, p.body, p.url]), [['https://push.example.com/pushy-phone', 'You got 5 new votes.', '/dashboard']]);
+      app.ctx.config.pushSend = async () => { throw Object.assign(new Error('Gone'), { statusCode: 410 }); };
+      await notifyUser(app.ctx, id, 'note', 'Again');
+      await settle();
+      assert.equal(await app.ctx.db.prepare("SELECT 1 FROM push_subscriptions WHERE endpoint LIKE '%pushy-phone'").get(), undefined);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('contestants see who voted for them and how many votes each gave', async () => {
+    const app = await boot();
+    try {
+      const admin = await login(app);
+      const { person, code } = await makeContestant(app, admin, 'Loved');
+      const vote = async (voterName, quantity) => {
+        const { data } = await client(app.base).post('/votes/pay', { voterName, code, quantity });
+        await client(app.base).post(`/simulator/${data.reference}/pay`);
+        await client(app.base).post(`/payments/${data.reference}/verify`);
+      };
+      await vote('Chidi', 3);
+      await vote('Amaka', 2);
+      await vote('chidi', 4);
+      const { data } = await person.get('/me/dashboard');
+      assert.deepEqual(data.history.map((v) => [v.name, v.quantity]), [['chidi', 4], ['Amaka', 2], ['Chidi', 3]]);
+      assert.deepEqual(data.topSupporters.map((s) => [s.name, s.votes]), [['Chidi', 7], ['Amaka', 2]]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('a short bio is at most 150 characters, and joining the group makes it her group chat', async () => {
+    const app = await boot();
+    try {
+      const admin = await login(app);
+      const long = await client(app.base).req('POST', '/contestants/register', { form: registrationForm('Wordy', { bio: 'x'.repeat(151) }) });
+      assert.equal(long.status, 400);
+      assert.match(long.data.error, /150 characters/);
+
+      await admin.post('/admin/whatsapp-groups', { name: 'Batch 1', url: 'https://chat.whatsapp.com/OnlyGroup', capacity: 10 });
+      const { person } = await makeContestant(app, admin, 'Grouped');
+      assert.equal((await person.get('/me/dashboard')).data.whatsappGroup.joined, false);
+      await person.post('/me/group-joined');
+      assert.deepEqual((await person.get('/me/dashboard')).data.whatsappGroup, { name: 'Batch 1', url: 'https://chat.whatsapp.com/OnlyGroup', joined: true });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('a voting link shares with her name and her photo, cut for a large preview', async () => {
+    const app = await boot();
+    try {
+      const photo = await sharp({ create: { width: 600, height: 900, channels: 3, background: '#cc0088' } }).jpeg().toBuffer();
+      const form = registrationForm('Shared');
+      form.set('photo', new Blob([photo], { type: 'image/jpeg' }), 'me.jpg');
+      const { data: joined } = await client(app.base).req('POST', '/contestants/register', { form });
+      const preview = await sharePreview(app.ctx, joined.code);
+      assert.equal(preview.title, 'Vote for Shared 👑 | MBGN');
+      assert.equal(preview.image, `http://localhost/api/share/${joined.code}.jpg`);
+      const res = await fetch(`${app.base}/api/share/${joined.code}.jpg`);
+      assert.equal(res.headers.get('content-type'), 'image/jpeg');
+      const { width, height } = await sharp(Buffer.from(await res.arrayBuffer())).metadata();
+      assert.deepEqual([width, height], [1200, 630]);
+
+      // Nothing for a code that isn't an active contestant.
+      assert.equal(await sharePreview(app.ctx, 'MBG9999'), null);
+      assert.equal((await fetch(`${app.base}/api/share/MBG9999.jpg`)).status, 404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('after applying she hears on WhatsApp: her code if she passed, that it is being reviewed if not', async () => {
+    const app = await boot({ whatsappSenderToken: 'wa-token' });
+    try {
+      await client(app.base).req('POST', '/contestants/register', { form: registrationForm('Instant') });
+      await client(app.base).req('POST', '/contestants/register', { form: registrationForm('Slow', { instagram: '@slow_10' }) });
+      const rows = await app.ctx.db.prepare('SELECT c.stage_name, o.kind, o.body FROM whatsapp_outbox o JOIN contestants c ON c.id = o.contestant_id ORDER BY o.id').all();
+      assert.deepEqual(rows.map((r) => [r.stage_name, r.kind]), [['Instant', 'accepted'], ['Slow', 'registered']]);
+      assert.match(rows[0].body, /Your contestant code: \*MBG/);
+      assert.match(rows[1].body, /our team is reviewing it/);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('admins message contestants who match, or chosen ones, with fill-ins', async () => {
+    const app = await boot({ whatsappSenderToken: 'wa-token' });
+    try {
+      const admin = await login(app);
+      const a = await makeContestant(app, admin, 'Alpha');
+      await makeContestant(app, admin, 'Bravo');
+      await client(app.base).req('POST', '/contestants/register', { form: registrationForm('Charlie', { instagram: '@charlie_10' }) });
+      await app.ctx.db.prepare("UPDATE contestants SET total_votes = 50 WHERE stage_name = 'Alpha'").run();
+
+      const reach = async (audience) => (await admin.post('/admin/whatsapp/audience', { audience })).data;
+      assert.equal((await reach({ status: 'approved' })).count, 2);
+      assert.equal((await reach({ status: 'pending' })).count, 1);
+      assert.deepEqual((await reach({ status: 'approved', minVotes: '10' })).names, ['Alpha']);
+      assert.equal((await reach({ status: 'any' })).count, 3);
+      assert.equal((await reach({ ids: [a.id] })).count, 1);
+
+      assert.equal((await admin.post('/admin/whatsapp/broadcasts', { audience: { status: 'approved' }, text: '' })).status, 400);
+      assert.equal((await admin.post('/admin/whatsapp/broadcasts', { audience: { status: 'approved', minVotes: '999' }, text: 'Hi' })).status, 400);
+      const sent = await admin.post('/admin/whatsapp/broadcasts', { audience: { status: 'approved', minVotes: '10' }, text: '**{name}**, you have {votes} votes. Keep going: {link}' });
+      assert.equal(sent.status, 201);
+      const [message] = await app.ctx.db.prepare("SELECT kind, body FROM whatsapp_outbox WHERE kind LIKE 'custom_%'").all();
+      assert.deepEqual(message, { kind: `custom_${sent.data.id}`, body: `*Alpha*, you have 50 votes. Keep going: http://localhost/c/${a.code}` });
+      const [history] = (await admin.get('/admin/whatsapp/broadcasts')).data;
+      assert.deepEqual([history.recipients, history.waiting], [1, 1]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('a contest still on the old 800-follower minimum moves to 500; one an admin set does not', async () => {
+    const app = await boot();
+    try {
+      const { db } = app.ctx;
+      await db.prepare("UPDATE settings SET value = '800' WHERE key = 'min_followers'").run();
+      await db.prepare("DELETE FROM settings WHERE key = 'followers_version'").run();
+      await openDb({ dbDriver: app.ctx.config.dbDriver });
+      assert.equal((await db.prepare("SELECT value FROM settings WHERE key = 'min_followers'").get()).value, '500');
+      await db.prepare("UPDATE settings SET value = '800' WHERE key = 'min_followers'").run();
+      await openDb({ dbDriver: app.ctx.config.dbDriver });
+      assert.equal((await db.prepare("SELECT value FROM settings WHERE key = 'min_followers'").get()).value, '800');
     } finally {
       await app.close();
     }

@@ -888,6 +888,8 @@ select option { background: var(--surface); }
 .deal-save { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--good-bg); color: var(--good-text); font-size: .74rem; font-weight: 600; }
 .deal-card .deal-save { margin-bottom: 4px; }
 .vote-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; }
+.vote-charges { color: var(--muted); font-size: .82rem; }
+.check-code { margin: 6px 0 12px; font-size: 1.05rem; }
 .upsell-offers { display: grid; gap: 10px; margin: 14px 0; padding: 0; list-style: none; }
 .upsell-offer { position: relative; display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; width: 100%; padding: 16px; border: 1.5px solid var(--line); border-radius: var(--radius-s); background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
 .upsell-offer:hover { border-color: var(--accent); }
@@ -1013,6 +1015,23 @@ select option { background: var(--surface); }
 .wa-failures { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .wa-failures li { display: grid; gap: 2px; padding: 8px 12px; background: var(--bg); border-radius: var(--radius-s); overflow-wrap: anywhere; }
 .wa-failures small { color: var(--bad-text); }
+.push-toggle { display: flex; align-items: center; gap: 12px; margin: 0 0 16px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-s); }
+.push-toggle > div { flex: 1; min-width: 0; }
+.push-toggle p { margin: 0; font-size: .92rem; }
+.push-bell { font-size: 1.3rem; }
+.push-error { color: var(--bad-text); }
+.home-link { display: inline-block; margin-bottom: 12px; color: var(--muted); text-decoration: none; font-weight: 600; }
+.home-link:hover { color: var(--text); }
+.wa-who { margin-bottom: 12px; }
+.panel .wa-who button { background: var(--bg); }
+.panel .wa-who button.active { background: var(--accent); }
+.wa-filters { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0 12px; }
+.wa-pick input[type=search] { width: 100%; }
+.wa-found { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; padding: 0; list-style: none; }
+.wa-chosen { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; padding: 0; list-style: none; }
+.wa-chosen li { display: inline-flex; align-items: center; gap: 4px; padding: 4px 6px 4px 12px; background: var(--bg); border-radius: 999px; font-size: .9rem; }
+.wa-chosen button { width: 24px; height: 24px; border: 0; border-radius: 50%; background: transparent; color: var(--muted); font-size: 1.1rem; line-height: 1; cursor: pointer; }
+.wa-compose .wa-editor { margin-top: 4px; }
 .wa-wording { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
 .wa-wording summary { cursor: pointer; font-weight: 600; margin-bottom: 10px; }
 .wa-editor { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9rem; line-height: 1.5; }

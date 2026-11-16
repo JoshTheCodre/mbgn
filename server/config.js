@@ -104,6 +104,8 @@ export function loadConfig(overrides = {}) {
     // Shared with whatsapp-sender/. Until it is set, no WhatsApp messages are written down.
     whatsappSenderToken: overrides.whatsappSenderToken ?? (env.WHATSAPP_SENDER_TOKEN?.trim() || null),
     evolution,
+    // Tests replace how push notifications are delivered.
+    pushSend: overrides.pushSend ?? null,
     // Messages sent per batch, and the gap between them: about 8 a minute.
     whatsappBatch: overrides.whatsappBatch ?? 8,
     whatsappGapMs: overrides.whatsappGapMs ?? 6000,

@@ -16,6 +16,7 @@ import { adminRouter } from './routes/admin.js';
 import { contestantRouter, votingRouter } from './routes/member.js';
 import { photoHandler, publicRouter } from './routes/public.js';
 import { createActivityAggregator } from './votes.js';
+import { pushRouter } from './push.js';
 import { sendDueWhatsApp, whatsappSenderRouter } from './whatsapp.js';
 
 export async function createContext(config) {
@@ -116,6 +117,7 @@ export function createApp(ctx) {
   app.use('/api', router);
   app.use('/api/admin', adminRouter(ctx));
   app.use('/api/whatsapp', whatsappSenderRouter(ctx));
+  app.use('/api/push', pushRouter(ctx));
   app.use('/api', votingRouter(ctx));
   app.use('/api/me', contestantRouter(ctx));
   app.use('/api', (_req, _res, next) => next(new HttpError(404, 'Not found.')));
