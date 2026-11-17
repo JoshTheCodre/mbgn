@@ -1051,12 +1051,6 @@ select option { background: var(--surface); }
 .theme-admin input { accent-color: var(--accent); }
 .theme-admin small { display: block; color: var(--muted); }
 
-/* Admin: follower-count services */
-.services-table { min-width: 560px; }
-.services-table code { font-size: .82rem; }
-.follower-trial p { margin: 0 0 4px; }
-.follower-trial ul { margin: 4px 0 0; padding-left: 18px; font-size: .9rem; }
-
 /* Admin: changing votes by hand, and enquiries */
 .vote-adjuster { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
 .vote-adjuster h3 { margin-bottom: .2em; font-size: 1.05rem; }
