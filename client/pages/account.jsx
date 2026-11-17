@@ -871,7 +871,10 @@ export function PayTransfer() {
           <CopyButton value={transfer.accountNumber} label="account number" />
         </div>
         <div className="transfer-row">
-          <div><small>Amount</small><b>{naira(payment.total)}</b></div>
+          <div>
+            <small>Amount</small><b>{naira(payment.total)}</b>
+            {payment.fee ? <span className="transfer-breakdown">{naira(payment.amount)} for {plural(payment.votes, 'vote')} + {naira(payment.fee)} payment charges</span> : null}
+          </div>
           <CopyButton value={String(payment.total)} label="amount" />
         </div>
         <div className="transfer-row">

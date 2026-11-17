@@ -621,13 +621,14 @@ function UpsellDialog({ open, votes, offers, votePrice, contestant, onPick, onCl
               <small>
                 {naira(Math.round(o.price / o.votes))} a vote{o.saving > 0 ? ` · save ${naira(o.saving)}` : ''}
                 {o.extra > 0 ? ` · only ${naira(o.extra)} more` : ''}
+                {` · plus ${naira(paymentCharges(o.price))} charges`}
               </small>
             </button>
           </li>
         ))}
       </ul>
       <button type="button" className="text-link as-button upsell-decline" onClick={() => onPick(votes)}>
-        No thanks, pay {naira(current)} for {plural(votes, 'vote')}
+        No thanks, pay {naira(current + paymentCharges(current))} for {plural(votes, 'vote')}
       </button>
       {votePrice ? <p className="muted small-note">Normal price: {naira(votePrice)} a vote.</p> : null}
     </Dialog>
@@ -637,41 +638,26 @@ function UpsellDialog({ open, votes, offers, votePrice, contestant, onPick, onCl
 const PayIcon = ({ d }) => (
   <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
 );
+// Card opens Paystack with card first, and its other ways (USSD, QR) there too. Short labels on
+// phones, fuller ones where there's room.
 const PAY_OPTIONS = [
-  { id: 'transfer', label: 'Bank transfer', hint: 'Most people pay this way', icon: <PayIcon d="M3 10h18M5 10v8m4.5-8v8m5-8v8M19 10v8M3 21h18M12 3 3 8h18z" />, button: 'by transfer' },
-  { id: 'opay', label: 'OPay', hint: 'Pay in the OPay app', logo: true, icon: <img className="opay-logo" src="/pay/opay.png" width="141" height="48" alt="" />, button: 'with OPay' },
-  {
-    id: 'card',
-    label: 'Card',
-    hint: (
-      <span className="card-marks">
-        <img src="/pay/visa.png" width="145" height="48" alt="Visa" />
-        <img src="/pay/mastercard.png" width="76" height="48" alt="Mastercard" />
-        <img src="/pay/verve.png" width="139" height="48" alt="Verve" />
-      </span>
-    ),
-    button: 'by card',
-  },
+  { id: 'transfer', label: 'Transfer', wide: 'Bank transfer', icon: <PayIcon d="M3 10h18M5 10v8m4.5-8v8m5-8v8M19 10v8M3 21h18M12 3 3 8h18z" />, button: 'by transfer' },
+  { id: 'opay', label: 'OPay', wide: 'OPay', logo: true, icon: <img className="opay-logo" src="/pay/opay.png" width="141" height="48" alt="" />, button: 'with OPay' },
+  { id: 'any', label: 'Card', wide: 'Pay with card', logo: true, icon: <img className="card-logo" src="/pay/mastercard.png" width="76" height="48" alt="" />, button: 'by card' },
 ];
 
-// Like a bank's own checkout: a bank transfer opens an account number right here, the others
-// go straight to that option on Paystack.
+// One slim row. A bank transfer opens an account number right here; the others go to Paystack.
 function PayWith({ method, onChange }) {
   return (
-    <div className="pay-with">
-      <span className="field-label">Pay with</span>
-      <div className="pay-choice" role="radiogroup" aria-label="Pay with">
-        {PAY_OPTIONS.map((o) => (
-          <label key={o.id} className={`pay-option pay-option-${o.id} ${method === o.id ? 'on' : ''}`}>
-            <input type="radio" name="payMethod" value={o.id} checked={method === o.id} onChange={() => onChange(o.id)} />
-            {o.icon ? <span className={`pay-icon ${o.logo ? 'pay-icon-logo' : ''}`}>{o.icon}</span> : null}
-            <span className="pay-text"><b>{o.label}</b>{typeof o.hint === 'string' ? <small>{o.hint}</small> : o.hint}</span>
-          </label>
-        ))}
-      </div>
-      <button type="button" className={`text-link as-button pay-more ${method === 'any' ? 'on' : ''}`} aria-pressed={method === 'any'} onClick={() => onChange('any')}>
-        {method === 'any' ? 'Paying another way: USSD, QR and more on Paystack' : 'More ways to pay'}
-      </button>
+    <div className="pay-row" role="radiogroup" aria-label="Pay with">
+      {PAY_OPTIONS.map((o) => (
+        <label key={o.id} className={`pay-pill ${method === o.id ? 'on' : ''}`}>
+          <input type="radio" name="payMethod" value={o.id} checked={method === o.id} onChange={() => onChange(o.id)} />
+          <span className={`pay-icon ${o.logo ? 'pay-icon-logo' : ''}`}>{o.icon}</span>
+          <span className="pay-label">{o.label}</span>
+          <span className="pay-label-wide">{o.wide}</span>
+        </label>
+      ))}
     </div>
   );
 }
@@ -690,6 +676,7 @@ function VotePanel({ contestant, viaLink }) {
       return saved === 'any' || PAY_OPTIONS.some((o) => o.id === saved) ? saved : 'transfer';
     } catch { return 'transfer'; }
   });
+  const [other, setOther] = useState(false);
   const [offering, setOffering] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -697,16 +684,24 @@ function VotePanel({ contestant, viaLink }) {
   const packages = competition?.packages ?? [];
   const votePrice = competition?.votePrice ?? 0;
   const priceOf = (n) => bulkPrice(n, votePrice, packages);
-  const amount = custom !== '' ? Number(custom) : quantity;
+  const amount = other ? Number(custom) : quantity;
   const valid = Number.isInteger(amount) && amount > 0;
   const voting = competition?.voting;
-  const deals = [...packages].sort((a, b) => a.votes - b.votes);
-  const offers = valid ? upsellOffers(amount, votePrice, packages) : [];
-  const rate = valid ? priceOf(amount) / amount : votePrice;
+  // One row: the usual amounts and the bulk deals together, smallest first.
+  const amounts = [...new Set([1, 5, 10, 20, ...packages.map((p) => p.votes)])].sort((a, b) => a - b);
+  const savingOn = (n) => {
+    const deal = packages.find((p) => p.votes === n);
+    return deal ? n * votePrice - deal.price : 0;
+  };
+  const price = valid ? priceOf(amount) : 0;
+  const fee = valid ? paymentCharges(price) : 0;
+  const rate = valid ? price / amount : votePrice;
+  // A bigger amount is only suggested when it saves a lot (NGN 1,000 or more) for at most twice the spend.
+  const offers = valid ? upsellOffers(amount, votePrice, packages).filter((o) => o.saving >= 1000 && o.price <= price * 2) : [];
 
-  function choose(n, typed) {
+  function choose(n) {
+    setOther(false);
     setQuantity(n);
-    setCustom(typed);
     setError(null);
   }
 
@@ -717,7 +712,8 @@ function VotePanel({ contestant, viaLink }) {
       return;
     }
     setError(null);
-    setOffering(true);
+    if (offers.length) setOffering(true);
+    else pay(amount);
   }
 
   async function pay(votes) {
@@ -743,48 +739,40 @@ function VotePanel({ contestant, viaLink }) {
   return (
     <form className="vote-panel" onSubmit={askFirst}>
       <h2>Vote for {contestant.name}</h2>
-      {deals.length ? (
-        <div className="deal-cards" role="group" aria-label="Bulk deals">
-          {deals.map((d) => {
-            const saving = d.votes * votePrice - d.price;
-            const active = custom === '' && quantity === d.votes;
-            return (
-              <button key={d.id} type="button" className={`deal-card ${active ? 'active' : ''}`} aria-pressed={active} onClick={() => choose(d.votes, '')}>
-                {saving > 0 ? <span className="deal-save">Save {naira(saving)}</span> : null}
-                <b>{num(d.votes)} votes</b>
-                <span>{naira(d.price)}</span>
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-      <div className="qty-chips" role="group" aria-label="Number of votes">
-        {[1, 5, 10, 20].map((n) => (
-          <button
-            key={n}
-            type="button"
-            className={`chip ${custom === '' && quantity === n ? 'active' : ''}`}
-            aria-pressed={custom === '' && quantity === n}
-            onClick={() => choose(n, '')}
-          >{n}</button>
-        ))}
+      <div className="vote-amounts" role="group" aria-label="Number of votes">
+        {amounts.map((n) => {
+          const active = !other && quantity === n;
+          const saving = savingOn(n);
+          return (
+            <button key={n} type="button" className={`amount ${active ? 'active' : ''} ${saving > 0 ? 'amount-deal' : ''}`} aria-pressed={active} onClick={() => choose(n)}
+              aria-label={`${plural(n, 'vote')}${saving > 0 ? `, save ${naira(saving)}` : ''}`}>
+              <b>{num(n)}</b>
+              {saving > 0 ? <small>save {naira(saving)}</small> : null}
+            </button>
+          );
+        })}
+        <button type="button" className={`amount ${other ? 'active' : ''}`} aria-pressed={other} onClick={() => { setOther(true); setError(null); }}>
+          <b>Other</b>
+        </button>
+      </div>
+      {other ? (
         <input
           className="qty-custom"
           type="number"
           min="1"
           step="1"
           inputMode="numeric"
-          placeholder="Other"
-          aria-label="Other number of votes"
+          placeholder="How many votes?"
+          aria-label="How many votes?"
           value={custom}
+          autoFocus
           onChange={(e) => { setCustom(e.target.value); setError(null); }}
         />
-      </div>
+      ) : null}
       {valid ? (
         <p className="vote-sum">
-          {plural(amount, 'vote')} · <b>{naira(priceOf(amount))}</b>
-          {rate < votePrice ? <span className="deal-save">Bulk price: {naira(Math.round(rate))} a vote</span> : null}
-          <span className="vote-charges">+ {naira(paymentCharges(priceOf(amount)))} payment charges</span>
+          <b>{plural(amount, 'vote')} · {naira(price + fee)}</b>
+          {rate < votePrice ? <small>Bulk price: {naira(Math.round(rate))} a vote</small> : null}
         </p>
       ) : null}
       <Field hint={`${contestant.name} sees this name with your votes.`}>
@@ -798,7 +786,7 @@ function VotePanel({ contestant, viaLink }) {
           <button className="btn btn-vote btn-wide" disabled={busy}>
             {busy
               ? (method === 'transfer' ? 'Getting your account number…' : 'Opening checkout…')
-              : `Pay ${naira(priceOf(amount) + paymentCharges(priceOf(amount)))} ${PAY_OPTIONS.find((o) => o.id === method)?.button ?? 'and vote'}`}
+              : `Pay ${naira(price + fee)} ${PAY_OPTIONS.find((o) => o.id === method)?.button ?? 'and vote'}`}
           </button>
         </>
       ) : null}
@@ -871,51 +859,37 @@ export function Profile() {
     .map((id) => ({ id, url: data[id], name: PLATFORM_NAMES[id], handle: socialHandle(data[id], id) }));
   return (
     <div className="wrap page profile">
+      {/* Who she is, on her photo. */}
       <div className="profile-photo">
         <Portrait name={data.name} photoUrl={data.photoUrl} code={data.code} />
-        <CodeTag code={data.code} />
+        <div className="profile-caption">
+          <p className="eyebrow">{data.location}, {data.state}{data.category ? ` · ${data.category}` : ''}</p>
+          <h1>{data.name}{data.onProbation ? <em className="tag tag-review probation-tag">On probation</em> : null}</h1>
+          <CodeTag code={data.code} inline />
+        </div>
       </div>
       <div className="profile-main">
-        <p className="eyebrow">{data.location}, {data.state}{data.category ? ` · ${data.category}` : ''}</p>
-        <h1>{data.name}{data.onProbation ? <em className="tag tag-review probation-tag">On probation</em> : null}</h1>
         {competition?.phase === 'voting' && competition.round ? <RoundNote round={competition.round} /> : null}
         {competition?.phase === 'voting' ? (
-          <dl className="profile-stats">
-            <div><dt>Total votes</dt><dd><CountUp value={data.totalVotes} /></dd></div>
-            <div><dt>Position</dt><dd><CountUp value={data.position} /></dd></div>
-            <div><dt>24 hours</dt><dd className="profile-move"><Movement value={data.movement24h} /></dd></div>
-          </dl>
+          <p className="profile-line">
+            <span><b><CountUp value={data.totalVotes} /></b> votes</span>
+            <span>No. <b><CountUp value={data.position} /></b></span>
+            <Movement value={data.movement24h} />
+          </p>
         ) : null}
         <VotePanel contestant={data} viaLink={viaLink} />
 
-        {/* Something a supporter does: send people to her voting page. */}
-        <section className="profile-share" aria-labelledby="share-heading">
-          <h2 id="share-heading">Get {data.name} more votes</h2>
-          <p className="muted">Send her voting link to friends. Anyone who opens it can vote for her in seconds.</p>
-          <ShareButton url={url} name={data.name} label={`Share ${data.name}’s voting link`} />
-          <p className="share-link-note">{url.replace(/^https?:\/\/(www\.)?/, '')}</p>
-        </section>
-
-        {/* About her: her own accounts, which open elsewhere. */}
-        <section className="profile-about" aria-labelledby="about-heading">
-          <h2 id="about-heading">About {data.name}</h2>
+        {/* About her, her own accounts (they open elsewhere), and sending her link on. */}
+        <section className="profile-about" aria-label={`About ${data.name}`}>
           {data.bio ? <p className="profile-bio">{data.bio}</p> : null}
-          {socials.length ? (
-            <>
-              <h3 className="follow-title">Follow {data.name}</h3>
-              <ul className="social-chips">
-                {socials.map((s) => (
-                  <li key={s.id}>
-                    <a className="social-chip" href={s.url} target="_blank" rel="noreferrer noopener" aria-label={`${data.name} on ${s.name}: ${s.handle}`}>
-                      <span className={`follower-logo follower-logo-${s.id}`}><BrandLogo name={s.id} /></span>
-                      <span className="social-chip-text"><small>{s.name}</small><b>{s.handle}</b></span>
-                      <svg className="social-chip-out" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9" /></svg>
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </>
-          ) : null}
+          <div className="profile-actions">
+            {socials.map((s) => (
+              <a key={s.id} className="social-icon" href={s.url} target="_blank" rel="noreferrer noopener" aria-label={`${data.name} on ${s.name}: ${s.handle}`} title={`${s.name}: ${s.handle}`}>
+                <span className={`follower-logo follower-logo-${s.id}`}><BrandLogo name={s.id} /></span>
+              </a>
+            ))}
+            <ShareButton url={url} name={data.name} label="Share her link" />
+          </div>
         </section>
       </div>
     </div>

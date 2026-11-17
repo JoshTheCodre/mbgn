@@ -113,6 +113,8 @@ function Header() {
                 : phase === 'voting' ? <NavLink to="/contestants" className="btn btn-primary btn-small">Vote now</NavLink> : null}
             </>
           )}
+          {/* On phones the theme is chosen here, so nothing floats over the page. */}
+          <ThemePicker inline />
         </nav>
       </div>
     </header>

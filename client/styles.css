@@ -836,35 +836,27 @@ select option { background: var(--surface); }
 /* Profile */
 .profile { display: grid; gap: 22px; }
 @media (min-width: 860px) { .profile { grid-template-columns: minmax(0, .85fr) minmax(0, 1fr); gap: 44px; align-items: start; } .profile-photo { position: sticky; top: 86px; } }
-.profile-photo { position: relative; aspect-ratio: 5 / 4; overflow: hidden; border-radius: 24px; max-width: 520px; width: 100%; }
+/* Her name, town and code sit on the photo, fading it to dark underneath so they read. */
+.profile-photo { position: relative; aspect-ratio: 4 / 3; overflow: hidden; border-radius: 24px; max-width: 520px; width: 100%; }
 @media (min-width: 860px) { .profile-photo { aspect-ratio: 4 / 5; } }
-.profile-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 18px; }
-.profile-stats > div { padding: 10px 12px; background: var(--surface); border-radius: var(--radius-s); min-width: 0; }
-.profile-stats dt { font-size: .78rem; color: var(--muted); }
-.profile-stats dd { font-weight: 600; font-size: 1.45rem; line-height: 1.25; color: var(--accent-soft); font-variant-numeric: tabular-nums; }
-.profile-move { font-size: 1rem !important; padding-top: 6px; }
-.profile-bio { margin: 6px 0 0; white-space: pre-line; color: var(--muted); }
-/* Sharing her voting link (a filled card: something you do) and her own accounts (an outlined
-   section: about her, opening elsewhere) are kept visibly apart. */
-.profile-share, .profile-about { margin-top: 16px; padding: 18px; border-radius: var(--radius); }
-.profile-share { background: var(--surface); }
-.profile-about { border: 1px solid var(--line); }
-.profile-share h2, .profile-about h2 { margin: 0 0 4px; font-size: 1.15rem; }
-.profile-share > p { margin: 0 0 14px; font-size: .92rem; }
-/* Outlined, so it never competes with the vote button above it. */
+.profile-caption { position: absolute; inset: auto 0 0 0; z-index: 2; padding: 48px 16px 14px; background: linear-gradient(transparent, rgb(12 10 18 / .82)); color: #fff; }
+.profile-caption .eyebrow { margin: 0 0 2px; color: rgb(255 255 255 / .85); }
+.profile-caption h1 { margin: 0 0 6px; color: #fff; font-size: clamp(1.7rem, 7vw, 2.4rem); line-height: 1.05; }
+.profile-caption .code-tag.inline { background: rgb(255 255 255 / .18); color: #fff; }
+/* Votes, position and the day's movement on one line. */
+.profile-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 0 0 14px; color: var(--muted); font-size: .95rem; }
+.profile-line b { color: var(--accent-soft); font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.profile-bio { margin: 0 0 12px; white-space: pre-line; color: var(--muted); }
+.profile-about { margin-top: 16px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius); }
+.profile-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.profile-actions .share-native { flex: 1 1 180px; width: auto; }
+.social-icon { display: grid; place-items: center; width: 50px; height: 50px; border: 1px solid var(--line); border-radius: 50%; transition: border-color .15s, background .15s; }
+.social-icon:hover { border-color: var(--accent); background: var(--surface); }
+.social-icon .follower-logo { width: 34px; height: 34px; }
+.social-icon .follower-logo .brand-logo { width: 18px; height: 18px; }
+/* Outlined, so it never competes with the vote button. */
 .share-native { min-height: 50px; border-color: var(--accent); font-weight: 600; }
 .share-native .brand-logo { width: 20px; height: 20px; }
-.share-link-note { margin: 8px 0 0; overflow: hidden; color: var(--muted); font-size: .82rem; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
-.follow-title { margin: 18px 0 8px; color: var(--muted); font-size: .78rem; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
-.social-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
-.social-chip { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 7px 14px 7px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--text); text-decoration: none; transition: border-color .15s, background .15s; }
-.social-chip:hover { border-color: var(--accent); background: var(--surface); }
-.social-chip .follower-logo { width: 34px; height: 34px; }
-.social-chip .follower-logo .brand-logo { width: 18px; height: 18px; }
-.social-chip-text { display: grid; min-width: 0; line-height: 1.25; }
-.social-chip-text small { color: var(--muted); font-size: .74rem; }
-.social-chip-text b { overflow: hidden; font-size: .92rem; text-overflow: ellipsis; white-space: nowrap; }
-.social-chip-out { flex: none; margin-left: auto; color: var(--muted); }
 .social-links { display: flex; flex-wrap: wrap; gap: 14px; font-weight: 500; }
 .share-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .share-row .btn { min-height: 42px; padding: 6px 16px; font-size: .92rem; }
@@ -877,18 +869,51 @@ select option { background: var(--surface); }
 .chip:hover { background: var(--line-strong); }
 .chip.active, .vote-panel .chip.active { background: var(--accent); color: var(--on-accent); }
 
-/* Bulk deals, the running total and the offer before paying */
+/* The amounts (bulk deals included) in one row that scrolls sideways, the total, and paying */
 .vote-panel { display: grid; gap: 12px; }
-.vote-panel .qty-chips { margin-bottom: 0; }
-.deal-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
-.deal-card { position: relative; display: grid; gap: 2px; justify-items: start; padding: 14px 14px 12px; border: 1.5px solid var(--line); border-radius: var(--radius-s); background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
-.deal-card b { font-size: 1.1rem; }
-.deal-card:hover { border-color: var(--accent); }
-.deal-card.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
-.deal-save { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--good-bg); color: var(--good-text); font-size: .74rem; font-weight: 600; }
-.deal-card .deal-save { margin-bottom: 4px; }
-.vote-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; }
-.vote-charges { color: var(--muted); font-size: .82rem; }
+.vote-panel h2 { margin: 0; }
+.vote-amounts { display: flex; gap: 8px; margin: 0 -18px; padding: 2px 18px 4px; overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: none; }
+.vote-amounts::-webkit-scrollbar { display: none; }
+.amount { flex: none; display: grid; place-items: center; align-content: center; min-width: 56px; min-height: 52px; padding: 4px 14px; border: 1.5px solid transparent; border-radius: 16px; background: var(--surface-2); color: var(--text); font: inherit; scroll-snap-align: start; cursor: pointer; }
+.amount b { font-size: 1.05rem; line-height: 1.15; }
+.amount small { color: var(--good-text); font-size: .7rem; font-weight: 600; white-space: nowrap; }
+.amount-deal { border-color: rgb(var(--accent-rgb) / .35); }
+.amount:hover { border-color: var(--accent); }
+.amount.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.amount.active small { color: var(--on-accent); }
+.vote-sum { display: grid; gap: 2px; margin: 0; }
+.vote-sum b { font-size: 1.1rem; }
+.vote-sum small { color: var(--muted); font-size: .82rem; }
+/* How to pay: one slim row. */
+.pay-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.pay-pill { position: relative; display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; min-height: 46px; padding: 6px 8px; border: 1.5px solid var(--line); border-radius: 14px; background: var(--bg); font-size: .86rem; font-weight: 600; text-align: center; cursor: pointer; }
+.pay-pill.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.pay-pill input { position: absolute; inset: 0; width: 1px; height: 1px; min-height: 0; padding: 0; margin: 0; opacity: 0; pointer-events: none; }
+.pay-pill:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pay-pill .pay-icon { width: 26px; height: 26px; border-radius: 7px; background: transparent; }
+.pay-pill .pay-icon-logo { background: #fff; }
+.pay-pill .opay-logo { width: 22px; }
+.pay-pill .card-logo { display: block; width: 22px; height: auto; }
+.pay-label-wide { display: none; }
+@media (min-width: 620px) { .pay-label { display: none; } .pay-label-wide { display: inline; } }
+.pay-pill .pay-icon svg { width: 18px; height: 18px; }
+@media (max-width: 359px) { .pay-pill { flex-direction: column; gap: 2px; font-size: .78rem; } }
+/* Phones: tighter margins and padding, so the content gets the width. */
+@media (max-width: 619px) {
+  .profile.wrap { padding-inline: 10px; }
+  .profile.page { padding-top: 10px; }
+  .profile { gap: 10px; }
+  .profile-photo { border-radius: 18px; }
+  .profile-line { margin-bottom: 10px; padding-inline: 4px; }
+  .vote-panel { gap: 10px; padding: 14px 12px; border-radius: 16px; }
+  .vote-amounts { margin-inline: -12px; padding-inline: 12px; gap: 6px; }
+  .profile-about { margin-top: 10px; padding: 12px; border-radius: 16px; }
+}
+/* On phones the Pay button stays at the bottom of the screen, always in reach. */
+@media (max-width: 859px) {
+  body:has(.vote-panel .btn-vote) .site-footer { padding-bottom: 84px; }
+  .vote-panel .btn-vote { position: fixed; z-index: 40; left: 12px; right: 12px; bottom: calc(10px + env(safe-area-inset-bottom)); width: auto; box-shadow: 0 10px 30px rgb(0 0 0 / .45); }
+}
 .check-code { margin: 6px 0 12px; font-size: 1.05rem; }
 .upsell-offers { display: grid; gap: 10px; margin: 14px 0; padding: 0; list-style: none; }
 .upsell-offer { position: relative; display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; width: 100%; padding: 16px; border: 1.5px solid var(--line); border-radius: var(--radius-s); background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
@@ -953,41 +978,11 @@ select option { background: var(--surface); }
 .info-section p { margin: 0; }
 .info-section.warn { border-left: 4px solid var(--bad-text); }
 
-/* Pay with: transfer on our page, OPay and card on Paystack */
-.pay-with { display: grid; gap: 8px; }
-.pay-choice { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.pay-option { position: relative; display: flex; align-items: center; gap: 10px; min-width: 0; padding: 12px; border: 1.5px solid var(--line); border-radius: var(--radius-s); background: var(--bg); cursor: pointer; }
-.pay-option-transfer { grid-column: 1 / -1; }
-.pay-option-transfer::after { content: ''; flex: none; width: 18px; height: 18px; margin-left: auto; border: 2px solid var(--line-strong); border-radius: 50%; }
-.pay-option.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
-.pay-option-transfer.on::after { border-color: var(--accent); background: radial-gradient(circle, var(--accent) 0 45%, transparent 50%); }
-.pay-option input { position: absolute; inset: 0; width: 1px; height: 1px; min-height: 0; padding: 0; margin: 0; opacity: 0; pointer-events: none; }
-.pay-option:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Payment icons (the slim row itself is with the vote panel above) */
 .pay-icon { display: grid; place-items: center; flex: none; width: 40px; height: 40px; border-radius: 10px; background: var(--surface-2); color: var(--text); }
 /* Brand logos sit on white, as their makers intend, so they read on every theme. */
 .pay-icon-logo { background: #fff; box-shadow: inset 0 0 0 1px var(--line); }
 .opay-logo { display: block; width: 32px; height: auto; }
-.card-marks { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-.card-marks img { display: block; flex: none; box-sizing: border-box; height: 18px; width: auto; padding: 3px 4px; background: #fff; border-radius: 4px; box-shadow: inset 0 0 0 1px var(--line); }
-/* The three card logos stay on one line, shrinking to fit the tile (their widths add up to 7.5
-   times their height, plus 32px of padding and gaps). Only on a very narrow screen, where they
-   would be smaller than 14px, do they wrap. */
-@supports (height: 1cqw) {
-  .pay-option-card .pay-text { flex: 1 1 0; min-width: 0; container-type: inline-size; }
-  .card-marks { flex-wrap: nowrap; }
-  .card-marks img { height: clamp(14px, calc((100cqw - 32px) / 7.5 + 6px), 18px); }
-  @container (max-width: 91px) { .card-marks { flex-wrap: wrap; } }
-}
-.pay-text { display: grid; min-width: 0; }
-.pay-text b { font-size: .98rem; }
-.pay-text small { color: var(--muted); font-size: .8rem; line-height: 1.3; }
-.pay-more { justify-self: start; font-size: .9rem; }
-@media (max-width: 360px) {
-  .pay-option { gap: 8px; padding: 10px; }
-  .pay-icon { width: 32px; height: 32px; }
-  .opay-logo { width: 26px; }
-}
-.pay-more.on { text-decoration: none; }
 
 .pay-transfer h1 { margin-bottom: 6px; }
 .transfer-card { margin: 18px 0 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
@@ -997,6 +992,7 @@ select option { background: var(--surface); }
 .transfer-row small { color: var(--muted); font-size: .76rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
 .transfer-row b { font-size: 1.05rem; overflow-wrap: anywhere; }
 .transfer-row b.transfer-number { font-size: 1.5rem; font-variant-numeric: tabular-nums; letter-spacing: .06em; }
+.transfer-breakdown { color: var(--muted); font-size: .8rem; }
 .copy-btn { flex: none; min-width: 84px; border-radius: 999px; }
 .copy-btn.done { border-color: var(--good-text); color: var(--good-text); }
 .transfer-timer { font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -1279,6 +1275,13 @@ legend + * { clear: both; }
 .theme-option { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; background: none; color: inherit; border: 0; border-radius: 12px; text-align: left; cursor: pointer; }
 .theme-option:hover { background: rgb(255 255 255 / .1); }
 .theme-option.active { background: rgb(255 255 255 / .16); }
+/* In the phone menu: the themes as a row of swatches. */
+.nav-themes { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+.nav-themes-label { margin-right: 4px; color: var(--muted); font-size: .9rem; }
+.nav-theme { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; background: none; border: 2px solid transparent; border-radius: 50%; cursor: pointer; }
+.nav-theme.active { border-color: var(--accent); }
+@media (min-width: 960px) { .nav-themes { display: none; } }
+@media (max-width: 959px) { .theme-picker-aside { display: none; } }
 .theme-option b { display: block; font-weight: 500; line-height: 1.25; }
 .theme-option small { display: block; color: #bdb8cc; font-size: .78rem; line-height: 1.3; }
 

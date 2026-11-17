@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import {
   agoShort, api, num, recall, remember, shareTargets, useApp, useLive,
 } from './lib.jsx';
@@ -624,8 +624,11 @@ export function ActivityFeed({ limit = 5 }) {
 }
 
 // Lets visitors choose among the themes an admin has put on offer. Hidden when there is only one.
-export function ThemePicker() {
+// Floating in the corner; or, with `inline`, listed in the phone menu. On a contestant's page on
+// a phone the floating one steps aside, so it never covers the Pay button.
+export function ThemePicker({ inline = false }) {
   const { competition } = useApp();
+  const { pathname } = useLocation();
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(() => currentTheme(competition?.themes));
   const root = useRef(null);
@@ -649,8 +652,22 @@ export function ThemePicker() {
   const selected = THEMES.find((t) => t.id === active) ?? offered[0];
   const swatch = (t) => ({ background: `linear-gradient(135deg, ${t.swatch[0]}, ${t.swatch[1]})` });
 
+  if (inline) {
+    return (
+      <div className="nav-themes" role="group" aria-label="Theme">
+        <span className="nav-themes-label">Theme</span>
+        {offered.map((t) => (
+          <button key={t.id} type="button" className={`nav-theme ${t.id === active ? 'active' : ''}`} aria-pressed={t.id === active} aria-label={t.name} title={t.name}
+            onClick={() => { applyTheme(t.id, { remember: true }); setActive(t.id); }}>
+            <span className="theme-swatch" style={swatch(t)} />
+          </button>
+        ))}
+      </div>
+    );
+  }
+
   return (
-    <div className="theme-picker" ref={root}>
+    <div className={`theme-picker ${pathname.startsWith('/c/') ? 'theme-picker-aside' : ''}`} ref={root}>
       {open ? (
         <div className="theme-list" role="group" aria-label="Choose a theme">
           {offered.map((t) => (
