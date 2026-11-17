@@ -20,8 +20,11 @@ export default function ContestantLink({ preview }) {
           <meta key="og:description" property="og:description" content={preview.description} />
           <meta key="og:url" property="og:url" content={preview.url} />
           <meta key="og:image" property="og:image" content={preview.image} />
+          <meta key="og:image:secure_url" property="og:image:secure_url" content={preview.image} />
+          <meta key="og:image:type" property="og:image:type" content="image/jpeg" />
           <meta key="og:image:width" property="og:image:width" content="1200" />
           <meta key="og:image:height" property="og:image:height" content="630" />
+          <meta key="og:image:alt" property="og:image:alt" content={preview.alt} />
           <meta key="twitter:card" name="twitter:card" content="summary_large_image" />
           <meta key="twitter:image" name="twitter:image" content={preview.image} />
         </Head>

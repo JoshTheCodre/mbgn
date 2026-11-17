@@ -239,7 +239,8 @@ export function publicRouter(ctx) {
   router.get('/share/:code.jpg', async (req, res) => {
     const image = await shareImage(ctx, normalizeCode(req.params.code));
     if (!image) throw new HttpError(404, 'No picture for that code.');
-    res.set({ 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' }).send(image);
+    // Kept by Vercel's network too, so WhatsApp gets it at once instead of waiting for the server.
+    res.set({ 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400, s-maxage=2592000, stale-while-revalidate=86400' }).send(image);
   });
 
   // Counts a visit that arrived through a contestant's shared voting link.

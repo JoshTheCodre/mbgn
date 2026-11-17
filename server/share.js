@@ -12,7 +12,9 @@ export async function sharePreview(ctx, code) {
   return {
     title: `Vote for ${c.stage_name} 👑 | MBGN`,
     description: `${c.stage_name} from ${c.state} is in Most Beautiful Girl Online Nigeria. Tap to vote for her with code ${c.code}.`,
-    image: c.photo_file ? `${publicUrl}/api/share/${c.code}.jpg` : `${publicUrl}/icons/icon-512.png`,
+    // Named after her photo, so a new photo is a new address: never a stale copy, anywhere.
+    image: c.photo_file ? `${publicUrl}/api/share/${c.code}.jpg?v=${c.photo_file.slice(0, 10)}` : `${publicUrl}/icons/icon-512.png`,
+    alt: `${c.stage_name}, contestant ${c.code}`,
     url: `${publicUrl}/c/${c.code}`,
   };
 }

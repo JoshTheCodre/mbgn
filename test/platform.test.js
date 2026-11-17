@@ -2411,7 +2411,9 @@ describe('Push notifications, supporters, sharing and custom WhatsApp messages',
       const { data: joined } = await client(app.base).req('POST', '/contestants/register', { form });
       const preview = await sharePreview(app.ctx, joined.code);
       assert.equal(preview.title, 'Vote for Shared 👑 | MBGN');
-      assert.equal(preview.image, `http://localhost/api/share/${joined.code}.jpg`);
+      // Named after her photo, so a new photo is a new address.
+      assert.ok(preview.image.startsWith(`http://localhost/api/share/${joined.code}.jpg?v=`), preview.image);
+      assert.equal(preview.alt, `Shared, contestant ${joined.code}`);
       const res = await fetch(`${app.base}/api/share/${joined.code}.jpg`);
       assert.equal(res.headers.get('content-type'), 'image/jpeg');
       const { width, height } = await sharp(Buffer.from(await res.arrayBuffer())).metadata();

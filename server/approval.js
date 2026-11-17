@@ -2,6 +2,7 @@ import { HttpError } from './auth.js';
 import { allocateCode, audit, notifyUser, recomputeRanks } from './competition.js';
 import { getSetting, nowIso, tx } from './db.js';
 import { assignGroup, groupById } from './groups.js';
+import { shareImage } from './share.js';
 import { queueAccepted, sendDueWhatsApp } from './whatsapp.js';
 
 // Approving a contestant: her permanent code and voting link, a WhatsApp group, her place on the
@@ -25,6 +26,8 @@ export async function approveContestant(ctx, id, actorId = null) {
   });
   await tellApproved(ctx, c);
   ctx.bus.publish('leaderboard', { updatedAt: nowIso() });
+  // Her link's preview picture, made now so the first person she shares with doesn't wait for it.
+  ctx.background(shareImage(ctx, c.code));
   return c;
 }
 
