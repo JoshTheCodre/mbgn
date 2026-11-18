@@ -876,11 +876,13 @@ export function Profile() {
         {data.onProbation ? <em className="tag tag-review probation-tag">On probation</em> : null}
       </h1>
       {competition?.phase === 'voting' ? (
-        <p className="profile-line">
-          <span><b><CountUp value={data.totalVotes} /></b> votes</span>
-          <span>No. <b><CountUp value={data.position} /></b></span>
-          <Movement value={data.movement24h} />
-        </p>
+        <dl className="profile-stats">
+          <div><dt>Votes</dt><dd><CountUp value={data.totalVotes} /></dd></div>
+          <div>
+            <dt>Position</dt>
+            <dd>No. <CountUp value={data.position} />{data.movement24h !== 0 ? <Movement value={data.movement24h} /> : null}</dd>
+          </div>
+        </dl>
       ) : null}
       {data.bio ? (
         <section className="profile-about" aria-labelledby="about-heading">
