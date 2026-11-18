@@ -856,9 +856,13 @@ function ContestantError({ error, onRetry }) {
 export function Profile() {
   const { competition } = useApp();
   const { code } = useParams();
+  const navigate = useNavigate();
   const { data, error, reload } = useFetch(`/contestants/${encodeURIComponent(code)}`);
   useLive('leaderboard', reload);
   useViaLink(code);
+  // Back to where they came from on the site; someone who opened her link from outside goes to all
+  // the contestants instead of leaving the site.
+  const goBack = () => (window.history.state?.idx > 0 ? navigate(-1) : navigate('/contestants'));
 
   if (error && !data) return <ContestantError error={error} onRetry={reload} />;
   if (!data) return <ProfileSkeleton />;
@@ -869,40 +873,48 @@ export function Profile() {
     .map((id) => ({ id, url: data[id], name: PLATFORM_NAMES[id], handle: socialHandle(data[id], id) }));
   return (
     <div className="wrap page profile">
-      <div className="profile-photo"><Portrait name={data.name} photoUrl={data.photoUrl} code={data.code} /></div>
-      <h1 className="profile-name">
-        {data.name}
-        <span className="profile-place">{data.location}, {data.state}</span>
-        {data.onProbation ? <em className="tag tag-review probation-tag">On probation</em> : null}
-      </h1>
-      {competition?.phase === 'voting' ? (
-        <dl className="profile-stats">
-          <div><dt>Votes</dt><dd><CountUp value={data.totalVotes} /></dd></div>
-          <div>
-            <dt>Position</dt>
-            <dd>No. <CountUp value={data.position} />{data.movement24h !== 0 ? <Movement value={data.movement24h} /> : null}</dd>
-          </div>
-        </dl>
-      ) : null}
-      {data.bio ? (
-        <section className="profile-about" aria-labelledby="about-heading">
-          <h2 id="about-heading">About</h2>
-          <p className="profile-bio">{data.bio}</p>
-        </section>
-      ) : null}
-      {voting?.open ? (
-        <Link to={`/c/${data.code}/vote`} className="btn btn-vote btn-wide profile-vote">
-          <span>Vote {data.name} · <span className="profile-vote-code">{data.code}</span></span>
-        </Link>
-      ) : <p className="note">{voting?.message ?? 'Voting opens soon.'}</p>}
-      {competition?.phase === 'voting' && competition.round ? <RoundNote round={competition.round} /> : null}
-      <div className="profile-actions">
-        {socials.map((s) => (
-          <a key={s.id} className="social-icon" href={s.url} target="_blank" rel="noreferrer noopener" aria-label={`${data.name} on ${s.name}: ${s.handle}`} title={`${s.name}: ${s.handle}`}>
-            <span className={`follower-logo follower-logo-${s.id}`}><BrandLogo name={s.id} /></span>
-          </a>
-        ))}
-        <ShareButton url={url} name={data.name} label="Share her link" />
+      <div className="profile-photo">
+        <Portrait name={data.name} photoUrl={data.photoUrl} code={data.code} />
+        <button type="button" className="profile-back" onClick={goBack} aria-label="Back">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7" /></svg>
+        </button>
+      </div>
+      {/* Everything about her: under the photo on phones, beside it on computers. */}
+      <div className="profile-info">
+        <h1 className="profile-name">
+          {data.name}
+          <span className="profile-place">{data.location}, {data.state}</span>
+          {data.onProbation ? <em className="tag tag-review probation-tag">On probation</em> : null}
+        </h1>
+        {competition?.phase === 'voting' ? (
+          <dl className="profile-stats">
+            <div><dt>Votes</dt><dd><CountUp value={data.totalVotes} /></dd></div>
+            <div>
+              <dt>Position</dt>
+              <dd>No. <CountUp value={data.position} />{data.movement24h !== 0 ? <Movement value={data.movement24h} /> : null}</dd>
+            </div>
+          </dl>
+        ) : null}
+        {data.bio ? (
+          <section className="profile-about" aria-labelledby="about-heading">
+            <h2 id="about-heading">About</h2>
+            <p className="profile-bio">{data.bio}</p>
+          </section>
+        ) : null}
+        {voting?.open ? (
+          <Link to={`/c/${data.code}/vote`} className="btn btn-vote btn-wide profile-vote">
+            <span>Vote {data.name} · <span className="profile-vote-code">{data.code}</span></span>
+          </Link>
+        ) : <p className="note">{voting?.message ?? 'Voting opens soon.'}</p>}
+        {competition?.phase === 'voting' && competition.round ? <RoundNote round={competition.round} /> : null}
+        <div className="profile-actions">
+          {socials.map((s) => (
+            <a key={s.id} className="social-icon" href={s.url} target="_blank" rel="noreferrer noopener" aria-label={`${data.name} on ${s.name}: ${s.handle}`} title={`${s.name}: ${s.handle}`}>
+              <span className={`follower-logo follower-logo-${s.id}`}><BrandLogo name={s.id} /></span>
+            </a>
+          ))}
+          <ShareButton url={url} name={data.name} label="Share her link" />
+        </div>
       </div>
     </div>
   );
@@ -911,16 +923,20 @@ export function Profile() {
 // Voting for her: how many votes, a name, how to pay, and Pay, all in one phone screen.
 export function VotePage() {
   const { code } = useParams();
+  const navigate = useNavigate();
   const { data, error } = useFetch(`/contestants/${encodeURIComponent(code)}`);
   const viaLink = useViaLink(code);
+  // Back the way they came (usually her page). Someone who opened this page straight from a link
+  // goes to her page in its place, so her own back button then leads on, not back here.
+  const goBack = () => (window.history.state?.idx > 0 ? navigate(-1) : navigate(`/c/${encodeURIComponent(code)}`, { replace: true }));
   // Her page says what's wrong (eliminated, no such code, or a connection problem).
   if (error && !data) return <Navigate to={`/c/${encodeURIComponent(code)}`} replace />;
   if (!data) return <div className="wrap page vote-page"><Loading /></div>;
   return (
     <div className="wrap page vote-page">
-      <Link to={`/c/${data.code}`} className="vote-back" aria-label={`Back to ${data.name}’s page`}>
+      <button type="button" className="vote-back" onClick={goBack} aria-label="Back">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7" /></svg>
-      </Link>
+      </button>
       <header className="vote-who">
         <span className="vote-who-photo"><Portrait name={data.name} photoUrl={data.photoUrl} code={data.code} /></span>
         <h1>{data.name}</h1>
