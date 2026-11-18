@@ -654,9 +654,6 @@ function PayWith({ method, onChange }) {
   );
 }
 
-// "₦2k", "₦12.5k": how people say money, short enough for a tag.
-const shortNaira = (n) => (n < 1000 ? naira(n) : `₦${Number((n / 1000).toFixed(1))}k`);
-
 function VotePanel({ contestant, viaLink }) {
   const { competition } = useApp();
   const navigate = useNavigate();
@@ -746,9 +743,14 @@ function VotePanel({ contestant, viaLink }) {
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
           </button>
         </div>
+        {/* A promo shows the normal price crossed out beside what they actually pay. */}
         <p className="qty-price" aria-live="polite">
-          {valid ? naira(price) : 'Enter how many votes'}
-          {saving > 0 ? <em>You save {naira(saving)}</em> : null}
+          {!valid ? 'Enter how many votes' : saving > 0 ? (
+            <>
+              <s aria-label={`Normal price ${naira(price + saving)}`}>{naira(price + saving)}</s>
+              <b aria-label={`Promo price ${naira(price)}`}>{naira(price)}</b>
+            </>
+          ) : naira(price)}
         </p>
         <div className="qty-picks" role="group" aria-label="Quick picks">
           {amounts.map((n) => {
@@ -756,7 +758,7 @@ function VotePanel({ contestant, viaLink }) {
             return (
               <button key={n} type="button" className={`qty-pick ${amount === n ? 'on' : ''} ${deal > 0 ? 'deal' : ''}`} aria-pressed={amount === n}
                 aria-label={`${plural(n, 'vote')}${deal > 0 ? `, save ${naira(deal)}` : ''}`} onClick={() => choose(n)}>
-                {deal > 0 ? <span className="qty-promo" aria-hidden="true">Save {shortNaira(deal)}</span> : null}
+                {deal > 0 ? <span className="qty-promo" aria-hidden="true">Promo</span> : null}
                 {num(n)}
               </button>
             );
@@ -770,7 +772,7 @@ function VotePanel({ contestant, viaLink }) {
         </>
       )}>
         <input value={voterName} onChange={(e) => setVoterName(e.target.value)} maxLength={60} autoComplete="name" required
-          placeholder="Type your name or nickname" />
+          placeholder="Enter your name" />
       </Field>
 
       <PayWith method={method} onChange={setMethod} />

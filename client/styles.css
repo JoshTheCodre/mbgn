@@ -894,7 +894,8 @@ select option { background: var(--surface); }
 .vote-panel .qty-big input:focus { box-shadow: 0 2px 0 var(--accent); }
 .qty-big span { color: var(--muted); font-size: 1rem; }
 .qty-price { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 2px 10px; margin: 0; color: var(--muted); font-size: .95rem; font-variant-numeric: tabular-nums; }
-.qty-price em { color: var(--good-text); font-size: .82rem; font-style: normal; font-weight: 600; }
+.qty-price s { opacity: .75; }
+.qty-price b { color: var(--text); font-size: 1.05rem; font-weight: 700; }
 .qty-picks { display: grid; grid-template-columns: repeat(auto-fit, minmax(54px, 1fr)); gap: 8px; width: 100%; margin-top: 12px; }
 .qty-pick { position: relative; height: 46px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 14px; background: transparent; color: var(--text); font: inherit; font-size: 1.05rem; font-weight: 700; font-variant-numeric: tabular-nums; cursor: pointer; transition: border-color .15s, background .15s; }
 .qty-pick:hover { border-color: var(--accent); }
