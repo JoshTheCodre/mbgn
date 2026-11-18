@@ -158,11 +158,10 @@ export function ProfileSkeleton() {
   return (
     <div className="wrap page profile">
       <div className="profile-photo"><Bone className="bone-fill" /></div>
-      <div className="profile-main skeleton-lines">
-        <Bone className="bone-small" style={{ width: '36%' }} />
-        <Bone className="bone-title" style={{ width: '58%' }} />
+      <div className="skeleton-lines">
+        <Bone className="bone-title" style={{ width: '62%' }} />
+        <Bone className="bone-small" style={{ width: '40%' }} />
         <Bone className="bone-panel" />
-        <Bone className="bone-panel bone-panel-tall" />
         <Waiting label="Loading this contestant" />
       </div>
     </div>

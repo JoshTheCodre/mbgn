@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   ApiError, ago, api, naira, num, plural, registrationOpen, useApp, useFetch, useLive,
 } from '../lib.jsx';
@@ -738,7 +738,7 @@ function VotePanel({ contestant, viaLink }) {
 
   return (
     <form className="vote-panel" onSubmit={askFirst}>
-      <h2>Vote for {contestant.name}</h2>
+      <h2 className="vote-step">How many votes?</h2>
       <div className="vote-amounts" role="group" aria-label="Number of votes">
         {amounts.map((n) => {
           const active = !other && quantity === n;
@@ -808,15 +808,11 @@ function socialHandle(link, platform) {
   }
 }
 
-export function Profile() {
-  const { competition } = useApp();
-  const { code } = useParams();
+// Someone arriving from outside the site came through a shared voting link. Remembered for the
+// visit, so the vote it leads to counts as through her link, whichever of her pages it's made on.
+function useViaLink(code) {
   const [params] = useSearchParams();
-  const { data, error, reload } = useFetch(`/contestants/${encodeURIComponent(code)}`);
-  useLive('leaderboard', reload);
-
-  // Someone arriving from outside the site came through a shared voting link.
-  const viaLink = useMemo(() => {
+  return useMemo(() => {
     const key = `mbgn-ref-${code.toUpperCase()}`;
     try {
       if (sessionStorage.getItem(key)) return true;
@@ -831,67 +827,100 @@ export function Profile() {
     return false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
+}
 
-  if (error && !data) {
-    if (error.status === 410) {
-      return (
-        <div className="wrap page">
-          <h1>No longer in the contest</h1>
-          <p className="muted">{error.message}</p>
-          <Link to="/contestants" className="btn btn-primary">See who is still in</Link>
-        </div>
-      );
-    }
-    // Only a real "no such code" means that. Anything else is a problem on our side or the connection.
-    if (error.status !== 404) return <div className="wrap page"><LoadFailed error={error} onRetry={reload} what="this contestant" /></div>;
+function ContestantError({ error, onRetry }) {
+  if (error.status === 410) {
     return (
       <div className="wrap page">
-        <h1>We could not find that contestant</h1>
-        <p className="muted">{error.message} Check the code and try again.</p>
-        <Link to="/contestants" className="btn btn-primary">Browse all contestants</Link>
+        <h1>No longer in the contest</h1>
+        <p className="muted">{error.message}</p>
+        <Link to="/contestants" className="btn btn-primary">See who is still in</Link>
       </div>
     );
   }
+  // Only a real "no such code" means that. Anything else is a problem on our side or the connection.
+  if (error.status !== 404) return <div className="wrap page"><LoadFailed error={error} onRetry={onRetry} what="this contestant" /></div>;
+  return (
+    <div className="wrap page">
+      <h1>We could not find that contestant</h1>
+      <p className="muted">{error.message} Check the code and try again.</p>
+      <Link to="/contestants" className="btn btn-primary">Browse all contestants</Link>
+    </div>
+  );
+}
+
+// Her page, in one phone screen: photo, name and town, votes, a short about, and the Vote
+// button. Voting itself is the next page.
+export function Profile() {
+  const { competition } = useApp();
+  const { code } = useParams();
+  const { data, error, reload } = useFetch(`/contestants/${encodeURIComponent(code)}`);
+  useLive('leaderboard', reload);
+  useViaLink(code);
+
+  if (error && !data) return <ContestantError error={error} onRetry={reload} />;
   if (!data) return <ProfileSkeleton />;
 
+  const voting = competition?.voting;
   const url = `${window.location.origin}/c/${data.code}`;
   const socials = ['tiktok', 'instagram', 'facebook'].filter((id) => data[id])
     .map((id) => ({ id, url: data[id], name: PLATFORM_NAMES[id], handle: socialHandle(data[id], id) }));
   return (
     <div className="wrap page profile">
-      {/* Who she is, on her photo. */}
-      <div className="profile-photo">
-        <Portrait name={data.name} photoUrl={data.photoUrl} code={data.code} />
-        <div className="profile-caption">
-          <p className="eyebrow">{data.location}, {data.state}{data.category ? ` · ${data.category}` : ''}</p>
-          <h1>{data.name}{data.onProbation ? <em className="tag tag-review probation-tag">On probation</em> : null}</h1>
-          <CodeTag code={data.code} inline />
-        </div>
-      </div>
-      <div className="profile-main">
-        {competition?.phase === 'voting' && competition.round ? <RoundNote round={competition.round} /> : null}
-        {competition?.phase === 'voting' ? (
-          <p className="profile-line">
-            <span><b><CountUp value={data.totalVotes} /></b> votes</span>
-            <span>No. <b><CountUp value={data.position} /></b></span>
-            <Movement value={data.movement24h} />
-          </p>
-        ) : null}
-        <VotePanel contestant={data} viaLink={viaLink} />
-
-        {/* About her, her own accounts (they open elsewhere), and sending her link on. */}
-        <section className="profile-about" aria-label={`About ${data.name}`}>
-          {data.bio ? <p className="profile-bio">{data.bio}</p> : null}
-          <div className="profile-actions">
-            {socials.map((s) => (
-              <a key={s.id} className="social-icon" href={s.url} target="_blank" rel="noreferrer noopener" aria-label={`${data.name} on ${s.name}: ${s.handle}`} title={`${s.name}: ${s.handle}`}>
-                <span className={`follower-logo follower-logo-${s.id}`}><BrandLogo name={s.id} /></span>
-              </a>
-            ))}
-            <ShareButton url={url} name={data.name} label="Share her link" />
-          </div>
+      <div className="profile-photo"><Portrait name={data.name} photoUrl={data.photoUrl} code={data.code} /></div>
+      <h1 className="profile-name">
+        {data.name}
+        <span className="profile-place">{data.location}, {data.state}</span>
+        {data.onProbation ? <em className="tag tag-review probation-tag">On probation</em> : null}
+      </h1>
+      {competition?.phase === 'voting' ? (
+        <p className="profile-line">
+          <span><b><CountUp value={data.totalVotes} /></b> votes</span>
+          <span>No. <b><CountUp value={data.position} /></b></span>
+          <Movement value={data.movement24h} />
+        </p>
+      ) : null}
+      {data.bio ? (
+        <section className="profile-about" aria-labelledby="about-heading">
+          <h2 id="about-heading">About</h2>
+          <p className="profile-bio">{data.bio}</p>
         </section>
+      ) : null}
+      {voting?.open ? (
+        <Link to={`/c/${data.code}/vote`} className="btn btn-vote btn-wide profile-vote">
+          <span>Vote {data.name} · <span className="profile-vote-code">{data.code}</span></span>
+        </Link>
+      ) : <p className="note">{voting?.message ?? 'Voting opens soon.'}</p>}
+      {competition?.phase === 'voting' && competition.round ? <RoundNote round={competition.round} /> : null}
+      <div className="profile-actions">
+        {socials.map((s) => (
+          <a key={s.id} className="social-icon" href={s.url} target="_blank" rel="noreferrer noopener" aria-label={`${data.name} on ${s.name}: ${s.handle}`} title={`${s.name}: ${s.handle}`}>
+            <span className={`follower-logo follower-logo-${s.id}`}><BrandLogo name={s.id} /></span>
+          </a>
+        ))}
+        <ShareButton url={url} name={data.name} label="Share her link" />
       </div>
+    </div>
+  );
+}
+
+// Voting for her: how many votes, a name, how to pay, and Pay, all in one phone screen.
+export function VotePage() {
+  const { code } = useParams();
+  const { data, error } = useFetch(`/contestants/${encodeURIComponent(code)}`);
+  const viaLink = useViaLink(code);
+  // Her page says what's wrong (eliminated, no such code, or a connection problem).
+  if (error && !data) return <Navigate to={`/c/${encodeURIComponent(code)}`} replace />;
+  if (!data) return <div className="wrap page vote-page"><Loading /></div>;
+  return (
+    <div className="wrap page vote-page">
+      <Link to={`/c/${data.code}`} className="vote-who" aria-label={`Back to ${data.name}’s page`}>
+        <span className="vote-who-back" aria-hidden="true">←</span>
+        <span className="vote-who-photo"><Portrait name={data.name} photoUrl={data.photoUrl} code={data.code} /></span>
+        <span className="vote-who-text"><b>{data.name}</b><small>{data.code} · {data.location}, {data.state}</small></span>
+      </Link>
+      <VotePanel contestant={data} viaLink={viaLink} />
     </div>
   );
 }

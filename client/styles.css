@@ -833,22 +833,22 @@ select option { background: var(--surface); }
 .card-stats { font-size: .86rem; margin-top: 5px; color: var(--muted); }
 .card-stats b { color: var(--accent-soft); font-weight: 600; }
 
-/* Profile */
-.profile { display: grid; gap: 22px; }
-@media (min-width: 860px) { .profile { grid-template-columns: minmax(0, .85fr) minmax(0, 1fr); gap: 44px; align-items: start; } .profile-photo { position: sticky; top: 86px; } }
-/* Her name, town and code sit on the photo, fading it to dark underneath so they read. */
-.profile-photo { position: relative; aspect-ratio: 4 / 3; overflow: hidden; border-radius: 24px; max-width: 520px; width: 100%; }
-@media (min-width: 860px) { .profile-photo { aspect-ratio: 4 / 5; } }
-.profile-caption { position: absolute; inset: auto 0 0 0; z-index: 2; padding: 48px 16px 14px; background: linear-gradient(transparent, rgb(12 10 18 / .82)); color: #fff; }
-.profile-caption .eyebrow { margin: 0 0 2px; color: rgb(255 255 255 / .85); }
-.profile-caption h1 { margin: 0 0 6px; color: #fff; font-size: clamp(1.7rem, 7vw, 2.4rem); line-height: 1.05; }
-.profile-caption .code-tag.inline { background: rgb(255 255 255 / .18); color: #fff; }
+/* Profile: one column, sized so her photo, name, votes, about and the Vote button fit one phone screen. */
+.profile { display: grid; gap: 12px; max-width: 560px; }
+.profile-photo { position: relative; overflow: hidden; border-radius: 22px; width: 100%; height: 44vh; height: clamp(190px, calc(100svh - 400px), 500px); }
+/* Her name, with her town small and yellow on the same line. */
+.profile-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; margin: 0; font-size: clamp(1.6rem, 6.5vw, 2.2rem); line-height: 1.1; }
+.profile-place { font-family: var(--font); font-size: .9rem; font-weight: 600; letter-spacing: 0; color: #ffc53d; }
+:root:is([data-theme="royal"], [data-theme="ankara"], [data-theme="naija"], [data-theme="glam"]) .profile-place { color: #9a6400; }
 /* Votes, position and the day's movement on one line. */
-.profile-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 0 0 14px; color: var(--muted); font-size: .95rem; }
+.profile-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 0; color: var(--muted); font-size: .95rem; }
 .profile-line b { color: var(--accent-soft); font-size: 1.15rem; font-variant-numeric: tabular-nums; }
-.profile-bio { margin: 0 0 12px; white-space: pre-line; color: var(--muted); }
-.profile-about { margin-top: 16px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius); }
-.profile-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.profile-about { padding: 12px 14px; border: 1px solid var(--line); border-radius: 16px; }
+.profile-about h2 { margin: 0 0 2px; font-family: var(--font); font-size: .75rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.profile-bio { margin: 0; white-space: pre-line; overflow-wrap: anywhere; }
+.profile-vote { min-height: 54px; font-size: 1.05rem; text-wrap: balance; }
+.profile-vote-code { opacity: .8; font-weight: 600; letter-spacing: .02em; }
+.profile-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; }
 .profile-actions .share-native { flex: 1 1 180px; width: auto; }
 .social-icon { display: grid; place-items: center; width: 50px; height: 50px; border: 1px solid var(--line); border-radius: 50%; transition: border-color .15s, background .15s; }
 .social-icon:hover { border-color: var(--accent); background: var(--surface); }
@@ -898,21 +898,23 @@ select option { background: var(--surface); }
 @media (min-width: 620px) { .pay-label { display: none; } .pay-label-wide { display: inline; } }
 .pay-pill .pay-icon svg { width: 18px; height: 18px; }
 @media (max-width: 359px) { .pay-pill { flex-direction: column; gap: 2px; font-size: .78rem; } }
+/* The vote page: who you're voting for, then amounts, name, how to pay and Pay, in one screen. */
+.vote-page { display: grid; gap: 12px; max-width: 560px; }
+.vote-who { display: flex; align-items: center; gap: 10px; min-width: 0; color: var(--text); text-decoration: none; }
+.vote-who-back { flex: none; width: 20px; font-size: 1.3rem; color: var(--muted); }
+.vote-who-photo { flex: none; width: 48px; height: 48px; overflow: hidden; border-radius: 50%; }
+.vote-who-text { display: grid; min-width: 0; line-height: 1.25; }
+.vote-who-text b { overflow: hidden; font-size: 1.1rem; text-overflow: ellipsis; white-space: nowrap; }
+.vote-who-text small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.vote-panel .vote-step { font-family: var(--font); font-size: 1rem; font-weight: 600; }
 /* Phones: tighter margins and padding, so the content gets the width. */
 @media (max-width: 619px) {
-  .profile.wrap { padding-inline: 10px; }
-  .profile.page { padding-top: 10px; }
+  .profile.wrap, .vote-page.wrap { padding-inline: 12px; }
+  .profile.page, .vote-page.page { padding-top: 10px; }
   .profile { gap: 10px; }
   .profile-photo { border-radius: 18px; }
-  .profile-line { margin-bottom: 10px; padding-inline: 4px; }
   .vote-panel { gap: 10px; padding: 14px 12px; border-radius: 16px; }
   .vote-amounts { margin-inline: -12px; padding-inline: 12px; gap: 6px; }
-  .profile-about { margin-top: 10px; padding: 12px; border-radius: 16px; }
-}
-/* On phones the Pay button stays at the bottom of the screen, always in reach. */
-@media (max-width: 859px) {
-  body:has(.vote-panel .btn-vote) .site-footer { padding-bottom: 84px; }
-  .vote-panel .btn-vote { position: fixed; z-index: 40; left: 12px; right: 12px; bottom: calc(10px + env(safe-area-inset-bottom)); width: auto; box-shadow: 0 10px 30px rgb(0 0 0 / .45); }
 }
 .check-code { margin: 6px 0 12px; font-size: 1.05rem; }
 .upsell-offers { display: grid; gap: 10px; margin: 14px 0; padding: 0; list-style: none; }

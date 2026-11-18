@@ -9,7 +9,7 @@ import {
   HeaderPulse, LivePopups, Loading, PageSkeleton, ThemePicker,
 } from './ui.jsx';
 import { applyTheme, currentTheme, rememberDefaultTheme } from './themes.js';
-import { Contestants, Home, Leaderboard, NotFound, Profile, Results } from './pages/public.jsx';
+import { Contestants, Home, Leaderboard, NotFound, Profile, Results, VotePage } from './pages/public.jsx';
 
 // Voters only download the public pages up front. Everything else comes when it's needed.
 const loadAccount = () => import('./pages/account.jsx');
@@ -220,6 +220,7 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/contestants" element={<Contestants />} />
           <Route path="/c/:code" element={<Profile />} />
+          <Route path="/c/:code/vote" element={<VotePage />} />
           <Route path="/leaderboard" element={<Leaderboard />} />
           <Route path="/results" element={<Results />} />
           <Route path="/register" element={<Register />} />
