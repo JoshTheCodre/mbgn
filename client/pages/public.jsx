@@ -603,57 +603,49 @@ export const Contestants = whileVoting(() => {
   );
 });
 
-// Shown every time someone goes to pay: a bigger amount is always one tap away, and saying no
-// is just as easy.
+// Shown when someone goes to pay and a bigger bundle saves a lot: one tap to take it, one to
+// carry on. Every price here is what they'll actually pay, charges included.
 function UpsellDialog({ open, votes, offers, votePrice, contestant, onPick, onClose }) {
-  const current = offers.length ? offers[0].price - offers[0].extra : 0;
-  const best = offers[0];
+  const now = offers.length ? offers[0].price - offers[0].extra : 0;
+  const total = (price) => price + paymentCharges(price);
   return (
-    <Dialog open={open} onClose={onClose} title={best ? `Give ${contestant.name} ${num(best.votes)} votes for ${naira(best.price)}` : 'Get more votes for your money'}>
-      <p className="muted">Bulk votes cost less each, and every vote moves {contestant.name} ({contestant.code}) up the leaderboard.</p>
-      <ul className="upsell-offers">
+    <Dialog open={open} onClose={onClose} title={offers.length === 1 ? `Make it ${num(offers[0].votes)} votes?` : 'Get more votes for less?'}>
+      <p className="muted upsell-why">Bundles cost less per vote{votePrice ? ` than the usual ${naira(votePrice)}` : ''}.</p>
+      <div className="upsell-offers">
         {offers.map((o, i) => (
-          <li key={o.votes}>
-            <button type="button" className={`upsell-offer ${i === 0 ? 'best' : ''}`} onClick={() => onPick(o.votes)}>
-              {i === 0 ? <span className="upsell-tag">Most popular</span> : null}
-              <span className="upsell-votes"><b>{num(o.votes)}</b> votes for {contestant.name}</span>
-              <span className="upsell-price">{naira(o.price)}</span>
-              <small>
-                {naira(Math.round(o.price / o.votes))} a vote{o.saving > 0 ? ` · save ${naira(o.saving)}` : ''}
-                {o.extra > 0 ? ` · only ${naira(o.extra)} more` : ''}
-                {` · plus ${naira(paymentCharges(o.price))} charges`}
-              </small>
-            </button>
-          </li>
+          <button key={o.votes} type="button" className={`upsell-offer ${i === 0 ? 'best' : ''}`} onClick={() => onPick(o.votes)}
+            aria-label={`${plural(o.votes, 'vote')} for ${contestant.name}, ${naira(total(o.price))}${o.saving > 0 ? `, save ${naira(o.saving)}` : ''}`}>
+            <span className="upsell-votes"><b>{num(o.votes)}</b> votes</span>
+            <span className="upsell-price">{naira(total(o.price))}</span>
+            <small>{naira(Math.round(o.price / o.votes))} a vote{o.saving > 0 ? <em> · save {naira(o.saving)}</em> : null}</small>
+          </button>
         ))}
-      </ul>
-      <button type="button" className="text-link as-button upsell-decline" onClick={() => onPick(votes)}>
-        No thanks, pay {naira(current + paymentCharges(current))} for {plural(votes, 'vote')}
+      </div>
+      <button type="button" className="btn btn-ghost btn-wide upsell-decline" onClick={() => onPick(votes)}>
+        No, keep {plural(votes, 'vote')} · {naira(total(now))}
       </button>
-      {votePrice ? <p className="muted small-note">Normal price: {naira(votePrice)} a vote.</p> : null}
     </Dialog>
   );
 }
 
-const PayIcon = ({ d }) => (
-  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
-);
-// Card opens Paystack with card first, and its other ways (USSD, QR) there too. Short labels on
-// phones, fuller ones where there's room.
+// Card opens Paystack with card first, and its other ways (USSD, QR) there too. One slim row, each
+// with its icon beside a short name (fuller on wide screens).
 const PAY_OPTIONS = [
-  { id: 'transfer', label: 'Transfer', wide: 'Bank transfer', icon: <PayIcon d="M3 10h18M5 10v8m4.5-8v8m5-8v8M19 10v8M3 21h18M12 3 3 8h18z" />, button: 'by transfer' },
-  { id: 'opay', label: 'OPay', wide: 'OPay', logo: true, icon: <img className="opay-logo" src="/pay/opay.png" width="141" height="48" alt="" />, button: 'with OPay' },
-  { id: 'any', label: 'Card', wide: 'Pay with card', logo: true, icon: <img className="card-logo" src="/pay/mastercard.png" width="76" height="48" alt="" />, button: 'by card' },
+  {
+    id: 'transfer', label: 'Transfer', wide: 'Bank transfer', button: 'by transfer',
+    logo: <svg className="bank-logo" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 10h18M5 10v8m4.5-8v8m5-8v8M19 10v8M3 21h18M12 3 3 8h18z" /></svg>,
+  },
+  { id: 'opay', label: 'OPay', wide: 'OPay', button: 'with OPay', logo: <img className="opay-logo" src="/pay/opay.png" width="141" height="48" alt="" /> },
+  { id: 'any', label: 'Card', wide: 'Debit card', button: 'by card', logo: <img className="card-logo" src="/pay/mastercard.png" width="76" height="48" alt="" /> },
 ];
 
-// One slim row. A bank transfer opens an account number right here; the others go to Paystack.
 function PayWith({ method, onChange }) {
   return (
     <div className="pay-row" role="radiogroup" aria-label="Pay with">
       {PAY_OPTIONS.map((o) => (
         <label key={o.id} className={`pay-pill ${method === o.id ? 'on' : ''}`}>
           <input type="radio" name="payMethod" value={o.id} checked={method === o.id} onChange={() => onChange(o.id)} />
-          <span className={`pay-icon ${o.logo ? 'pay-icon-logo' : ''}`}>{o.icon}</span>
+          <span className={`pay-icon ${o.id === 'transfer' ? '' : 'pay-icon-logo'}`}>{o.logo}</span>
           <span className="pay-label">{o.label}</span>
           <span className="pay-label-wide">{o.wide}</span>
         </label>
@@ -662,11 +654,13 @@ function PayWith({ method, onChange }) {
   );
 }
 
+// "₦2k", "₦12.5k": how people say money, short enough for a tag.
+const shortNaira = (n) => (n < 1000 ? naira(n) : `₦${Number((n / 1000).toFixed(1))}k`);
+
 function VotePanel({ contestant, viaLink }) {
   const { competition } = useApp();
   const navigate = useNavigate();
-  const [quantity, setQuantity] = useState(5);
-  const [custom, setCustom] = useState('');
+  const [qty, setQty] = useState('5');
   const [voterName, setVoterName] = useState(() => {
     try { return localStorage.getItem('mbgn-voter-name') ?? ''; } catch { return ''; }
   });
@@ -676,7 +670,6 @@ function VotePanel({ contestant, viaLink }) {
       return saved === 'any' || PAY_OPTIONS.some((o) => o.id === saved) ? saved : 'transfer';
     } catch { return 'transfer'; }
   });
-  const [other, setOther] = useState(false);
   const [offering, setOffering] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -684,26 +677,25 @@ function VotePanel({ contestant, viaLink }) {
   const packages = competition?.packages ?? [];
   const votePrice = competition?.votePrice ?? 0;
   const priceOf = (n) => bulkPrice(n, votePrice, packages);
-  const amount = other ? Number(custom) : quantity;
-  const valid = Number.isInteger(amount) && amount > 0;
+  const amount = Number(qty);
+  const valid = Number.isInteger(amount) && amount > 0 && amount <= 100000;
   const voting = competition?.voting;
-  // One row: the usual amounts and the bulk deals together, smallest first.
-  const amounts = [...new Set([1, 5, 10, 20, ...packages.map((p) => p.votes)])].sort((a, b) => a - b);
+  // Quick picks: the usual amounts and the bulk deals together, smallest first.
+  const amounts = [...new Set([5, 10, 20, ...packages.map((p) => p.votes)])].sort((a, b) => a - b);
   const savingOn = (n) => {
     const deal = packages.find((p) => p.votes === n);
     return deal ? n * votePrice - deal.price : 0;
   };
   const price = valid ? priceOf(amount) : 0;
   const fee = valid ? paymentCharges(price) : 0;
-  const rate = valid ? price / amount : votePrice;
   // A bigger amount is only suggested when it saves a lot (NGN 1,000 or more) for at most twice the spend.
   const offers = valid ? upsellOffers(amount, votePrice, packages).filter((o) => o.saving >= 1000 && o.price <= price * 2) : [];
 
   function choose(n) {
-    setOther(false);
-    setQuantity(n);
+    setQty(String(Math.min(100000, Math.max(1, n))));
     setError(null);
   }
+  const saving = valid ? savingOn(amount) : 0;
 
   function askFirst(e) {
     e.preventDefault();
@@ -738,58 +730,59 @@ function VotePanel({ contestant, viaLink }) {
 
   return (
     <form className="vote-panel" onSubmit={askFirst}>
-      <h2 className="vote-step">How many votes?</h2>
-      <div className="vote-amounts" role="group" aria-label="Number of votes">
-        {amounts.map((n) => {
-          const active = !other && quantity === n;
-          const saving = savingOn(n);
-          return (
-            <button key={n} type="button" className={`amount ${active ? 'active' : ''} ${saving > 0 ? 'amount-deal' : ''}`} aria-pressed={active} onClick={() => choose(n)}
-              aria-label={`${plural(n, 'vote')}${saving > 0 ? `, save ${naira(saving)}` : ''}`}>
-              <b>{num(n)}</b>
-              {saving > 0 ? <small>save {naira(saving)}</small> : null}
-            </button>
-          );
-        })}
-        <button type="button" className={`amount ${other ? 'active' : ''}`} aria-pressed={other} onClick={() => { setOther(true); setError(null); }}>
-          <b>Other</b>
-        </button>
-      </div>
-      {other ? (
-        <input
-          className="qty-custom"
-          type="number"
-          min="1"
-          step="1"
-          inputMode="numeric"
-          placeholder="How many votes?"
-          aria-label="How many votes?"
-          value={custom}
-          autoFocus
-          onChange={(e) => { setCustom(e.target.value); setError(null); }}
-        />
-      ) : null}
-      {valid ? (
-        <p className="vote-sum">
-          <b>{plural(amount, 'vote')} · {naira(price + fee)}</b>
-          {rate < votePrice ? <small>Bulk price: {naira(Math.round(rate))} a vote</small> : null}
+      {/* How many: one big number to tap and type, - and + either side, quick picks under it. */}
+      <div className="qty">
+        <div className="qty-row">
+          <button type="button" className="qty-step" aria-label="One vote fewer" disabled={!valid || amount <= 1} onClick={() => choose(amount - 1)}>
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M5 12h14" /></svg>
+          </button>
+          <label className="qty-big">
+            <input type="number" inputMode="numeric" min="1" max="100000" step="1" value={qty} aria-label="Number of votes"
+              style={{ width: `${Math.max(1, qty.length) + 0.4}ch` }}
+              onChange={(e) => { setQty(e.target.value.replace(/\D/g, '').slice(0, 6)); setError(null); }} />
+            <span>{amount === 1 ? 'vote' : 'votes'}</span>
+          </label>
+          <button type="button" className="qty-step" aria-label="One vote more" onClick={() => choose(valid ? amount + 1 : 1)}>
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          </button>
+        </div>
+        <p className="qty-price" aria-live="polite">
+          {valid ? naira(price) : 'Enter how many votes'}
+          {saving > 0 ? <em>You save {naira(saving)}</em> : null}
         </p>
-      ) : null}
-      <Field hint={`${contestant.name} sees this name with your votes.`}>
+        <div className="qty-picks" role="group" aria-label="Quick picks">
+          {amounts.map((n) => {
+            const deal = savingOn(n);
+            return (
+              <button key={n} type="button" className={`qty-pick ${amount === n ? 'on' : ''} ${deal > 0 ? 'deal' : ''}`} aria-pressed={amount === n}
+                aria-label={`${plural(n, 'vote')}${deal > 0 ? `, save ${naira(deal)}` : ''}`} onClick={() => choose(n)}>
+                {deal > 0 ? <span className="qty-promo" aria-hidden="true">Save {shortNaira(deal)}</span> : null}
+                {num(n)}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <Field label="Who’s voting?" hint={(
+        <>
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
+          {contestant.name} sees this name with your votes.
+        </>
+      )}>
         <input value={voterName} onChange={(e) => setVoterName(e.target.value)} maxLength={60} autoComplete="name" required
-          placeholder="Type your name or nickname" aria-label="Your name or nickname" />
+          placeholder="Type your name or nickname" />
       </Field>
 
-      {valid ? (
-        <>
-          <PayWith method={method} onChange={setMethod} />
-          <button className="btn btn-vote btn-wide" disabled={busy}>
-            {busy
-              ? (method === 'transfer' ? 'Getting your account number…' : 'Opening checkout…')
-              : `Pay ${naira(price + fee)} ${PAY_OPTIONS.find((o) => o.id === method)?.button ?? 'and vote'}`}
-          </button>
-        </>
-      ) : null}
+      <PayWith method={method} onChange={setMethod} />
+      <button className="btn btn-vote btn-wide" disabled={busy || !valid}>
+        {busy
+          ? (method === 'transfer' ? 'Getting your account number…' : 'Opening checkout…')
+          : valid ? `Pay ${naira(price + fee)} ${PAY_OPTIONS.find((o) => o.id === method)?.button ?? 'and vote'}` : 'Pay'}
+      </button>
+      <p className="vote-secure">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></svg>
+        Secure payment by Paystack
+      </p>
       <ErrorNote error={error} />
       <UpsellDialog open={offering} votes={amount} offers={offers} votePrice={votePrice} contestant={contestant} onPick={pay} onClose={() => setOffering(false)} />
     </form>
@@ -915,11 +908,14 @@ export function VotePage() {
   if (!data) return <div className="wrap page vote-page"><Loading /></div>;
   return (
     <div className="wrap page vote-page">
-      <Link to={`/c/${data.code}`} className="vote-who" aria-label={`Back to ${data.name}’s page`}>
-        <span className="vote-who-back" aria-hidden="true">←</span>
-        <span className="vote-who-photo"><Portrait name={data.name} photoUrl={data.photoUrl} code={data.code} /></span>
-        <span className="vote-who-text"><b>{data.name}</b><small>{data.code} · {data.location}, {data.state}</small></span>
+      <Link to={`/c/${data.code}`} className="vote-back" aria-label={`Back to ${data.name}’s page`}>
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7" /></svg>
       </Link>
+      <header className="vote-who">
+        <span className="vote-who-photo"><Portrait name={data.name} photoUrl={data.photoUrl} code={data.code} /></span>
+        <h1>{data.name}</h1>
+        <p><span className="vote-who-code">{data.code}</span><span className="profile-place">{data.location}, {data.state}</span></p>
+      </header>
       <VotePanel contestant={data} viaLink={viaLink} />
     </div>
   );
