@@ -734,21 +734,27 @@ function VotePanel({ contestant, viaLink }) {
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M5 12h14" /></svg>
           </button>
           <label className="qty-big">
-            <input type="number" inputMode="numeric" min="1" max="100000" step="1" value={qty} aria-label="Number of votes"
-              style={{ width: `${Math.max(1, qty.length) + 0.4}ch` }}
-              onChange={(e) => { setQty(e.target.value.replace(/\D/g, '').slice(0, 6)); setError(null); }} />
-            <span>{amount === 1 ? 'vote' : 'votes'}</span>
+            {/* An invisible copy of the number sizes the box to the digits themselves, so the blinking
+                cursor sits exactly where the real one appears after the last digit. On tap the real one
+                takes over in the same spot. */}
+            <span className="qty-field">
+              <span className="qty-mirror" aria-hidden="true">{qty}</span>
+              <input type="number" inputMode="numeric" min="1" max="100000" step="1" value={qty} aria-label="Number of votes"
+                onChange={(e) => { setQty(e.target.value.replace(/\D/g, '').slice(0, 6)); setError(null); }} />
+              <span className="qty-caret" aria-hidden="true" style={qty ? undefined : { left: 0 }} />
+            </span>
+            <span className="qty-unit">{amount === 1 ? 'vote' : 'votes'}</span>
           </label>
           <button type="button" className="qty-step" aria-label="One vote more" onClick={() => choose(valid ? amount + 1 : 1)}>
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
           </button>
         </div>
         {/* A promo shows the normal price crossed out beside what they actually pay. */}
-        <p className="qty-price" aria-live="polite">
+        <p className={`qty-price ${valid && saving > 0 ? 'is-promo' : ''}`} aria-live="polite">
           {!valid ? 'Enter how many votes' : saving > 0 ? (
             <>
               <s aria-label={`Normal price ${naira(price + saving)}`}>{naira(price + saving)}</s>
-              <b aria-label={`Promo price ${naira(price)}`}>{naira(price)}</b>
+              <b key={amount} aria-label={`Promo price ${naira(price)}`}>{naira(price)}</b>
             </>
           ) : naira(price)}
         </p>
