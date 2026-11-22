@@ -141,21 +141,24 @@ function checkoutEmail(config, reference) {
   return `${name}+${reference.toLowerCase()}@${domain}`;
 }
 
-// How a supporter can choose to pay, and the Paystack checkout channels each one opens.
-// A bank transfer is normally shown on our own page; its checkout is only the fallback.
-// OPay sits in Paystack's "Pay with Bank" channel.
-export const PAY_METHODS = { transfer: ['bank_transfer'], opay: ['bank'], card: ['card'], any: null };
+// Votes are paid by bank transfer only. The account number shows on our own page; if Paystack
+// can't open one, its checkout is the fallback, limited to bank transfer, never card.
+export const PAY_METHODS = { transfer: ['bank_transfer'] };
+// Ways that were offered before (card, OPay, "any"). A page still open from then asks for these;
+// it pays by transfer instead of failing.
+const RETIRED_METHODS = new Set(['any', 'card', 'opay']);
 const TRANSFER_MINUTES = 60;
 
 // Long and random: holding this reference is what lets someone see the payment and its receipt.
 const newReference = () => `MBG-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(12).toString('hex').toUpperCase()}`;
 
 // The votes count as soon as the provider confirms the payment.
-export async function startPayment(ctx, { code, quantity, voterName, method = 'any', email = null, viaLink, ip }) {
+export async function startPayment(ctx, { code, quantity, voterName, method: asked = 'transfer', email = null, viaLink, ip }) {
   const { db, config, provider } = ctx;
   const name = typeof voterName === 'string' ? voterName.trim().replace(/\s+/g, ' ').slice(0, 60) : '';
   if (name.length < 2) throw new HttpError(400, 'Please enter your name. It goes on your proof of vote.');
-  if (!Object.hasOwn(PAY_METHODS, method)) throw new HttpError(400, 'Choose how you want to pay.');
+  const method = RETIRED_METHODS.has(asked) ? 'transfer' : asked;
+  if (!Object.hasOwn(PAY_METHODS, method)) throw new HttpError(400, 'Votes are paid by bank transfer.');
   const state = await votingState(db);
   if (!state.open) throw new HttpError(409, state.message);
   const contestant = await db.prepare("SELECT id, code FROM contestants WHERE code = ? AND status = 'approved'").get(code);

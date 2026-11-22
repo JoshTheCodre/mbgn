@@ -936,23 +936,6 @@ select option { background: var(--surface); }
 .vote-panel .field-hint { display: flex; align-items: center; gap: 6px; margin: 4px 0 4px; color: color-mix(in srgb, var(--accent-soft) 65%, var(--muted)); font-size: .72rem; font-weight: 500; }
 .vote-panel .field-hint svg { flex: none; opacity: .85; }
 
-/* How to pay: one slim row, each choice its icon beside its name. */
-.pay-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
-.pay-pill { position: relative; display: flex; align-items: center; justify-content: center; gap: 7px; min-width: 0; min-height: 48px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 14px; color: var(--muted); font-size: .86rem; font-weight: 600; text-align: center; cursor: pointer; transition: border-color .15s, background .15s, color .15s; }
-.pay-pill:hover { border-color: var(--line-strong); color: var(--text); }
-.pay-pill.on { border-color: var(--accent); background: rgb(var(--accent-rgb) / .12); box-shadow: inset 0 0 0 1px var(--accent); color: var(--text); }
-.pay-pill input { position: absolute; inset: 0; width: 1px; height: 1px; min-height: 0; padding: 0; margin: 0; opacity: 0; pointer-events: none; }
-.pay-pill:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
-.pay-pill .pay-icon { flex: none; width: 26px; height: 26px; border-radius: 7px; background: transparent; color: inherit; }
-.pay-pill .pay-icon-logo { background: #fff; box-shadow: none; }
-.pay-pill .opay-logo { width: 22px; height: auto; }
-.pay-pill .card-logo { display: block; width: 20px; height: auto; }
-.pay-pill .bank-logo { width: 19px; height: 19px; }
-.pay-label-wide { display: none; }
-@media (min-width: 620px) { .pay-label { display: none; } .pay-label-wide { display: inline; } }
-/* Very narrow: icon above its name, so both still fit. */
-@media (max-width: 359px) { .pay-pill { flex-direction: column; gap: 3px; padding-block: 6px; font-size: .76rem; } }
-
 .vote-panel .btn-vote { min-height: 60px; padding: 16px 24px; font-size: 1.04rem; letter-spacing: .01em; }
 .vote-secure { display: flex; justify-content: center; align-items: center; gap: 6px; margin: calc(var(--vote-gap, 16px) * -.5) 0 0; color: var(--muted); font-size: .74rem; }
 
@@ -965,7 +948,6 @@ select option { background: var(--surface); }
   .qty-field { font-size: 2.6rem; }
   .qty-step { width: 40px; height: 40px; }
   .vote-panel .field input { min-height: 44px; }
-  .pay-pill { min-height: 44px; }
   .vote-panel .btn-vote { min-height: 54px; padding-block: 12px; }
 }
 /* Computers: two columns. Her page puts the photo beside everything about her; the vote page puts
@@ -1081,6 +1063,10 @@ select option { background: var(--surface); }
 .transfer-timer { font-weight: 600; font-variant-numeric: tabular-nums; }
 .transfer-timer.expired { color: var(--bad-text); }
 .pay-transfer > .btn { margin-top: 8px; }
+/* Under the amount: a clear warning to send exactly that, as a different amount can't be matched. */
+.transfer-exact { display: flex; align-items: flex-start; gap: 10px; margin: 4px 12px 8px; padding: 12px 14px; border-radius: var(--radius-s); background: var(--warn-bg); color: var(--warn-text); font-size: .92rem; line-height: 1.4; }
+.transfer-exact svg { flex: none; margin-top: 1px; }
+.transfer-exact b { font-weight: 700; }
 .transfer-waiting { display: grid; justify-items: center; gap: 6px; margin-top: 14px; padding: 18px; text-align: center; background: var(--surface); border-radius: var(--radius); }
 .transfer-waiting .spinner { margin-bottom: 6px; }
 .transfer-waiting p { margin: 0; overflow-wrap: anywhere; }

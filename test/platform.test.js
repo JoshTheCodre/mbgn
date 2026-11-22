@@ -679,7 +679,9 @@ describe('Paystack integration (against a local stand-in)', () => {
   test('a payment counts only what Paystack confirms', async () => {
     const { code } = await makeContestant(app, admin, 'PaystackDirect');
     const anon = client(app.base);
-    const { data } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 4 });
+    // No transfer account opens, so Paystack's own checkout (bank transfer only) takes the payment.
+    chargeFails = true;
+    const { data } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 4 }).finally(() => { chargeFails = false; });
     assert.equal(data.checkoutUrl, 'https://checkout.paystack.com/abc');
 
     // A checkout nobody has finished stays open: it may still be paid.
@@ -702,7 +704,9 @@ describe('Paystack integration (against a local stand-in)', () => {
   test('starts a real checkout in kobo, and the simulator route does not exist', async () => {
     const { code } = await makeContestant(app, admin, 'PaystackStart');
     const anon = client(app.base);
-    const { data } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 2 });
+    chargeFails = true;
+    const { data } = await anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 2 }).finally(() => { chargeFails = false; });
+    assert.deepEqual(sent.channels, ['bank_transfer']);
     // The voter pays the charges: 400 for the votes and 7, so 400 is left after Paystack's 1.5%.
     assert.deepEqual([data.amount, data.fee, data.total], [400, 7, 407]);
     assert.equal(sent.amount, 40700);
@@ -739,16 +743,18 @@ describe('Paystack integration (against a local stand-in)', () => {
     assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 3);
   });
 
-  test('card and OPay open Paystack on that option, and a transfer falls back to Paystack if no account opens', async () => {
+  test('votes are paid by bank transfer only, and a transfer falls back to a transfer-only Paystack checkout if no account opens', async () => {
     const { code } = await makeContestant(app, admin, 'PaystackChannels');
     const anon = client(app.base);
     const pay = (method) => anon.post('/votes/pay', { voterName: 'Test Voter', code, quantity: 1, ...(method ? { method } : {}) });
-    await pay('card');
-    assert.deepEqual(sent.channels, ['card']);
-    await pay('opay');
-    assert.deepEqual(sent.channels, ['bank']);
-    await pay();
-    assert.equal(sent.channels, undefined);
+    // Card and OPay are gone: a page still asking for them, or for nothing, gets a transfer account.
+    for (const method of ['card', 'opay', 'any', undefined]) {
+      const { status, data } = await pay(method);
+      assert.equal(status, 201);
+      assert.equal(data.checkoutUrl, undefined);
+      assert.match(data.transfer.accountNumber, /^\d{10}$/);
+    }
+    assert.equal((await pay('cheque')).status, 400);
 
     chargeFails = true;
     try {

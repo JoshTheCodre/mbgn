@@ -877,6 +877,10 @@ export function PayTransfer() {
           </div>
           <CopyButton value={String(payment.total)} label="amount" />
         </div>
+        <p className="transfer-exact" role="note">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3 2 21h20L12 3z" /><path d="M12 10v5M12 18h.01" /></svg>
+          <span><b>Ensure you transfer the exact amount: {naira(payment.total)}.</b> Not more, not less, in one transfer, or your votes can’t be matched.</span>
+        </p>
         <div className="transfer-row">
           <div><small>Bank · Account name</small><b>{[transfer.bankName, transfer.accountName].filter(Boolean).join(' · ')}</b></div>
         </div>
@@ -884,7 +888,7 @@ export function PayTransfer() {
           {expired ? 'This account has expired' : `${timeLeft(left)} left`}
         </div>
       </div>
-      <p className="muted small-note">This account is only for this payment. Send the exact amount in one transfer, so it matches your votes.</p>
+      <p className="muted small-note">This account is only for this payment.</p>
 
       {sentAt ? (
         <div className="transfer-waiting" role="status">
@@ -909,7 +913,7 @@ export function PayTransfer() {
         <button type="button" className="btn btn-ghost btn-wide" disabled={simBusy} onClick={simulate}>Test mode: pretend the transfer arrived</button>
       ) : null}
       <ErrorNote error={error} />
-      <p className="form-foot"><Link to={back}>Pay another way</Link></p>
+      <p className="form-foot"><Link to={back}>Cancel and go back</Link></p>
     </div>
   );
 }
