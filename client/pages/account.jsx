@@ -873,13 +873,13 @@ export function PayTransfer() {
         <div className="transfer-row">
           <div>
             <small>Amount</small><b>{naira(payment.total)}</b>
-            {payment.fee ? <span className="transfer-breakdown">{naira(payment.amount)} for {plural(payment.votes, 'vote')} + {naira(payment.fee)} payment charges</span> : null}
+            {payment.fee ? <span className="transfer-breakdown">+ {naira(payment.fee)} fee</span> : null}
           </div>
           <CopyButton value={String(payment.total)} label="amount" />
         </div>
         <p className="transfer-exact" role="note">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3 2 21h20L12 3z" /><path d="M12 10v5M12 18h.01" /></svg>
-          <span><b>Ensure you transfer the exact amount: {naira(payment.total)}.</b> Not more, not less, in one transfer, or your votes can’t be matched.</span>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3 2 21h20L12 3z" /><path d="M12 10v5M12 18h.01" /></svg>
+          <span><b>Ensure you transfer the exact amount: {naira(payment.total)}.</b> Not more, not less.</span>
         </p>
         <div className="transfer-row">
           <div><small>Bank · Account name</small><b>{[transfer.bankName, transfer.accountName].filter(Boolean).join(' · ')}</b></div>

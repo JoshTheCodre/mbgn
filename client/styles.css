@@ -1057,14 +1057,14 @@ select option { background: var(--surface); }
 .transfer-row small { color: var(--muted); font-size: .76rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
 .transfer-row b { font-size: 1.05rem; overflow-wrap: anywhere; }
 .transfer-row b.transfer-number { font-size: 1.5rem; font-variant-numeric: tabular-nums; letter-spacing: .06em; }
-.transfer-breakdown { color: var(--muted); font-size: .8rem; }
+.transfer-breakdown { display: block; margin-top: 2px; color: var(--muted); font-size: .72rem; }
 .copy-btn { flex: none; min-width: 84px; border-radius: 999px; }
 .copy-btn.done { border-color: var(--good-text); color: var(--good-text); }
 .transfer-timer { font-weight: 600; font-variant-numeric: tabular-nums; }
 .transfer-timer.expired { color: var(--bad-text); }
 .pay-transfer > .btn { margin-top: 8px; }
 /* Under the amount: a clear warning to send exactly that, as a different amount can't be matched. */
-.transfer-exact { display: flex; align-items: flex-start; gap: 10px; margin: 4px 12px 8px; padding: 12px 14px; border-radius: var(--radius-s); background: var(--warn-bg); color: var(--warn-text); font-size: .92rem; line-height: 1.4; }
+.transfer-exact { display: flex; align-items: flex-start; gap: 7px; margin: 2px 12px 8px; padding: 7px 10px; border-radius: 10px; background: var(--warn-bg); color: var(--warn-text); font-size: .78rem; line-height: 1.35; }
 .transfer-exact svg { flex: none; margin-top: 1px; }
 .transfer-exact b { font-weight: 700; }
 .transfer-waiting { display: grid; justify-items: center; gap: 6px; margin-top: 14px; padding: 18px; text-align: center; background: var(--surface); border-radius: var(--radius); }
