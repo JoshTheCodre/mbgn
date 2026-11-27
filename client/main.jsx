@@ -3,7 +3,7 @@ import {
 } from 'react';
 import { BrowserRouter, Link, NavLink, Route, Routes, useLocation } from 'react-router-dom';
 import {
-  AppProvider, registrationOpen, useApp,
+  AppProvider, adminCountry, getSite, registrationOpen, setAdminCountry, useApp,
 } from './lib.jsx';
 import {
   HeaderPulse, LivePopups, Loading, PageSkeleton, ThemePicker,
@@ -81,7 +81,7 @@ function Header() {
   return (
     <header className={`site-header ${scrolled ? 'scrolled' : ''}`} ref={header}>
       <div className="wrap header-row">
-        <Link to="/" className="logo" aria-label="MBGN home">MBGN</Link>
+        <Link to="/" className="logo" aria-label={`${getSite().short} home`}>{getSite().short}</Link>
         <button type="button" className="menu-btn" aria-label={menu ? 'Close menu' : 'Open menu'} aria-expanded={menu} aria-controls="site-nav" onClick={() => setMenu((m) => !m)}>
           <span className="menu-lines" aria-hidden="true"><i /><i /><i /></span>
         </button>
@@ -123,13 +123,13 @@ function Header() {
 
 function Footer() {
   const { competition } = useApp();
-  const name = competition?.name ?? 'Most Beautiful Girl Online Nigeria';
+  const name = competition?.name ?? getSite().siteName;
   const voting = competition?.phase === 'voting';
   return (
     <footer className="site-footer">
       <div className="wrap footer-top">
         <div className="footer-brand">
-          <Link to="/" className="logo">MBGN</Link>
+          <Link to="/" className="logo">{getSite().short}</Link>
           <p>{name}</p>
         </div>
         {voting || competition?.hasResults ? (
@@ -153,7 +153,7 @@ function Footer() {
         </nav>
       </div>
       <div className="wrap footer-bottom">
-        <span>© {new Date().getFullYear()} MBGN</span>
+        <span>© {new Date().getFullYear()} {getSite().short}</span>
         <span>Every vote is a verified record.</span>
       </div>
     </footer>
@@ -162,7 +162,18 @@ function Footer() {
 
 // The only password on the site. Nothing public links here.
 function AdminGate() {
-  const { user } = useApp();
+  const { user, refreshUser, refreshCompetition } = useApp();
+  // Managing another country than this domain's: its sign-in and contest while on admin pages, and
+  // this domain's own again on leaving them.
+  useEffect(() => {
+    if (!adminCountry()) return undefined;
+    const refresh = () => {
+      refreshUser().catch(() => {});
+      refreshCompetition({ fresh: true }).catch(() => {});
+    };
+    refresh();
+    return refresh;
+  }, [refreshUser, refreshCompetition]);
   if (user === undefined) return <div className="wrap page"><Loading /></div>;
   if (user?.role === 'admin') return <Admin />;
   return <AdminLogin />;

@@ -1,4 +1,42 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { COUNTRY_IDS, formatCount, formatMoney, siteInfo } from '../shared/countries.js';
+
+// ---- Which country's site this is ----
+// Each domain shows one country (mbgn.com.ng Nigeria, the Ghana domain Ghana). On admin pages, the
+// admin can switch to managing another country: its API calls then ask for that country.
+const ADMIN_COUNTRY_KEY = 'mbgn-admin-country';
+const onAdminPage = () => typeof window !== 'undefined' && window.location.pathname.startsWith('/admin');
+
+export function adminCountry() {
+  try {
+    const saved = localStorage.getItem(ADMIN_COUNTRY_KEY);
+    return COUNTRY_IDS.includes(saved) ? saved : null;
+  } catch { return null; }
+}
+
+export function setAdminCountry(country) {
+  try {
+    if (country) localStorage.setItem(ADMIN_COUNTRY_KEY, country);
+    else localStorage.removeItem(ADMIN_COUNTRY_KEY);
+  } catch { /* the switch then lasts this page only */ }
+}
+
+// The country an API call asks for: the admin's choice, on admin pages only.
+const countryAsked = () => (onAdminPage() ? adminCountry() : null);
+
+// Until the server says, a good guess from the domain.
+function guessCountry() {
+  if (typeof window === 'undefined') return 'ng';
+  const host = window.location.hostname;
+  return host.startsWith('gh.') || host.includes('mbgg') ? 'gh' : 'ng';
+}
+
+let site = siteInfo(typeof window === 'undefined' ? 'ng' : countryAsked() ?? guessCountry());
+// The country's currency, regions and wording: siteInfo() in shared/countries.js.
+export const getSite = () => site;
+export function setSite(info) {
+  if (info?.country) site = info;
+}
 
 export class ApiError extends Error {
   constructor(status, message, data) {
@@ -11,9 +49,11 @@ export class ApiError extends Error {
 async function send(path, { method, body, form } = {}) {
   let res;
   try {
+    const asked = countryAsked();
+    const headers = { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(asked ? { 'X-Country': asked } : {}) };
     res = await fetch(`/api${path}`, {
       method: method ?? (body || form ? 'POST' : 'GET'),
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      headers,
       body: form ?? (body ? JSON.stringify(body) : undefined),
       credentials: 'same-origin',
     });
@@ -43,12 +83,15 @@ const remembered = new Map();
 const isPublic = (path) => /^\/(competition|leaderboard|activity|results|contestants\/)/.test(path);
 const KEPT_BETWEEN_VISITS = new Set(['/competition', '/leaderboard?limit=5', '/activity?limit=5', '/leaderboard?limit=200']);
 const STORE_PREFIX = 'mbgn-cache:';
+// Kept apart per country, for the admin who switches between them.
+const storeKey = (path) => `${STORE_PREFIX}${countryAsked() ? `${countryAsked()}:` : ''}${path}`;
+const memoryKey = (path) => `${countryAsked() ?? ''}|${path}`;
 
 export function recall(path) {
-  if (remembered.has(path)) return remembered.get(path);
+  if (remembered.has(memoryKey(path))) return remembered.get(memoryKey(path));
   if (!KEPT_BETWEEN_VISITS.has(path)) return null;
   try {
-    const saved = JSON.parse(localStorage.getItem(STORE_PREFIX + path));
+    const saved = JSON.parse(localStorage.getItem(storeKey(path)));
     return saved && Date.now() - saved.at < 864e5 ? saved.data : null;
   } catch {
     return null;
@@ -57,10 +100,10 @@ export function recall(path) {
 
 export function remember(path, data) {
   if (!isPublic(path)) return;
-  remembered.set(path, data);
+  remembered.set(memoryKey(path), data);
   if (!KEPT_BETWEEN_VISITS.has(path)) return;
   try {
-    localStorage.setItem(STORE_PREFIX + path, JSON.stringify({ at: Date.now(), data }));
+    localStorage.setItem(storeKey(path), JSON.stringify({ at: Date.now(), data }));
   } catch { /* a convenience only */ }
 }
 
@@ -72,17 +115,18 @@ export const registrationOpen = (competition) => {
 };
 
 // ---- Formatting ----
-export const num = (n) => Number(n ?? 0).toLocaleString('en-NG');
-export const naira = (n) => `₦${num(n)}`;
+export const num = (n) => formatCount(n, site.country);
+// Money in the site's currency: ₦1,016 or GH₵5.10.
+export const money = (n) => formatMoney(n, site.country);
 export const plural = (n, word) => `${num(n)} ${word}${n === 1 ? '' : 's'}`;
 
 export function dateTime(iso) {
   if (!iso) return '';
-  return new Date(iso).toLocaleString('en-NG', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return new Date(iso).toLocaleString(site.locale, { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
 export function shortDate(iso) {
-  return new Date(iso).toLocaleDateString('en-NG', { day: 'numeric', month: 'short' });
+  return new Date(iso).toLocaleDateString(site.locale, { day: 'numeric', month: 'short' });
 }
 
 export function ago(iso) {
@@ -125,7 +169,7 @@ function openStream() {
     notify('competition_check', {});
   }, REFRESH_MS);
   source?.close();
-  source = new EventSource('/api/stream');
+  source = new EventSource(countryAsked() ? `/api/stream?_country=${countryAsked()}` : '/api/stream');
   for (const name of EVENTS) {
     source.addEventListener(name, (e) => {
       const data = JSON.parse(e.data);
@@ -151,7 +195,11 @@ export const useApp = () => useContext(AppContext);
 
 export function AppProvider({ children }) {
   const [user, setUser] = useState(undefined);
-  const [competition, setCompetition] = useState(() => recall('/competition'));
+  const [competition, setCompetition] = useState(() => {
+    const saved = recall('/competition');
+    setSite(saved?.site);
+    return saved;
+  });
 
   const refreshUser = useCallback(async () => {
     const { user: next } = await api('/auth/me');
@@ -162,6 +210,7 @@ export function AppProvider({ children }) {
   const refreshCompetition = useCallback(async ({ fresh = false } = {}) => {
     const next = await api(fresh ? `/competition?fresh=${Date.now()}` : '/competition');
     remember('/competition', next);
+    setSite(next.site);
     setCompetition(next);
   }, []);
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, ago, dateTime, num, plural, shortDate, useApp, useFetch, useLive } from '../lib.jsx';
+import { api, ago, dateTime, getSite, num, plural, shortDate, useApp, useFetch, useLive } from '../lib.jsx';
 import {
   CodeTag, Countdown, ErrorNote, Field, LoadFailed, Loading, Movement, PinInput, Portrait, CountUp, PushToggle, ShareButtons, Timer, WhatsAppGroup,
 } from '../ui.jsx';
@@ -214,7 +214,7 @@ function ProfilePanel({ data, onSaved }) {
           <div className="form-grid">
             <Field label="Contestant / stage name" hint={approved ? 'A new name shows once the organisers approve it.' : 'Shown publicly.'}><input name="stageName" defaultValue={p.pendingStageName ?? p.stageName} required /></Field>
             <Field label="Full name"><input name="fullName" defaultValue={p.fullName} autoComplete="name" required /></Field>
-            <Field label="State">
+            <Field label={getSite().regionLabel}>
               <select name="state" defaultValue={p.state} required>
                 {(competition?.states ?? [p.state]).map((s) => <option key={s}>{s}</option>)}
               </select>

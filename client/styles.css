@@ -248,6 +248,118 @@
   --display-weight: 700;
 }
 
+/* Ghana's looks (offered on the Ghana site; any site can offer them).
+   Kente: warm near-black with kente gold, green and red. */
+:root[data-theme="kente"] {
+  --bg: #15100a;
+  --bg-deep: #0e0a05;
+  --surface: #231a0f;
+  --surface-2: #332615;
+  --line: rgb(255 236 200 / .12);
+  --line-strong: rgb(255 236 200 / .3);
+  --text: #fff9ee;
+  --muted: #dccbae;
+  --placeholder: #b39f80;
+  --accent: #e0a526;
+  --accent-deep: #c28a12;
+  --accent-soft: #f5cd5a;
+  --accent-rgb: 245 205 90;
+  --on-accent: #1d1406;
+  --panel-a: #0b6b3a;
+  --panel-b: #8c1c13;
+  --panel-tint: 40 25 5;
+  --cover-shade: 30 18 4;
+  --on-panel-soft: #fff1cc;
+  --hero-em: #f5cd5a;
+  --bar: linear-gradient(90deg, #0b8a4a, #e0a526);
+  --chart: #e0a526;
+  --chart-on: #3fcf86;
+  --mono-end: #2a1d0c;
+  --join-bg: #2b200f;
+  --join-text: #fff;
+  --join-muted: #e9dcc4;
+  --display: 'Bricolage Grotesque', var(--font);
+  --display-weight: 800;
+}
+/* Black Star: the flag. Deep green, red buttons, gold. */
+:root[data-theme="blackstar"] {
+  --bg: #04231a;
+  --bg-deep: #021a13;
+  --surface: #0a3326;
+  --surface-2: #104433;
+  --line: rgb(255 255 255 / .12);
+  --line-strong: rgb(255 255 255 / .28);
+  --text: #f4fff9;
+  --muted: #b9d6c8;
+  --placeholder: #8fb3a2;
+  --accent: #ce1126;
+  --accent-deep: #a80d1f;
+  --accent-soft: #fcd116;
+  --accent-rgb: 252 209 22;
+  --on-accent: #fff;
+  --panel-a: #006b3f;
+  --panel-b: #0b2a1e;
+  --panel-tint: 0 50 30;
+  --cover-shade: 0 30 18;
+  --on-panel-soft: #fff6c7;
+  --hero-em: #fcd116;
+  --bar: linear-gradient(90deg, #ce1126, #fcd116, #006b3f);
+  --chart: #fcd116;
+  --chart-on: #ff6b7a;
+  --mono-end: #062b1f;
+  --join-bg: #0b3a2b;
+  --join-text: #fff;
+  --join-muted: #cfe6da;
+  --display: 'Syne', var(--font);
+  --display-weight: 800;
+}
+/* Gold Coast: light. Cream and gold, green buttons. */
+:root[data-theme="goldcoast"] {
+  color-scheme: light;
+  --bg: #fdf7e9;
+  --bg-deep: #f5ebd1;
+  --surface: #fff;
+  --surface-2: #f7efdb;
+  --line: rgb(60 40 5 / .14);
+  --line-strong: rgb(60 40 5 / .32);
+  --hover-wash: rgb(60 40 5 / .07);
+  --track: rgb(60 40 5 / .1);
+  --text: #23190a;
+  --muted: #5e5038;
+  --placeholder: #857659;
+  --accent: #006b3f;
+  --accent-deep: #00522f;
+  --accent-soft: #00663c;
+  --accent-rgb: 0 107 63;
+  --on-accent: #fff;
+  --panel-a: #00512f;
+  --panel-b: #0a7a49;
+  --panel-tint: 0 50 28;
+  --cover-shade: 0 36 20;
+  --on-panel: #fff;
+  --on-panel-soft: #fbe7a8;
+  --hero-em: #f2c230;
+  --bar: linear-gradient(90deg, #b8860b, #f2c230);
+  --chart: #006b3f;
+  --chart-on: #b8860b;
+  --mono-end: #00401f;
+  --join-bg: #006b3f;
+  --join-text: #fff;
+  --join-muted: #d4ecdf;
+  --join-btn: #fff;
+  --join-btn-text: #006b3f;
+  --up: #0a7a48;
+  --down: #c1272d;
+  --good-bg: rgb(10 122 72 / .12);
+  --good-text: #07573a;
+  --bad-bg: rgb(193 39 45 / .1);
+  --bad-text: #96161b;
+  --warn-bg: rgb(200 130 0 / .16);
+  --warn-text: #6e4a00;
+  --display: 'Fraunces', Georgia, serif;
+  --display-weight: 700;
+}
+
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body {
@@ -676,6 +788,11 @@ select option { background: var(--surface); }
 .page-head { display: flex; justify-content: space-between; gap: 20px; align-items: flex-end; margin-bottom: 18px; }
 .page-head h1 { margin-bottom: .15em; }
 .page-head p { margin: 0; }
+/* Admin: which country's site is being managed (NG, GH), beside the title. */
+.admin-head { align-items: center; flex-wrap: wrap; }
+.admin-head h1 { margin-right: auto; }
+.country-switch select { width: auto; min-height: 40px; padding: 6px 34px 6px 14px; border-radius: 999px; font-weight: 600; }
+.country-switch .note { margin: 6px 0 0; }
 
 /* How it works */
 .how { padding-block: 48px; background: var(--bg-deep); }
@@ -843,7 +960,7 @@ select option { background: var(--surface); }
 /* Her name, with her town small and yellow on the same line. */
 .profile-name { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 2px 10px; margin: 0; text-align: center; font-size: clamp(1.6rem, 6.5vw, 2.2rem); line-height: 1.1; }
 .profile-place { font-family: var(--font); font-size: .9rem; font-weight: 600; letter-spacing: 0; color: #ffc53d; }
-:root:is([data-theme="royal"], [data-theme="ankara"], [data-theme="naija"], [data-theme="glam"]) .profile-place { color: #9a6400; }
+:root:is([data-theme="royal"], [data-theme="ankara"], [data-theme="naija"], [data-theme="glam"], [data-theme="goldcoast"]) .profile-place { color: #9a6400; }
 /* Votes, position and the day's movement on one line. */
 /* Votes and position: two plain figures with small labels, between fine lines. */
 .profile-stats { display: grid; grid-template-columns: 1fr 1fr; margin: 2px 0; padding: 10px 0; border-block: 1px solid var(--line); }
@@ -918,7 +1035,7 @@ select option { background: var(--surface); }
 .qty-price.is-promo { align-items: center; gap: 4px 10px; }
 .qty-price s { color: var(--muted); text-decoration-color: var(--accent); text-decoration-thickness: 2px; }
 .qty-price b { display: inline-block; color: #ffc53d; font-family: var(--display); font-weight: var(--display-weight); font-size: 1.45rem; line-height: 1.1; animation: promo-pop .45s cubic-bezier(.2, 1.4, .4, 1) both; }
-:root:is([data-theme="royal"], [data-theme="ankara"], [data-theme="naija"], [data-theme="glam"]) .qty-price b { color: #9a6400; }
+:root:is([data-theme="royal"], [data-theme="ankara"], [data-theme="naija"], [data-theme="glam"], [data-theme="goldcoast"]) .qty-price b { color: #9a6400; }
 @keyframes promo-pop { 0% { transform: scale(.7); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .qty-price b { animation: none; } }
 .qty-picks { display: grid; grid-template-columns: repeat(auto-fit, minmax(54px, 1fr)); gap: 8px; width: 100%; margin-top: 12px; }

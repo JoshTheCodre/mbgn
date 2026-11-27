@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
-  agoShort, api, num, recall, remember, shareTargets, useApp, useLive,
+  agoShort, api, getSite, num, recall, remember, shareTargets, useApp, useLive,
 } from './lib.jsx';
 import { THEMES, applyTheme, currentTheme } from './themes.js';
 
@@ -199,11 +199,13 @@ export function LoadFailed({ error, onRetry, what = 'this' }) {
 }
 
 // Shown from the first moment, before any of the site's scripts have arrived.
-export function BootScreen() {
+// Built ahead of time, once per country's page shell, so it is told the short name rather than
+// guessing it from the domain (which the build doesn't have).
+export function BootScreen({ short = 'MBGN' }) {
   return (
     <>
       <header className="site-header">
-        <div className="wrap header-row"><span className="logo">MBGN</span></div>
+        <div className="wrap header-row"><span className="logo">{short}</span></div>
       </header>
       <main className="boot" role="status" aria-label="Loading">
         <Crown className="boot-crown" />
@@ -460,7 +462,7 @@ const LineIcon = ({ children }) => (
   <svg className="brand-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>
 );
 
-const shareText = (name, message) => message ?? `Vote for ${name} on Most Beautiful Girl Online Nigeria!`;
+const shareText = (name, message) => message ?? `Vote for ${name} on ${getSite().siteName}!`;
 
 // One button that opens the phone's own share sheet, with every app the person has: WhatsApp,
 // Instagram, Telegram, SMS, Copy and the rest. A browser without one copies the link instead.
@@ -470,7 +472,7 @@ export function ShareButton({ url, name, message, label = 'Share' }) {
   async function share() {
     if (typeof navigator.share === 'function') {
       try {
-        await navigator.share({ title: 'MBGN', text: shareText(name, message), url });
+        await navigator.share({ title: getSite().short, text: shareText(name, message), url });
         return;
       } catch (err) {
         // Closing the sheet without picking an app is not a failure.
@@ -748,7 +750,7 @@ export function PushToggle({ what }) {
         {state === 'on' ? <p><b>Notifications are on</b> for this device. {what}</p> : null}
         {state === 'off' || state === 'busy' ? <p><b>Get notified on this phone.</b> {what}</p> : null}
         {state === 'blocked' ? <p><b>Notifications are blocked</b> for this site. Allow them in your browser’s site settings, then come back.</p> : null}
-        {state === 'ios' ? <p><b>Get notified on your iPhone:</b> tap Share, then “Add to Home Screen”. Open MBGN from your Home Screen and turn notifications on there.</p> : null}
+        {state === 'ios' ? <p><b>Get notified on your iPhone:</b> tap Share, then “Add to Home Screen”. Open {getSite().short} from your Home Screen and turn notifications on there.</p> : null}
         {error ? <p className="push-error">{error}</p> : null}
       </div>
       {state === 'off' || state === 'busy'

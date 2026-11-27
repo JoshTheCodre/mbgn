@@ -4,6 +4,10 @@ import { photoUrl, raiseFlag, votingState } from './competition.js';
 import { getSetting, nowIso, tx } from './db.js';
 import { recordPaidVotes } from './votes.js';
 import { bulkPrice, paymentCharges } from '../shared/pricing.js';
+import { formatCount, formatMoney, roundMoney } from '../shared/countries.js';
+
+// Paystack takes amounts in kobo (Nigeria) or pesewas (Ghana): a hundredth of the currency.
+const minorUnits = (amount) => Math.round(Number(amount) * 100);
 
 export const MAX_VOTES_PER_PAYMENT = 100000;
 
@@ -11,6 +15,8 @@ export const MAX_VOTES_PER_PAYMENT = 100000;
 
 export function createPaystack(config) {
   const { secretKey, baseUrl } = config.paystack;
+  // Each country's site has its own Paystack account, in its own currency.
+  const currency = config.country?.currency ?? 'NGN';
   const STATUSES = { success: 'PAID', failed: 'FAILED', reversed: 'REVERSED' };
 
   async function call(pathname, init) {
@@ -34,8 +40,8 @@ export function createPaystack(config) {
         method: 'POST',
         body: JSON.stringify({
           email: customerEmail,
-          amount: amount * 100,
-          currency: 'NGN',
+          amount: minorUnits(amount),
+          currency,
           reference,
           callback_url: redirectUrl,
           ...(channels ? { channels } : {}),
@@ -56,7 +62,7 @@ export function createPaystack(config) {
         method: 'POST',
         body: JSON.stringify({
           email: customerEmail,
-          amount: amount * 100,
+          amount: minorUnits(amount),
           reference,
           bank_transfer: { account_expires_at: expiresAt },
           metadata: { custom_fields: [{ display_name: 'Order', variable_name: 'order', value: description }] },
@@ -96,7 +102,7 @@ export function createPaystack(config) {
 }
 
 // Stand-in used until a Paystack key is configured. Refuses to run in production (see config.js).
-export function createSimulator(db) {
+export function createSimulator(db, currency = 'NGN') {
   return {
     name: 'simulator',
     async init({ reference, amount }) {
@@ -114,8 +120,8 @@ export function createSimulator(db) {
       return {
         reference,
         status: row.paid_at ? 'PAID' : 'PENDING',
-        amountPaid: row.paid_at ? row.amount : 0,
-        currency: 'NGN',
+        amountPaid: row.paid_at ? Number(row.amount) : 0,
+        currency,
         method: 'SIMULATED',
         providerRef: `SIM-${reference}`,
       };
@@ -129,7 +135,7 @@ export function createSimulator(db) {
 // Bulk deals apply to every amount from their size upwards. See shared/pricing.js.
 export async function priceFor(db, votes) {
   if (!Number.isInteger(votes) || votes < 1 || votes > MAX_VOTES_PER_PAYMENT) {
-    throw new HttpError(400, `Enter between 1 and ${MAX_VOTES_PER_PAYMENT.toLocaleString('en-NG')} votes.`);
+    throw new HttpError(400, `Enter between 1 and ${formatCount(MAX_VOTES_PER_PAYMENT)} votes.`);
   }
   const packages = await db.prepare('SELECT votes, price FROM packages WHERE active = 1').all();
   return bulkPrice(votes, Number(await getSetting(db, 'vote_price')), packages);
@@ -141,11 +147,14 @@ function checkoutEmail(config, reference) {
   return `${name}+${reference.toLowerCase()}@${domain}`;
 }
 
-// Votes are paid by bank transfer only. The account number shows on our own page; if Paystack
-// can't open one, its checkout is the fallback, limited to bank transfer, never card.
-export const PAY_METHODS = { transfer: ['bank_transfer'] };
+// How votes are paid in each country, and the Paystack checkout channels each way opens.
+// - Nigeria: bank transfer only. The account number shows on our own page; if Paystack can't open
+//   one, its checkout is the fallback, limited to bank transfer, never card.
+// - Ghana: Mobile Money (MTN MoMo, Telecel Cash, AirtelTigo Money) on Paystack Ghana's checkout,
+//   which asks for the network and number and sends the approval prompt to the phone.
+export const PAY_METHODS = { transfer: ['bank_transfer'], momo: ['mobile_money'] };
 // Ways that were offered before (card, OPay, "any"). A page still open from then asks for these;
-// it pays by transfer instead of failing.
+// it pays the country's own way instead of failing.
 const RETIRED_METHODS = new Set(['any', 'card', 'opay']);
 const TRANSFER_MINUTES = 60;
 
@@ -153,20 +162,23 @@ const TRANSFER_MINUTES = 60;
 const newReference = () => `MBG-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(12).toString('hex').toUpperCase()}`;
 
 // The votes count as soon as the provider confirms the payment.
-export async function startPayment(ctx, { code, quantity, voterName, method: asked = 'transfer', email = null, viaLink, ip }) {
+export async function startPayment(ctx, { code, quantity, voterName, method: asked, email = null, viaLink, ip }) {
   const { db, config, provider } = ctx;
+  const own = config.country?.payMethod ?? 'transfer';
   const name = typeof voterName === 'string' ? voterName.trim().replace(/\s+/g, ' ').slice(0, 60) : '';
   if (name.length < 2) throw new HttpError(400, 'Please enter your name. It goes on your proof of vote.');
-  const method = RETIRED_METHODS.has(asked) ? 'transfer' : asked;
-  if (!Object.hasOwn(PAY_METHODS, method)) throw new HttpError(400, 'Votes are paid by bank transfer.');
+  // Before its live Paystack key is in, a newer country's site takes no payments at all.
+  if (config.paymentsOff) throw new HttpError(409, config.paymentsOff);
+  const method = asked == null || RETIRED_METHODS.has(asked) ? own : asked;
+  if (method !== own) throw new HttpError(400, `Votes are paid ${config.country?.payLabel ?? 'by transfer'}.`);
   const state = await votingState(db);
   if (!state.open) throw new HttpError(409, state.message);
   const contestant = await db.prepare("SELECT id, code FROM contestants WHERE code = ? AND status = 'approved'").get(code);
   if (!contestant) throw new HttpError(404, 'No active contestant has that code.');
   const amount = await priceFor(db, quantity);
   // The voter pays the charges, so the votes' whole amount arrives.
-  const fee = paymentCharges(amount);
-  const total = amount + fee;
+  const fee = paymentCharges(amount, config.countryId);
+  const total = roundMoney(amount + fee, config.country?.decimals ?? 0);
 
   let reference = newReference();
 
@@ -229,7 +241,8 @@ export async function paymentView(db, payment) {
     receiptNo: receipt?.receipt_no ?? null,
     amount: payment.amount,
     fee: payment.fee ?? 0,
-    total: payment.amount + (payment.fee ?? 0),
+    // Rounded to the pesewa, so cedis add up without floating-point leftovers.
+    total: roundMoney(Number(payment.amount) + Number(payment.fee ?? 0), 2),
     status: payment.status,
     votes: payment.vote_quantity,
     votesStatus: payment.votes_status,
@@ -267,14 +280,15 @@ export async function settlePayment(ctx, reference) {
 
   if (result.status === 'PAID') {
     // The votes and the charges on them, all of it.
-    const expected = payment.amount + (payment.fee ?? 0);
-    if (result.currency !== 'NGN' || !(result.amountPaid >= expected)) {
+    const expected = Number(payment.amount) + Number(payment.fee ?? 0);
+    const currency = ctx.config.country?.currency ?? 'NGN';
+    if (result.currency !== currency || !(minorUnits(result.amountPaid) >= minorUnits(expected))) {
       await tx(db, async () => {
         await db.prepare("UPDATE payments SET status = 'review', paid_amount = ? WHERE id = ?").run(result.amountPaid, payment.id);
         await raiseFlag(ctx, {
           kind: 'payment_mismatch',
           severity: 'high',
-          details: `${reference}: expected NGN ${expected}, provider reports ${result.currency} ${result.amountPaid}. No votes counted.`,
+          details: `${reference}: expected ${currency} ${expected}, provider reports ${result.currency} ${result.amountPaid}. No votes counted.`,
           paymentId: payment.id,
         });
       });
@@ -296,14 +310,17 @@ export const IN_PERSON_METHODS = ['Cash', 'Bank transfer', 'POS', 'Other'];
 // Votes bought from an admin in person. They become an ordinary paid payment, so they count, show
 // in revenue and reports, and get a receipt and a proof of vote, just like a payment through Paystack.
 export async function recordInPersonSale(ctx, { code, quantity, amount, method, voterName, email, note, adminId }) {
-  const { db } = ctx;
+  const { db, config } = ctx;
+  const decimals = config.country?.decimals ?? 0;
   const name = typeof voterName === 'string' ? voterName.trim().replace(/\s+/g, ' ').slice(0, 60) : '';
   const address = typeof email === 'string' ? email.trim().toLowerCase().slice(0, 200) : '';
   const reference = typeof note === 'string' ? note.trim().slice(0, 100) : '';
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_VOTES_PER_PAYMENT) throw new HttpError(400, 'Enter a whole number of votes.');
   // Charged at the normal price, bulk deals included, unless a different amount was agreed.
   if (amount === undefined || amount === null || Number.isNaN(amount)) amount = await priceFor(db, quantity);
-  if (!Number.isInteger(amount) || amount < 1) throw new HttpError(400, 'Enter the amount received, in whole naira.');
+  if (!(amount > 0) || roundMoney(amount, decimals) !== amount) {
+    throw new HttpError(400, decimals ? 'Enter the amount received, up to 2 decimal places.' : 'Enter the amount received, in whole naira.');
+  }
   if (!IN_PERSON_METHODS.includes(method)) throw new HttpError(400, 'Choose how they paid.');
   if (name.length < 2) throw new HttpError(400, 'Enter the voter’s name. It goes on their proof of vote.');
   if (address && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) throw new HttpError(400, 'That email address does not look right.');
@@ -319,14 +336,14 @@ export async function recordInPersonSale(ctx, { code, quantity, amount, method, 
   const payment = await db.prepare('SELECT * FROM payments WHERE id = ?').get(id);
   const outcome = await recordPaidVotes(ctx, payment, { amountPaid: amount, method: `In person: ${method}`, providerRef: reference || null });
   await db.prepare('INSERT INTO audit_log (actor_id, action, details, created_at) VALUES (?, ?, ?, ?)')
-    .run(adminId, 'votes.in_person', `${contestant.code}: ${quantity} votes for NGN ${amount} by ${method}, from ${name}${reference ? ` (${reference})` : ''}`, nowIso());
+    .run(adminId, 'votes.in_person', `${contestant.code}: ${quantity} votes for ${config.country?.currency ?? 'NGN'} ${amount} by ${method}, from ${name}${reference ? ` (${reference})` : ''}`, nowIso());
   if (outcome && address) await sendPaymentEmail(ctx, payment, outcome);
   return db.prepare('SELECT * FROM payments WHERE id = ?').get(id);
 }
 
 function sendPaymentEmail(ctx, payment, { held, contestant }) {
   const link = `${ctx.config.publicUrl}/receipt/payment/${payment.reference}`;
-  const naira = `NGN ${payment.amount.toLocaleString('en-NG')}`;
+  const naira = formatMoney(payment.amount, ctx.config.countryId, { code: true });
   const votes = payment.vote_quantity;
   const subject = held ? 'We received your payment' : `Your ${votes} vote${votes === 1 ? '' : 's'} for ${contestant.stage_name}`;
   const text = held

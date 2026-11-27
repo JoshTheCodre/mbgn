@@ -6,10 +6,12 @@ import { sharePreview } from '../../server/share.js';
 
 // A contestant's voting link: the same page as everywhere else, plus what link previews read
 // (WhatsApp, Facebook, X): her name, a line about voting, and her photo.
-export default function ContestantLink({ preview }) {
+export default function ContestantLink({ preview, siteTitle = null, country = "ng" }) {
   return (
     <>
-      <Page />
+      <Page country={country} />
+      {/* The country's own name, when there's no contestant to preview. */}
+      {!preview && siteTitle ? <Head><title key="title">{siteTitle}</title><meta key="og:title" property="og:title" content={siteTitle} /></Head> : null}
       {preview ? (
         <Head>
           <title key="title">{preview.title}</title>
@@ -33,11 +35,13 @@ export default function ContestantLink({ preview }) {
   );
 }
 
-export async function getServerSideProps({ params, res }) {
+export async function getServerSideProps({ params, req, res }) {
   // Previews are fetched often and rarely change, so the network keeps a copy for a few minutes.
   res.setHeader('Cache-Control', 'public, s-maxage=300, stale-while-revalidate=3600');
   try {
-    return { props: { preview: await sharePreview(await getContext(), normalizeCode(params.code)) } };
+    const ctx = await getContext(req);
+    const { short, siteName } = ctx.config.country;
+    return { props: { preview: await sharePreview(ctx, normalizeCode(params.code)), siteTitle: `${short} | ${siteName}`, country: ctx.config.countryId } };
   } catch (err) {
     console.error('Link preview failed:', err.message);
     return { props: { preview: null } };

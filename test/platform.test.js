@@ -12,7 +12,8 @@ import { loadConfig } from '../server/config.js';
 import { openDb, pgPoolOptions, setSetting } from '../server/db.js';
 import { createFollowerChecker, findFollowers } from '../server/followers.js';
 import { socialLink } from '../server/routes/public.js';
-import { bulkPrice, upsellOffers } from '../shared/pricing.js';
+import { bulkPrice, paymentCharges, upsellOffers } from '../shared/pricing.js';
+import { formatMoney } from '../shared/countries.js';
 import { hashPassword } from '../server/auth.js';
 import { seedDemoData } from '../server/demo-data.js';
 import { applyAdminLogin, clearTestData } from '../server/golive.js';
@@ -2489,6 +2490,152 @@ describe('Push notifications, supporters, sharing and custom WhatsApp messages',
       assert.equal((await db.prepare("SELECT value FROM settings WHERE key = 'min_followers'").get()).value, '800');
     } finally {
       await app.close();
+    }
+  });
+});
+
+describe('Ghana', () => {
+  let app;
+  let admin;
+
+  before(async () => {
+    app = await boot({ country: 'gh', publicUrl: 'http://gh.localhost' });
+    admin = client(app.base);
+    await admin.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+  });
+  after(() => app.close());
+
+  test('the Ghana site has its own name, cedis, the 16 regions and MBGG codes', async () => {
+    const { data } = await client(app.base).get('/competition');
+    assert.equal(data.name, 'Most Beautiful Girl Ghana');
+    assert.equal(data.site.country, 'gh');
+    assert.equal(data.site.currency, 'GHS');
+    assert.equal(data.site.symbol, 'GH₵');
+    assert.equal(data.site.payMethod, 'momo');
+    assert.equal(data.states.length, 16);
+    assert.ok(data.states.includes('Ashanti'));
+    assert.equal(data.votePrice, 1);
+
+    // A Nigerian state isn't a Ghanaian region.
+    const wrong = await client(app.base).req('POST', '/contestants/register', { form: registrationForm('Kojo', { state: 'Lagos' }) });
+    assert.equal(wrong.status, 400);
+    assert.match(wrong.data.error, /region/);
+
+    const { code } = await makeContestant(app, admin, 'Akosua', { state: 'Ashanti', location: 'Kumasi', phone: '0241234567', whatsapp: '0551234567' });
+    assert.match(code, /^MBGG\d{3}$/);
+    const preview = await sharePreview(app.ctx, code);
+    assert.match(preview.title, /\| MBGG$/);
+    assert.match(preview.description, /from Ashanti Region is in Most Beautiful Girl Ghana/);
+  });
+
+  test('votes are paid with Mobile Money, in cedis, with the charges to the pesewa', async () => {
+    const { code } = await makeContestant(app, admin, 'Efua', { state: 'Central', location: 'Cape Coast' });
+    const anon = client(app.base);
+    const { status, data } = await anon.post('/votes/pay', { voterName: 'Kofi Mensah', code, quantity: 5 });
+    assert.equal(status, 201);
+    assert.equal(data.transfer, undefined);
+    assert.ok(data.checkoutUrl);
+    assert.deepEqual([data.amount, data.fee, data.total], [5, 0.1, 5.1]);
+    await anon.post(`/simulator/${data.reference}/pay`);
+    const { data: paid } = await anon.post(`/payments/${data.reference}/verify`);
+    assert.equal(paid.votesStatus, 'counted');
+    assert.equal(paid.total, 5.1);
+    assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 5);
+
+    // Nigeria's way to pay isn't Ghana's; a page from before that asks for card pays the Ghana way.
+    assert.equal((await anon.post('/votes/pay', { voterName: 'Kofi Mensah', code, quantity: 1, method: 'transfer' })).status, 400);
+    const { data: old } = await anon.post('/votes/pay', { voterName: 'Kofi Mensah', code, quantity: 1, method: 'card' });
+    assert.ok(old.checkoutUrl);
+  });
+
+  test('the charges are 1.95% in Ghana, to the pesewa, and unchanged in Nigeria', () => {
+    assert.equal(paymentCharges(5, 'gh'), 0.1);
+    assert.equal(paymentCharges(100, 'gh'), 1.99);
+    assert.equal(paymentCharges(1000), 16);
+    assert.equal(formatMoney(5.1, 'gh'), 'GH₵5.10');
+    assert.equal(formatMoney(5, 'gh'), 'GH₵5');
+    assert.equal(formatMoney(1016, 'ng'), '₦1,016');
+  });
+
+  test('WhatsApp numbers get each country’s code', () => {
+    assert.equal(waNumber('024 123 4567', 'gh'), '233241234567');
+    assert.equal(waNumber('+233 24 123 4567', 'gh'), '233241234567');
+    assert.equal(waNumber('24 123 4567', 'gh'), '233241234567');
+    assert.equal(waNumber('0803 123 4567', 'ng'), '2348031234567');
+    assert.equal(waNumber('0803 123 4567'), '2348031234567');
+  });
+
+  test('Paystack Ghana gets cedis in pesewas, for Mobile Money only', async () => {
+    let sent;
+    const fake = http.createServer((req, res) => {
+      let raw = '';
+      req.on('data', (d) => { raw += d; });
+      req.on('end', () => {
+        sent = JSON.parse(raw);
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ status: true, data: { authorization_url: 'https://checkout.paystack.com/gh', access_code: 'gh', reference: sent.reference } }));
+      });
+    }).listen(0);
+    await new Promise((resolve) => fake.once('listening', resolve));
+    const paid = await boot({ country: 'gh', publicUrl: 'http://gh.localhost', paystack: { secretKey: 'sk_test_gh', baseUrl: `http://127.0.0.1:${fake.address().port}` } });
+    try {
+      const boss = client(paid.base);
+      await boss.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const { code } = await makeContestant(paid, boss, 'Abena', { state: 'Eastern', location: 'Koforidua' });
+      const { data } = await client(paid.base).post('/votes/pay', { voterName: 'Ama', code, quantity: 5 });
+      assert.equal(data.checkoutUrl, 'https://checkout.paystack.com/gh');
+      assert.equal(sent.currency, 'GHS');
+      assert.equal(sent.amount, 510);
+      assert.deepEqual(sent.channels, ['mobile_money']);
+    } finally {
+      await paid.close();
+      fake.close();
+    }
+  });
+
+  test('one admin: switching to Ghana signs the same admin in there', async () => {
+    const ng = await boot();
+    try {
+      ng.ctx.siteFor = async (country) => (country === 'gh' ? app.ctx : ng.ctx);
+      const boss = client(ng.base);
+      await boss.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const { data: countries } = await boss.get('/admin/countries');
+      assert.equal(countries.current, 'ng');
+      assert.deepEqual(countries.countries.map((c) => c.id), ['ng', 'gh']);
+      const res = await fetch(`${ng.base}/api/admin/switch-country`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: boss.cookie },
+        body: JSON.stringify({ country: 'gh' }),
+      });
+      assert.equal(res.status, 200);
+      const ghana = res.headers.get('set-cookie').split(';')[0];
+      assert.match(ghana, /^mbgg_sid=/);
+      const overview = await fetch(`${app.base}/api/admin/overview`, { headers: { Cookie: ghana } });
+      assert.equal(overview.status, 200);
+      // Nigeria's own sign-in is no use on the Ghana site.
+      assert.equal((await fetch(`${app.base}/api/admin/overview`, { headers: { Cookie: boss.cookie } })).status, 401);
+    } finally {
+      await ng.close();
+    }
+  });
+
+  test('each domain shows its own country, and the admin can ask for the other', async () => {
+    const saved = { url: process.env.PUBLIC_URL_GH, db: process.env.DATABASE_URL };
+    process.env.PUBLIC_URL_GH = 'https://www.mbgg.example';
+    process.env.DATABASE_URL ??= 'postgres://test@localhost/test';
+    try {
+      const { countryForRequest } = await import('../server/runtime.js');
+      const ask = (host, headers = {}, url = '/api/competition') => countryForRequest({ url, headers: { host, ...headers } });
+      assert.equal(ask('www.mbgg.example'), 'gh');
+      assert.equal(ask('gh.localhost:3000'), 'gh');
+      assert.equal(ask('www.mbgn.com.ng'), 'ng');
+      assert.equal(ask('localhost:3000'), 'ng');
+      assert.equal(ask('www.mbgn.com.ng', { 'x-country': 'gh' }), 'gh');
+      assert.equal(ask('www.mbgn.com.ng', {}, '/api/stream?_country=gh'), 'gh');
+      assert.equal(ask('www.mbgn.com.ng', { 'x-country': 'zz' }), 'ng');
+    } finally {
+      if (saved.url === undefined) delete process.env.PUBLIC_URL_GH; else process.env.PUBLIC_URL_GH = saved.url;
+      if (saved.db === undefined) delete process.env.DATABASE_URL;
     }
   });
 });

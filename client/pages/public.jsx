@@ -1,9 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
-  ApiError, ago, api, naira, num, plural, registrationOpen, useApp, useFetch, useLive,
+  ApiError, ago, api, getSite, money, num, plural, registrationOpen, useApp, useFetch, useLive,
 } from '../lib.jsx';
 import { bulkPrice, paymentCharges, upsellOffers } from '../../shared/pricing.js';
+import { roundMoney } from '../../shared/countries.js';
+
+// The charges on a payment, and the total, in the site's currency (to the pesewa in Ghana).
+const chargesOn = (price) => paymentCharges(price, getSite().country);
+const withCharges = (price) => roundMoney(price + chargesOn(price), getSite().decimals);
 import {
   ActivityFeed, BrandLogo, CardsSkeleton, CodeTag, CoverSkeleton, Crown, Countdown, Dialog, ErrorNote, Field, LoadFailed,
   Loading, Movement, PLATFORM_NAMES, PageSkeleton, Portrait, ProfileSkeleton, RankSkeleton, CountUp, ShareButton, ShareCard, Timer,
@@ -77,7 +82,7 @@ function CodeSearch({ examples = [] }) {
           onChange={(e) => setCode(e.target.value)}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
-          placeholder={typed ? `${typed}|` : 'MBG001 or Stella'}
+          placeholder={typed ? `${typed}|` : `${getSite().codePrefix}001 or ${getSite().sampleName}`}
           autoComplete="off"
         />
         <button className="btn btn-vote">Find &amp; vote</button>
@@ -163,7 +168,7 @@ function HowVoting({ competition }) {
           </li>
           <li>
             <h3>Choose your votes</h3>
-            <p>Each vote is {naira(competition?.votePrice ?? 200)}, and bulk votes cost less.</p>
+            <p>Each vote is {money(competition?.votePrice ?? 200)}, and bulk votes cost less.</p>
           </li>
           <li>
             <h3>Pay and it counts</h3>
@@ -190,19 +195,39 @@ function JoinCard({ to, label }) {
   );
 }
 
+// The contest's name, word by word for the entrance animation: Most Beautiful Girl Online Nigeria,
+// or Most Beautiful Girl Ghana.
+function HeroTitle() {
+  return (
+    <h1>
+      {getSite().siteName.split(' ').map((word, i) => (
+        <Fragment key={word}>
+          {i ? ' ' : null}
+          {word === 'Online'
+            ? <em className="hero-word" style={{ '--i': i }}>{word}</em>
+            : <span className="hero-word" style={{ '--i': i }}>{word}</span>}
+        </Fragment>
+      ))}
+    </h1>
+  );
+}
+
+// "Over ₦10 million in cash prizes", where a country's prize is set; otherwise just "Cash prizes".
+const prizeLine = (rest) => (getSite().prize ? `Over ${getSite().prize} in cash prizes ${rest}` : `Cash prizes ${rest}`);
+
 function ShareInvite() {
   const { competition } = useApp();
   return registrationOpen(competition) ? (
     <ShareCard
       title="Know someone who should enter?"
       text="Send this to a friend, a sister or anyone ready for the crown."
-      message="Over ₦10 million in cash prizes to be won on Most Beautiful Girl Online Nigeria. Registration is open:"
+      message={`${prizeLine('to be won')} on ${getSite().siteName}. Registration is open:`}
     />
   ) : (
     <ShareCard
       title="Tell people voting opens soon"
-      text="Over ₦10 million in cash prizes is at stake. Get your friends and family ready to vote."
-      message="Voting opens soon on Most Beautiful Girl Online Nigeria, with over ₦10 million in cash prizes to be won:"
+      text={`${prizeLine('at stake')}. Get your friends and family ready to vote.`}
+      message={`Voting opens soon on ${getSite().siteName}. ${prizeLine('to be won')}:`}
     />
   );
 }
@@ -240,15 +265,9 @@ function RegistrationHome() {
         <div className="wrap hero-grid">
           <div className="hero-copy">
             <p className="eyebrow">{open ? <><span className="reg-dot" aria-hidden="true" />Registration is open</> : 'Registration has closed'}</p>
-            <h1>
-              <span className="hero-word" style={{ '--i': 0 }}>Most</span>{' '}
-              <span className="hero-word" style={{ '--i': 1 }}>Beautiful</span>{' '}
-              <span className="hero-word" style={{ '--i': 2 }}>Girl</span>{' '}
-              <em className="hero-word" style={{ '--i': 3 }}>Online</em>{' '}
-              <span className="hero-word" style={{ '--i': 4 }}>Nigeria</span>
-            </h1>
+            <HeroTitle />
             <p className="reg-lead">{open
-              ? 'Nigeria is looking for its next queen. Join the contest today, or share it with someone who should.'
+              ? `${getSite().name} is looking for its next queen. Join the contest today, or share it with someone who should.`
               : countdownOver && startsByItself ? 'Registration has closed. Voting is opening now…'
                 : 'Applications are closed and voting opens soon. Get ready to support your favourite.'}</p>
             {open && endsAt ? <Timer target={endsAt} label={startsByItself ? 'Registration closes and voting opens in' : 'Registration closes in'} onEnd={() => setCountdownOver(true)} /> : null}
@@ -257,12 +276,14 @@ function RegistrationHome() {
               <Link to="/enquiry" className="btn reg-share-link">Sponsorship / Enquiry</Link>
             </div>
           </div>
-          <div className="prize">
-            <span className="prize-over">Over</span>
-            <strong className="prize-amount">₦10 Million</strong>
-            <span className="prize-rule" aria-hidden="true"><i>✦</i></span>
-            <span className="prize-note">in cash prizes to be won</span>
-          </div>
+          {getSite().prize ? (
+            <div className="prize">
+              <span className="prize-over">Over</span>
+              <strong className="prize-amount">{getSite().prize.replace(/million/i, 'Million')}</strong>
+              <span className="prize-rule" aria-hidden="true"><i>✦</i></span>
+              <span className="prize-note">in cash prizes to be won</span>
+            </div>
+          ) : null}
         </div>
       </section>
 
@@ -308,7 +329,7 @@ function VotingSoon() {
         <Crown className="prize-crown" />
         <h1>Voting hasn’t started yet</h1>
         <p className="muted">{open
-          ? 'Voting opens when registration closes. Right now, over ₦10 million in cash prizes is waiting for the women who join.'
+          ? `Voting opens when registration closes. Right now, ${prizeLine('are waiting for the women who join').replace(/^Over/, 'over').replace(/^Cash/, 'cash')}.`
           : 'Registration has closed and voting opens soon. Please check back shortly.'}</p>
         {user?.contestant ? <Link to="/dashboard" className="btn btn-primary btn-wide">Open my dashboard</Link> : null}
         {!user?.contestant && open ? <Link to="/register" className="btn btn-primary btn-wide">Join the contest</Link> : null}
@@ -368,14 +389,8 @@ function VotingHome() {
         {['a', 'b', 'c', 'd'].map((k) => <span key={k} className={`hero-star hero-star-${k}`} aria-hidden="true">✦</span>)}
         <div className="wrap hero-grid">
           <div className="hero-copy">
-            <p className="eyebrow">{competition?.voting.open ? 'The nation is voting' : 'Nigeria’s online pageant'}</p>
-            <h1>
-              <span className="hero-word" style={{ '--i': 0 }}>Most</span>{' '}
-              <span className="hero-word" style={{ '--i': 1 }}>Beautiful</span>{' '}
-              <span className="hero-word" style={{ '--i': 2 }}>Girl</span>{' '}
-              <em className="hero-word" style={{ '--i': 3 }}>Online</em>{' '}
-              <span className="hero-word" style={{ '--i': 4 }}>Nigeria</span>
-            </h1>
+            <p className="eyebrow">{competition?.voting.open ? 'The nation is voting' : `${getSite().name}’s online pageant`}</p>
+            <HeroTitle />
             {competition?.round ? <Timer target={competition.round.endsAt} label={`${competition.round.name} ends in`} /> : <Countdown competition={competition} />}
             {competition?.round ? <RoundNote round={competition.round} light /> : null}
             <CodeSearch examples={top.flatMap((row) => [row.name, row.code]).slice(0, 6)} />
@@ -495,11 +510,11 @@ function BoardFilters({ f, filters }) {
   return (
     <div className="filters" role="search">
       <Field label="Search name or code">
-        <input type="search" value={f.q} onChange={(e) => f.update('q', e.target.value)} placeholder="Stella or MBG001" />
+        <input type="search" value={f.q} onChange={(e) => f.update('q', e.target.value)} placeholder={`${getSite().sampleName} or ${getSite().codePrefix}001`} />
       </Field>
-      <Field label="State">
+      <Field label={getSite().regionLabel}>
         <select value={f.state} onChange={(e) => f.update('state', e.target.value)}>
-          <option value="">All states</option>
+          <option value="">All {getSite().regionLabel.toLowerCase()}s</option>
           {(filters?.states ?? []).map((s) => <option key={s}>{s}</option>)}
         </select>
       </Field>
@@ -607,22 +622,22 @@ export const Contestants = whileVoting(() => {
 // carry on. Every price here is what they'll actually pay, charges included.
 function UpsellDialog({ open, votes, offers, votePrice, contestant, onPick, onClose }) {
   const now = offers.length ? offers[0].price - offers[0].extra : 0;
-  const total = (price) => price + paymentCharges(price);
+  const total = withCharges;
   return (
     <Dialog open={open} onClose={onClose} title={offers.length === 1 ? `Make it ${num(offers[0].votes)} votes?` : 'Get more votes for less?'}>
-      <p className="muted upsell-why">Bundles cost less per vote{votePrice ? ` than the usual ${naira(votePrice)}` : ''}.</p>
+      <p className="muted upsell-why">Bundles cost less per vote{votePrice ? ` than the usual ${money(votePrice)}` : ''}.</p>
       <div className="upsell-offers">
         {offers.map((o, i) => (
           <button key={o.votes} type="button" className={`upsell-offer ${i === 0 ? 'best' : ''}`} onClick={() => onPick(o.votes)}
-            aria-label={`${plural(o.votes, 'vote')} for ${contestant.name}, ${naira(total(o.price))}${o.saving > 0 ? `, save ${naira(o.saving)}` : ''}`}>
+            aria-label={`${plural(o.votes, 'vote')} for ${contestant.name}, ${money(total(o.price))}${o.saving > 0 ? `, save ${money(o.saving)}` : ''}`}>
             <span className="upsell-votes"><b>{num(o.votes)}</b> votes</span>
-            <span className="upsell-price">{naira(total(o.price))}</span>
-            <small>{naira(Math.round(o.price / o.votes))} a vote{o.saving > 0 ? <em> · save {naira(o.saving)}</em> : null}</small>
+            <span className="upsell-price">{money(total(o.price))}</span>
+            <small>{money(Math.round(o.price / o.votes))} a vote{o.saving > 0 ? <em> · save {money(o.saving)}</em> : null}</small>
           </button>
         ))}
       </div>
       <button type="button" className="btn btn-ghost btn-wide upsell-decline" onClick={() => onPick(votes)}>
-        No, keep {plural(votes, 'vote')} · {naira(total(now))}
+        No, keep {plural(votes, 'vote')} · {money(total(now))}
       </button>
     </Dialog>
   );
@@ -652,9 +667,9 @@ function VotePanel({ contestant, viaLink }) {
     return deal ? n * votePrice - deal.price : 0;
   };
   const price = valid ? priceOf(amount) : 0;
-  const fee = valid ? paymentCharges(price) : 0;
+  const fee = valid ? chargesOn(price) : 0;
   // A bigger amount is only suggested when it saves a lot (NGN 1,000 or more) for at most twice the spend.
-  const offers = valid ? upsellOffers(amount, votePrice, packages).filter((o) => o.saving >= 1000 && o.price <= price * 2) : [];
+  const offers = valid ? upsellOffers(amount, votePrice, packages).filter((o) => o.saving >= getSite().upsellMinSaving && o.price <= price * 2) : [];
 
   function choose(n) {
     setQty(String(Math.min(100000, Math.max(1, n))));
@@ -681,7 +696,7 @@ function VotePanel({ contestant, viaLink }) {
       localStorage.setItem('mbgn-voter-name', voterName.trim());
     } catch { /* a convenience only */ }
     try {
-      const started = await api('/votes/pay', { body: { code: contestant.code, quantity: votes, voterName, method: 'transfer', viaLink } });
+      const started = await api('/votes/pay', { body: { code: contestant.code, quantity: votes, voterName, method: getSite().payMethod, viaLink } });
       if (started.transfer) navigate(`/pay/transfer/${started.reference}`);
       else window.location.assign(started.checkoutUrl);
     } catch (err) {
@@ -720,17 +735,17 @@ function VotePanel({ contestant, viaLink }) {
         <p className={`qty-price ${valid && saving > 0 ? 'is-promo' : ''}`} aria-live="polite">
           {!valid ? 'Enter how many votes' : saving > 0 ? (
             <>
-              <s aria-label={`Normal price ${naira(price + saving)}`}>{naira(price + saving)}</s>
-              <b key={amount} aria-label={`Promo price ${naira(price)}`}>{naira(price)}</b>
+              <s aria-label={`Normal price ${money(price + saving)}`}>{money(price + saving)}</s>
+              <b key={amount} aria-label={`Promo price ${money(price)}`}>{money(price)}</b>
             </>
-          ) : naira(price)}
+          ) : money(price)}
         </p>
         <div className="qty-picks" role="group" aria-label="Quick picks">
           {amounts.map((n) => {
             const deal = savingOn(n);
             return (
               <button key={n} type="button" className={`qty-pick ${amount === n ? 'on' : ''} ${deal > 0 ? 'deal' : ''}`} aria-pressed={amount === n}
-                aria-label={`${plural(n, 'vote')}${deal > 0 ? `, save ${naira(deal)}` : ''}`} onClick={() => choose(n)}>
+                aria-label={`${plural(n, 'vote')}${deal > 0 ? `, save ${money(deal)}` : ''}`} onClick={() => choose(n)}>
                 {deal > 0 ? <span className="qty-promo" aria-hidden="true">Promo</span> : null}
                 {num(n)}
               </button>
@@ -748,9 +763,12 @@ function VotePanel({ contestant, viaLink }) {
           placeholder="Enter your name" />
       </Field>
 
-      {/* Paid by bank transfer: the next page shows the account number and the exact amount. */}
+      {/* Nigeria: by bank transfer, the next page shows the account number and the exact amount.
+          Ghana: Mobile Money, on Paystack's page, which sends the approval prompt to the phone. */}
       <button className="btn btn-vote btn-wide" disabled={busy || !valid}>
-        {busy ? 'Getting your account number…' : valid ? `Pay ${naira(price + fee)} by transfer` : 'Pay'}
+        {busy
+          ? (getSite().payMethod === 'transfer' ? 'Getting your account number…' : 'Opening Mobile Money…')
+          : valid ? `Pay ${money(withCharges(price))} ${getSite().payLabel}` : 'Pay'}
       </button>
       <p className="vote-secure">
         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></svg>
@@ -914,7 +932,7 @@ export function VotePage() {
 
 function Edition({ edition }) {
   const [winner, ...others] = edition.standings;
-  const when = new Date(edition.publishedAt).toLocaleDateString('en-NG', { month: 'long', year: 'numeric' });
+  const when = new Date(edition.publishedAt).toLocaleDateString(getSite().locale, { month: 'long', year: 'numeric' });
   return (
     <section className="edition">
       <div className="edition-winner">

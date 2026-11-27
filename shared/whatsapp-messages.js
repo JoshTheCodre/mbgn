@@ -6,10 +6,10 @@
 // {name}-style fill-ins are replaced for each contestant.
 
 export const MESSAGE_KINDS = {
-  registered: { label: 'Application received', fills: ['name', 'group', 'dashboard'] },
-  accepted: { label: 'Acceptance', fills: ['name', 'code', 'link', 'group', 'voting', 'dashboard'] },
-  group_link: { label: 'Group link', fills: ['name', 'group_link'] },
-  voting_open: { label: 'Voting open', fills: ['name', 'code', 'link', 'dashboard'] },
+  registered: { label: 'Application received', fills: ['name', 'group', 'dashboard', 'contest'] },
+  accepted: { label: 'Acceptance', fills: ['name', 'code', 'link', 'group', 'voting', 'dashboard', 'contest'] },
+  group_link: { label: 'Group link', fills: ['name', 'group_link', 'short'] },
+  voting_open: { label: 'Voting open', fills: ['name', 'code', 'link', 'dashboard', 'contest'] },
 };
 
 export const FILLS = {
@@ -20,12 +20,14 @@ export const FILLS = {
   group: 'the line inviting her to her WhatsApp group (left out if she has none yet)',
   group_link: 'her WhatsApp group link',
   voting: 'when voting opens, or that it is open now',
+  contest: 'the contest’s full name',
+  short: 'the contest’s short name (MBGN)',
 };
 
 export const DEFAULT_MESSAGES = {
   registered: `Hello {name}! 👋
 
-Thank you for applying to Most Beautiful Girl Online Nigeria. Your application is in, and our team is reviewing it.
+Thank you for applying to {contest}. Your application is in, and our team is reviewing it.
 
 {group}
 
@@ -34,7 +36,7 @@ Once you're approved, we'll message you here with your contestant code and votin
 Your dashboard: {dashboard}`,
   accepted: `Congratulations {name}! 🎉
 
-You have been accepted into Most Beautiful Girl Online Nigeria.
+You have been accepted into {contest}.
 
 Your contestant code: **{code}**
 Your voting link: {link}
@@ -46,13 +48,13 @@ Your voting link: {link}
 Your dashboard: {dashboard}`,
   group_link: `Hello {name},
 
-Your MBGN WhatsApp group is ready. Join it here for updates:
+Your {short} WhatsApp group is ready. Join it here for updates:
 {group_link}`,
   voting_open: `Voting is now open, {name}! 🗳️
 
 Send this to everyone you know, and post it on your status and socials:
 
-"Please vote for me, {name}, in Most Beautiful Girl Online Nigeria! {link} (my code is {code})"
+"Please vote for me, {name}, in {contest}! {link} (my code is {code})"
 
 The more people share your link, the higher you climb.
 

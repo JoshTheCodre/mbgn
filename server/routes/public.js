@@ -1,3 +1,4 @@
+import { COUNTRIES, siteInfo } from '../../shared/countries.js';
 import crypto from 'node:crypto';
 import multer from 'multer';
 import {
@@ -29,11 +30,10 @@ export async function themeSettings(db) {
   return { offered: list, default: list.includes(chosen) ? chosen : list[0] };
 }
 
-export const NIGERIAN_STATES = [
-  'Abia', 'Adamawa', 'Akwa Ibom', 'Anambra', 'Bauchi', 'Bayelsa', 'Benue', 'Borno', 'Cross River', 'Delta', 'Ebonyi',
-  'Edo', 'Ekiti', 'Enugu', 'FCT Abuja', 'Gombe', 'Imo', 'Jigawa', 'Kaduna', 'Kano', 'Katsina', 'Kebbi', 'Kogi', 'Kwara',
-  'Lagos', 'Nasarawa', 'Niger', 'Ogun', 'Ondo', 'Osun', 'Oyo', 'Plateau', 'Rivers', 'Sokoto', 'Taraba', 'Yobe', 'Zamfara',
-];
+// Nigeria's states, Ghana's regions: where a contestant can say she's from.
+export const NIGERIAN_STATES = COUNTRIES.ng.regions;
+export const regionsOf = (ctx) => ctx.config.country.regions;
+export const chooseRegion = (ctx) => `Please choose your ${ctx.config.country.regionLabel.toLowerCase()}.`;
 
 export const IMAGE_TYPES = [
   { ext: 'jpg', mime: 'image/jpeg', test: (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
@@ -186,7 +186,9 @@ export function publicRouter(ctx) {
       resultsPublishedAt: resultsPublishedAt || null,
       // Winners only makes sense once there is a result, from this contest or an earlier one.
       hasResults: Boolean(await db.prepare('SELECT 1 FROM results LIMIT 1').get()),
-      states: NIGERIAN_STATES,
+      states: regionsOf(ctx),
+      // What the browser needs for this country: currency, regions, wording.
+      site: siteInfo(config.countryId),
       themes: await themeSettings(db),
     });
   });
@@ -306,7 +308,7 @@ export function publicRouter(ctx) {
     if (!validEmail(email)) throw new HttpError(400, 'Please enter a valid email address.');
     if (!validPhone(phone)) throw new HttpError(400, 'Please enter a valid phone number.');
     if (!validPhone(whatsapp)) throw new HttpError(400, 'Please enter a valid WhatsApp number.');
-    if (!NIGERIAN_STATES.includes(state)) throw new HttpError(400, 'Please choose your state.');
+    if (!regionsOf(ctx).includes(state)) throw new HttpError(400, chooseRegion(ctx));
     if (location.length < 2) throw new HttpError(400, 'Please enter your town or city.');
     if (bio.length < 20) throw new HttpError(400, 'Please write a short biography of at least 20 characters.');
     if (bio.length > 150) throw new HttpError(400, 'Please keep your biography to 150 characters or fewer.');
@@ -431,7 +433,7 @@ export function publicRouter(ctx) {
     const now = nowIso();
     const locked = rows.find((r) => r.pin_locked_until && r.pin_locked_until > now);
     if (locked) {
-      throw new HttpError(429, `Too many wrong PINs. Try again at ${new Date(locked.pin_locked_until).toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Lagos' })}, or ask the organisers to reset your PIN.`);
+      throw new HttpError(429, `Too many wrong PINs. Try again at ${new Date(locked.pin_locked_until).toLocaleTimeString(config.country.locale, { hour: '2-digit', minute: '2-digit', timeZone: config.country.timeZone })}, or ask the organisers to reset your PIN.`);
     }
     const match = rows.find((r) => verifyPassword(pin, r.pin_hash));
     if (!match) {

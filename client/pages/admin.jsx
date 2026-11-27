@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, dateTime, naira, num, plural, useApp, useFetch, useLive } from '../lib.jsx';
+import {
+  api, dateTime, getSite, money, num, plural, setAdminCountry, useApp, useFetch, useLive,
+} from '../lib.jsx';
 import {
   Dialog, ErrorNote, Field, Loading, PLATFORM_NAMES, Portrait, PushToggle,
 } from '../ui.jsx';
@@ -20,6 +22,40 @@ const TABS = [
   ['account', 'Your login'],
 ];
 
+// One admin for every country's site. Choosing another country signs this admin in to it (same
+// email and password) and shows its contestants, payments and settings, on this domain.
+function CountrySwitch() {
+  const { data } = useFetch('/admin/countries');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  if (!data || data.countries.length < 2) return null;
+
+  async function change(e) {
+    const country = e.target.value;
+    setBusy(true);
+    setError(null);
+    try {
+      await api('/admin/switch-country', { body: { country } });
+      setAdminCountry(country);
+      window.location.reload();
+    } catch (err) {
+      setError(err);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="country-switch">
+      <label>
+        <select value={data.current} onChange={change} disabled={busy} aria-label="Country you are managing">
+          {data.countries.map((c) => <option key={c.id} value={c.id}>{c.id.toUpperCase()} · {c.name}</option>)}
+        </select>
+      </label>
+      {error ? <ErrorNote error={error} /> : null}
+    </div>
+  );
+}
+
 export function Admin() {
   const { setUser } = useApp();
   const [tab, setTab] = useState('overview');
@@ -37,6 +73,7 @@ export function Admin() {
     <div className="wrap page admin">
       <div className="page-head admin-head">
         <h1>Control panel</h1>
+        <CountrySwitch />
         <button type="button" className="btn btn-ghost btn-small" onClick={logout}>Log out</button>
       </div>
       <PushToggle what="You’ll hear about every new application." />
@@ -68,7 +105,7 @@ function Overview({ data, go }) {
   return (
     <>
       <dl className="tiles tiles-3">
-        <div><dt>Revenue</dt><dd>{naira(data.revenue)}</dd><small>{naira(data.revenue24h)} in 24 hrs{data.revenueInPerson ? ` · ${naira(data.revenueInPerson)} in person` : ''}</small></div>
+        <div><dt>Revenue</dt><dd>{money(data.revenue)}</dd><small>{money(data.revenue24h)} in 24 hrs{data.revenueInPerson ? ` · ${money(data.revenueInPerson)} in person` : ''}</small></div>
         <div><dt>Paid votes</dt><dd>{num(data.totalVotes)}</dd><small>{num(data.votes24h)} in 24 hrs{data.adjustedVotes ? ` · ${data.adjustedVotes > 0 ? '+' : ''}${num(data.adjustedVotes)} by admins` : ''}</small></div>
         <div><dt>Active contestants</dt><dd>{num(data.contestants)}</dd><small>{num(data.pending)} waiting for review</small></div>
       </dl>
@@ -336,7 +373,7 @@ function InPersonSale({ onDone }) {
           <Field label="Contestant code" hint={who?.name ? `${who.name} (${who.code})` : who?.error ?? 'For example MBG013'}>
             <input value={code} onChange={(e) => { setCode(e.target.value); setWho(null); }} onBlur={lookUp} required />
           </Field>
-          <Field label="Votes" hint={price !== null ? `Collect ${naira(price)}` : 'The price includes bulk deals.'}>
+          <Field label="Votes" hint={price !== null ? `Collect ${money(price)}` : 'The price includes bulk deals.'}>
             <input type="number" min="1" step="1" value={quantity} onChange={(e) => setQuantity(e.target.value)} required />
           </Field>
           <Field label="Paid by">
@@ -347,11 +384,11 @@ function InPersonSale({ onDone }) {
           <Field label="Voter’s name" hint="Goes on their proof of vote."><input name="voterName" required /></Field>
         </div>
         <ErrorNote error={error} />
-        <button className="btn btn-primary" disabled={busy}>{busy ? 'Recording…' : price !== null ? `Record ${num(votes)} votes for ${naira(price)}` : 'Record votes'}</button>
+        <button className="btn btn-primary" disabled={busy}>{busy ? 'Recording…' : price !== null ? `Record ${num(votes)} votes for ${money(price)}` : 'Record votes'}</button>
       </form>
       {done ? (
         <div className="note note-good in-person-done">
-          <p><b>{num(done.votes)} votes for {done.name}</b> recorded, {naira(done.amount)} from {done.voter}.{done.votesStatus === 'held' ? ' The votes could not be counted, so refund the money.' : ''}</p>
+          <p><b>{num(done.votes)} votes for {done.name}</b> recorded, {money(done.amount)} from {done.voter}.{done.votesStatus === 'held' ? ' The votes could not be counted, so refund the money.' : ''}</p>
           <p>
             <a href={`/pay/return/${done.reference}`} target="_blank" rel="noreferrer">Open their proof of vote</a>
             {' · '}
@@ -389,7 +426,7 @@ function MoneyTab({ onChange }) {
                     <td>{p.contestant ?? '—'}</td>
                     <td>{p.email ?? '—'}</td>
                     <td className="num">{num(p.votes)}</td>
-                    <td className="num">{naira(p.amount)}</td>
+                    <td className="num">{money(p.amount)}</td>
                     <td><em className={`tag tag-${p.status}`}>{p.status}</em>{p.provider === 'in_person' ? <em className="tag" title={`${p.method ?? ''}${p.recordedBy ? `, recorded by ${p.recordedBy}` : ''}`}>in person</em> : null}{p.votesStatus === 'held' ? <em className="tag tag-review">refund due</em> : null}</td>
                   </tr>
                 ))}
@@ -493,8 +530,8 @@ function PackageRow({ pack, reload, setError }) {
   return (
     <tr>
       <td><input aria-label="Votes" type="number" min="1" defaultValue={pack.votes} onBlur={(e) => { const v = Number(e.target.value); if (v !== pack.votes) save({ votes: v }); }} /></td>
-      <td><input aria-label="Price in naira" type="number" min="1" defaultValue={pack.price} onBlur={(e) => { const v = Number(e.target.value); if (v !== pack.price) save({ price: v }); }} /></td>
-      <td className="num">{naira(Math.round(pack.price / pack.votes))}</td>
+      <td><input aria-label={`Price in ${getSite().currency}`} type="number" min="1" defaultValue={pack.price} onBlur={(e) => { const v = Number(e.target.value); if (v !== pack.price) save({ price: v }); }} /></td>
+      <td className="num">{money(Math.round(pack.price / pack.votes))}</td>
       <td><button type="button" className="text-link as-button" onClick={() => save({ active: !pack.active })}>{pack.active ? 'Hide' : 'Show'}</button> <small className="muted">{pack.active ? 'on sale' : 'hidden'}</small></td>
     </tr>
   );
@@ -506,10 +543,10 @@ function dealProblems(packages, votePrice) {
   const notes = [];
   deals.forEach((d, i) => {
     const rate = d.price / d.votes;
-    if (rate >= votePrice) notes.push(`${num(d.votes)} votes for ${naira(d.price)} is no cheaper than the normal ${naira(votePrice)} a vote, so it gives no discount.`);
+    if (rate >= votePrice) notes.push(`${num(d.votes)} votes for ${money(d.price)} is no cheaper than the normal ${money(votePrice)} a vote, so it gives no discount.`);
     const smaller = deals.slice(0, i).find((s) => s.price / s.votes < rate);
     if (smaller) {
-      notes.push(`${num(d.votes)} votes for ${naira(d.price)} costs ${naira(Math.round(rate))} a vote, more than the ${naira(Math.round(smaller.price / smaller.votes))} a vote on ${num(smaller.votes)} votes. Buying ${num(d.votes)} costs more than buying ${num(d.votes - 1)}.`);
+      notes.push(`${num(d.votes)} votes for ${money(d.price)} costs ${money(Math.round(rate))} a vote, more than the ${money(Math.round(smaller.price / smaller.votes))} a vote on ${num(smaller.votes)} votes. Buying ${num(d.votes)} costs more than buying ${num(d.votes - 1)}.`);
     }
   });
   return notes;
@@ -625,7 +662,7 @@ function EnquiriesTab({ onChange }) {
                 <p className="enquiry-message">{q.message}</p>
                 <p className="enquiry-contact">
                   <a href={`tel:${q.phone.replace(/[^\d+]/g, '')}`}>{q.phone}</a>
-                  {' · '}<a href={`https://wa.me/${q.phone.replace(/\D/g, '').replace(/^0/, '234')}`} target="_blank" rel="noreferrer noopener">WhatsApp</a>
+                  {' · '}<a href={`https://wa.me/${q.phone.replace(/\D/g, '').replace(/^0/, getSite().dial)}`} target="_blank" rel="noreferrer noopener">WhatsApp</a>
                   {q.email ? <>{' · '}<a href={`mailto:${q.email}`}>{q.email}</a></> : null}
                 </p>
               </li>
@@ -1211,7 +1248,7 @@ function CompetitionTab({ onChange }) {
           <div className="form-grid">
             <Field label="Voting opens" hint="Blank means open now."><input name="startsAt" type="datetime-local" defaultValue={toLocalInput(data.startsAt)} /></Field>
             <Field label="Voting closes" hint="Drives the voting countdown. Voting stops by itself at this time."><input name="endsAt" type="datetime-local" defaultValue={toLocalInput(data.endsAt)} /></Field>
-            <Field label="Price per vote (₦)" hint="The normal price, below the first bulk deal."><input name="votePrice" type="number" min="1" defaultValue={data.votePrice} required /></Field>
+            <Field label={`Price per vote (${getSite().symbol})`} hint="The normal price, below the first bulk deal."><input name="votePrice" type="number" min="1" defaultValue={data.votePrice} required /></Field>
             <Field label="Flag single votes of at least" hint="0 turns this off."><input name="largeVoteThreshold" type="number" min="0" defaultValue={data.largeVoteThreshold} required /></Field>
           </div>
           {saved ? <p className="note note-good">Saved.</p> : null}
@@ -1221,17 +1258,17 @@ function CompetitionTab({ onChange }) {
 
       <section className="panel">
         <h2>Bulk deals</h2>
-        <p className="muted">From each deal’s number of votes upwards, every vote costs that deal’s rate. With 50 votes for {naira(8000)}, someone buying 70 votes pays {naira(160)} a vote. Every supporter is offered the next deal up before they pay.</p>
+        <p className="muted">From each deal’s number of votes upwards, every vote costs that deal’s rate. With 50 votes for {money(8000)}, someone buying 70 votes pays {money(160)} a vote. Every supporter is offered the next deal up before they pay.</p>
         {dealProblems(data.packages, data.votePrice).map((note) => <p key={note} className="note note-error">{note}</p>)}
         <div className="table-wrap">
           <table className="data-table packages-table">
-            <thead><tr><th>Votes</th><th>Price (₦)</th><th className="num">Each</th><th>On sale</th></tr></thead>
+            <thead><tr><th>Votes</th><th>Price ({getSite().symbol})</th><th className="num">Each</th><th>On sale</th></tr></thead>
             <tbody>{data.packages.map((p) => <PackageRow key={`${p.id}-${p.votes}-${p.price}`} pack={p} reload={reload} setError={setError} />)}</tbody>
           </table>
         </div>
         <form className="inline-form" onSubmit={addPackage}>
           <Field label="Votes"><input name="votes" type="number" min="1" required /></Field>
-          <Field label="Price (₦)"><input name="price" type="number" min="1" required /></Field>
+          <Field label={`Price (${getSite().symbol})`}><input name="price" type="number" min="1" required /></Field>
           <button className="btn btn-ghost">Add deal</button>
         </form>
       </section>
@@ -1257,7 +1294,7 @@ function CompetitionTab({ onChange }) {
           ))}
         </ul>
         <form className="inline-form" onSubmit={addHistory}>
-          <Field label="Past edition"><input name="competition" required placeholder="MBGN 2025" /></Field>
+          <Field label="Past edition"><input name="competition" required placeholder={`${getSite().short} 2025`} /></Field>
           <Field label="Winner"><input name="winner" required /></Field>
           <Field label="Date"><input name="date" type="date" required /></Field>
           <button className="btn btn-ghost">Add record</button>
@@ -1451,7 +1488,7 @@ function WhatsAppCompose() {
           <Field label="Votes from"><input type="number" min="0" value={filters.minVotes} onChange={set('minVotes')} placeholder="Any" /></Field>
           <Field label="Votes up to"><input type="number" min="0" value={filters.maxVotes} onChange={set('maxVotes')} placeholder="Any" /></Field>
           <Field label="In the top"><input type="number" min="1" value={filters.top} onChange={set('top')} placeholder="Any" /></Field>
-          <Field label="State">
+          <Field label={getSite().regionLabel}>
             <select value={filters.state} onChange={set('state')}>
               <option value="">Any</option>
               {(competition?.states ?? []).map((s) => <option key={s}>{s}</option>)}

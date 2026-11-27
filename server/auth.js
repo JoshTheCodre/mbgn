@@ -3,7 +3,9 @@ import express from 'express';
 import { nowIso } from './db.js';
 
 const SESSION_DAYS = 30;
-const COOKIE = 'mbgn_sid';
+// Each country's site signs people in with its own cookie (mbgn_sid, mbgg_sid), so an admin can be
+// signed in to both at once.
+const cookieName = (ctx) => ctx.config.sessionCookie ?? 'mbgn_sid';
 
 export class HttpError extends Error {
   constructor(status, message, extra) {
@@ -59,7 +61,7 @@ export async function startSession(ctx, res, userId) {
   const expires = new Date(Date.now() + SESSION_DAYS * 864e5);
   await ctx.db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
     .run(sha256(token), userId, expires.toISOString());
-  res.cookie(COOKIE, token, {
+  res.cookie(cookieName(ctx), token, {
     httpOnly: true,
     sameSite: 'lax',
     secure: ctx.config.production,
@@ -68,19 +70,19 @@ export async function startSession(ctx, res, userId) {
   });
 }
 
-export function sessionHash(req) {
-  const token = parseCookies(req.headers.cookie)[COOKIE];
+export function sessionHash(ctx, req) {
+  const token = parseCookies(req.headers.cookie)[cookieName(ctx)];
   return token ? sha256(token) : null;
 }
 
 export async function endSession(ctx, req, res) {
-  const token = parseCookies(req.headers.cookie)[COOKIE];
+  const token = parseCookies(req.headers.cookie)[cookieName(ctx)];
   if (token) await ctx.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256(token));
-  res.clearCookie(COOKIE, { path: '/' });
+  res.clearCookie(cookieName(ctx), { path: '/' });
 }
 
 export async function sessionUser(ctx, req) {
-  const token = parseCookies(req.headers.cookie)[COOKIE];
+  const token = parseCookies(req.headers.cookie)[cookieName(ctx)];
   if (!token) return null;
   const row = await ctx.db.prepare(`
     SELECT u.id, u.email, u.name, u.phone, u.role

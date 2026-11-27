@@ -27,7 +27,7 @@ export async function createContext(config) {
     bus: createBus(),
     mailer: createMailer(config, db),
     photos: createPhotoStore(config),
-    provider: config.paystack ? createPaystack(config) : createSimulator(db),
+    provider: config.paystack ? createPaystack(config) : createSimulator(db, config.country?.currency),
     followers: createFollowerChecker(config, db),
     // Work that can finish after the response. The Vercel runtime swaps in waitUntil, so the
     // function stays alive for it.

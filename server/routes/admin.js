@@ -1,5 +1,5 @@
 import {
-  HttpError, asyncRouter, hashPassword, requireAdmin, sessionHash, verifyPassword,
+  HttpError, asyncRouter, hashPassword, requireAdmin, sessionHash, startSession, verifyPassword,
 } from '../auth.js';
 import { approveContestant, tellApproved } from '../approval.js';
 import { broadcastHistory, previewAudience, sendBroadcast } from '../broadcasts.js';
@@ -18,6 +18,7 @@ import {
 } from '../whatsapp.js';
 import { normalizeCode, socialLink, themeSettings } from './public.js';
 import { THEME_IDS } from '../../shared/themes.js';
+import { COUNTRIES, COUNTRY_IDS, formatCount } from '../../shared/countries.js';
 
 const clean = (value, max = 500) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
 
@@ -100,6 +101,38 @@ export function adminRouter(ctx) {
     return row;
   };
   const changed = () => ctx.bus.publish('leaderboard', { updatedAt: nowIso() });
+
+  // ---- The countries this admin runs ----
+  // One admin for every country's site. Switching signs the same admin in to the other country,
+  // on this domain, with that country's own sign-in cookie: the same email there, created with this
+  // admin's password if it doesn't exist yet.
+  router.get('/countries', (_req, res) => {
+    res.json({ current: config.countryId, countries: COUNTRY_IDS.map((id) => ({ id, name: COUNTRIES[id].name, short: COUNTRIES[id].short })) });
+  });
+
+  router.post('/switch-country', async (req, res) => {
+    const target = String(req.body?.country ?? '').toLowerCase();
+    if (!COUNTRY_IDS.includes(target)) throw new HttpError(400, 'Choose a country.');
+    if (target === config.countryId) return res.json({ country: target });
+    if (!ctx.siteFor) throw new HttpError(404, 'Only one country runs here.');
+    let other;
+    try {
+      other = await ctx.siteFor(target);
+    } catch (err) {
+      console.error(`Could not open the ${target.toUpperCase()} site:`, err.message);
+      throw new HttpError(503, `The ${COUNTRIES[target].name} site isn't ready yet. Please try again later.`);
+    }
+    const me = await db.prepare('SELECT email, name, phone, password_hash FROM users WHERE id = ?').get(req.user.id);
+    let there = await other.db.prepare('SELECT id, role FROM users WHERE lower(email) = lower(?)').get(me.email);
+    if (there && there.role !== 'admin') throw new HttpError(403, `Your email is a contestant's account on the ${COUNTRIES[target].name} site.`);
+    if (!there) {
+      const { lastInsertRowid } = await other.db.prepare(`INSERT INTO users (email, name, phone, password_hash, role, created_at)
+        VALUES (?, ?, ?, ?, 'admin', ?) RETURNING id`).run(me.email, me.name, me.phone, me.password_hash, nowIso());
+      there = { id: lastInsertRowid };
+    }
+    await startSession(other, res, there.id);
+    res.json({ country: target });
+  });
 
   // ---- Overview ----
   router.get('/overview', async (_req, res) => {
@@ -351,7 +384,7 @@ export function adminRouter(ctx) {
     const updated = await tx(db, async () => {
       const c = await getContestant(req.params.id);
       if (c.status !== 'approved') throw new HttpError(409, 'Votes can only be changed for approved contestants.');
-      if (c.total_votes + quantity < 0) throw new HttpError(400, `${c.stage_name} only has ${c.total_votes.toLocaleString('en-NG')} votes to take away.`);
+      if (c.total_votes + quantity < 0) throw new HttpError(400, `${c.stage_name} only has ${formatCount(c.total_votes, config.countryId)} votes to take away.`);
       const at = nowIso();
       await db.prepare('INSERT INTO vote_adjustments (contestant_id, quantity, reason, admin_id, created_at) VALUES (?, ?, ?, ?, ?)')
         .run(c.id, quantity, reason, req.user.id, at);
@@ -618,7 +651,7 @@ export function adminRouter(ctx) {
     const startsAt = isoOrEmpty(b.startsAt, 'Start date');
     const endsAt = isoOrEmpty(b.endsAt, 'End date');
     if (name.length < 3) throw new HttpError(400, 'Please enter the competition name.');
-    if (!Number.isInteger(votePrice) || votePrice < 1) throw new HttpError(400, 'Vote price must be a whole number of naira.');
+    if (!Number.isInteger(votePrice) || votePrice < 1) throw new HttpError(400, `Vote price must be a whole number of ${config.countryId === 'gh' ? 'cedis' : 'naira'}.`);
     if (!Number.isInteger(threshold) || threshold < 0) throw new HttpError(400, 'Large-vote alert must be a whole number.');
     if (startsAt && endsAt && startsAt >= endsAt) throw new HttpError(400, 'Voting must end after it starts.');
     await tx(db, async () => {
@@ -838,7 +871,7 @@ export function adminRouter(ctx) {
       .run(email, newPassword ? hashPassword(newPassword) : user.password_hash, user.id)
       .catch((err) => { throw err.code === '23505' ? new HttpError(409, 'Another account already uses that email address.') : err; });
     // A new password signs out every other browser, in case the old one had leaked.
-    if (newPassword) await db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').run(user.id, sessionHash(req));
+    if (newPassword) await db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').run(user.id, sessionHash(ctx, req));
     const changes = [email !== user.email ? `email changed to ${email}` : null, newPassword ? 'password changed' : null].filter(Boolean);
     await audit(ctx, user.id, 'account.update', changes.join(', ') || 'no change');
     res.json({ email });

@@ -33,6 +33,8 @@ async function audience(ctx, a) {
 }
 
 const fillsFor = (ctx, c) => ({
+  contest: ctx.config.country.siteName,
+  short: ctx.config.country.short,
   name: c.stage_name,
   code: c.code ?? '',
   link: c.code ? `${ctx.config.publicUrl}/c/${c.code}` : '',
@@ -44,7 +46,7 @@ const fillsFor = (ctx, c) => ({
 // How many it would reach, and an example to preview with.
 export async function previewAudience(ctx, a) {
   const people = await audience(ctx, a);
-  const reachable = people.filter((c) => waNumber(c.whatsapp));
+  const reachable = people.filter((c) => waNumber(c.whatsapp, ctx.config.countryId));
   return {
     count: reachable.length,
     noWhatsApp: people.length - reachable.length,
@@ -58,11 +60,11 @@ export async function sendBroadcast(ctx, a, text, adminId) {
   const wording = String(text ?? '').replace(/\r\n/g, '\n').trim();
   if (wording.length < 2) throw new HttpError(400, 'Write the message first.');
   if (wording.length > 3000) throw new HttpError(400, 'Keep the message under 3,000 characters.');
-  const people = (await audience(ctx, a)).filter((c) => waNumber(c.whatsapp));
+  const people = (await audience(ctx, a)).filter((c) => waNumber(c.whatsapp, ctx.config.countryId));
   if (!people.length) throw new HttpError(400, 'Nobody matches, so there is no one to send it to.');
   const { lastInsertRowid: id } = await ctx.db.prepare(`INSERT INTO whatsapp_broadcasts (body, audience, recipients, created_by, created_at)
     VALUES (?, ?, ?, ?, ?) RETURNING id`).run(wording, JSON.stringify(a ?? {}), people.length, adminId, nowIso());
-  await queue(ctx.db, people.map((c) => ({ contestantId: c.id, kind: `custom_${id}`, to: waNumber(c.whatsapp), body: renderMessage(wording, fillsFor(ctx, c)) })));
+  await queue(ctx.db, people.map((c) => ({ contestantId: c.id, kind: `custom_${id}`, to: waNumber(c.whatsapp, ctx.config.countryId), body: renderMessage(wording, fillsFor(ctx, c)) })));
   await audit(ctx, adminId, 'whatsapp.broadcast', `#${id} to ${people.length} contestants`);
   ctx.background(sendDueWhatsApp(ctx));
   return { id, queued: people.length };

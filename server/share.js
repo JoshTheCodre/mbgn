@@ -8,10 +8,11 @@ const activeContestant = (db, code) => db.prepare("SELECT * FROM contestants WHE
 export async function sharePreview(ctx, code) {
   const c = code ? await activeContestant(ctx.db, code) : null;
   if (!c) return null;
-  const { publicUrl } = ctx.config;
+  const { publicUrl, country } = ctx.config;
+  const region = country.regionLabel === 'State' ? `${c.state}` : `${c.state} Region`;
   return {
-    title: `Vote for ${c.stage_name} 👑 | MBGN`,
-    description: `${c.stage_name} from ${c.state} is in Most Beautiful Girl Online Nigeria. Tap to vote for her with code ${c.code}.`,
+    title: `Vote for ${c.stage_name} 👑 | ${country.short}`,
+    description: `${c.stage_name} from ${region} is in ${country.siteName}. Tap to vote for her with code ${c.code}.`,
     // Named after her photo, so a new photo is a new address: never a stale copy, anywhere.
     image: c.photo_file ? `${publicUrl}/api/share/${c.code}.jpg?v=${c.photo_file.slice(0, 10)}` : `${publicUrl}/icons/icon-512.png`,
     alt: `${c.stage_name}, contestant ${c.code}`,

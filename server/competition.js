@@ -116,7 +116,7 @@ export async function audit(ctx, actorId, action, details) {
 }
 
 // Each notification also reaches the person's phone, if they turned notifications on (push.js).
-const toPhones = (ctx, userIds, message) => ctx.background(pushTo(ctx, userIds, { title: 'MBGN', body: message, url: '/dashboard' }));
+const toPhones = (ctx, userIds, message) => ctx.background(pushTo(ctx, userIds, { title: ctx.config.country?.short ?? 'MBGN', body: message, url: '/dashboard' }));
 
 export async function notifyUser(ctx, userId, kind, message) {
   const createdAt = nowIso();

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
-  api, dateTime, naira, num, plural, registrationOpen, useApp, useFetch,
+  api, dateTime, getSite, money, num, plural, registrationOpen, useApp, useFetch,
 } from '../lib.jsx';
 import {
   BrandLogo, CopyButton, Dialog, ErrorNote, Field, FollowerRow, Loading, PLATFORM_NAMES, PinInput, ShareButton, WhatsAppGroup,
@@ -398,9 +398,9 @@ export function Register() {
           <div className="form-grid">
             <Field label="Full name"><input name="fullName" autoComplete="name" required /></Field>
             <Field label="Contestant / stage name" hint="Shown publicly. Your full name stays private."><input name="stageName" required /></Field>
-            <Field label="State">
+            <Field label={getSite().regionLabel}>
               <select name="state" required defaultValue="">
-                <option value="" disabled>Choose your state</option>
+                <option value="" disabled>Choose your {getSite().regionLabel.toLowerCase()}</option>
                 {(competition?.states ?? []).map((s) => <option key={s}>{s}</option>)}
               </select>
             </Field>
@@ -463,8 +463,8 @@ export function Enquiry() {
     <div className="wrap page narrow-wide enquiry">
       <header className="register-head">
         <p className="eyebrow">Sponsorship and enquiries</p>
-        <h1>Partner with MBGN</h1>
-        <p className="muted">Put your brand in front of contestants and their supporters across Nigeria, or ask us anything. Our team will get back to you.</p>
+        <h1>Partner with {getSite().short}</h1>
+        <p className="muted">Put your brand in front of contestants and their supporters across {getSite().name}, or ask us anything. Our team will get back to you.</p>
       </header>
       {sent ? (
         <div className="check-card">
@@ -574,7 +574,7 @@ async function proofImage(payment) {
     while (g.measureText(shown).width > W - 160 && shown.length > 4) shown = `${shown.slice(0, -2)}…`;
     g.fillText(shown, W / 2, y);
   };
-  text('MBGN · PROOF OF VOTE', 140, 38, '#d9b45a', 700);
+  text(`${getSite().short} · PROOF OF VOTE`, 140, 38, '#d9b45a', 700);
   const photo = payment.contestant.photoUrl ? await loadImage(payment.contestant.photoUrl) : null;
   if (photo) {
     const size = 340;
@@ -596,8 +596,8 @@ async function proofImage(payment) {
   text('voted for', top + 70, 40, '#cbbfd6', 500);
   text(payment.contestant.name, top + 170, 92, '#fff', 800);
   text(payment.contestant.code, top + 240, 44, '#d9b45a', 700);
-  text(`${payment.votes.toLocaleString('en-NG')} vote${payment.votes === 1 ? '' : 's'} · ₦${payment.total.toLocaleString('en-NG')}`, top + 340, 52, '#fff', 700);
-  text(new Date(payment.paidAt ?? Date.now()).toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' }), top + 410, 34, '#cbbfd6', 500);
+  text(`${num(payment.votes)} vote${payment.votes === 1 ? '' : 's'} · ${money(payment.total)}`, top + 340, 52, '#fff', 700);
+  text(new Date(payment.paidAt ?? Date.now()).toLocaleString(getSite().locale, { dateStyle: 'medium', timeStyle: 'short' }), top + 410, 34, '#cbbfd6', 500);
   if (payment.receiptNo) text(`Receipt ${payment.receiptNo}`, top + 460, 30, '#cbbfd6', 500);
   text(`Vote too at ${window.location.host}/c/${payment.contestant.code}`, H - 90, 32, '#d9b45a', 600);
   return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
@@ -607,7 +607,7 @@ function ProofOfVote({ payment, onDone }) {
   const [busy, setBusy] = useState(false);
   const { contestant } = payment;
   const link = `${window.location.origin}/c/${contestant.code}`;
-  const message = `I just voted for ${contestant.name} (${contestant.code}) in Most Beautiful Girl Online Nigeria! Vote for her too: ${link}`;
+  const message = `I just voted for ${contestant.name} (${contestant.code}) in ${getSite().siteName}! Vote for her too: ${link}`;
 
   async function save() {
     setBusy(true);
@@ -635,7 +635,7 @@ function ProofOfVote({ payment, onDone }) {
         <p className="proof-voter"><b>{payment.voterName ?? 'A supporter'}</b> voted for</p>
         <p className="proof-name">{contestant.name}</p>
         <p className="proof-code">{contestant.code}</p>
-        <p className="proof-votes">{plural(payment.votes, 'vote')} · {naira(payment.total)}</p>
+        <p className="proof-votes">{plural(payment.votes, 'vote')} · {money(payment.total)}</p>
         <p className="proof-meta">
           {dateTime(payment.paidAt)}
           {payment.receiptNo ? <><br />Receipt {payment.receiptNo}</> : null}
@@ -863,7 +863,7 @@ export function PayTransfer() {
   return (
     <div className="wrap page narrow pay-transfer">
       <p className="eyebrow">{plural(payment.votes, 'vote')} for {contestant.name} · {contestant.code}</p>
-      <h1>Send exactly {naira(payment.total)}</h1>
+      <h1>Send exactly {money(payment.total)}</h1>
       <p className="muted">Transfer from any bank app, OPay, PalmPay or Moniepoint. Your votes count as soon as the money arrives.</p>
       <div className="transfer-card">
         <div className="transfer-row">
@@ -872,14 +872,14 @@ export function PayTransfer() {
         </div>
         <div className="transfer-row">
           <div>
-            <small>Amount</small><b>{naira(payment.total)}</b>
-            {payment.fee ? <span className="transfer-breakdown">+ {naira(payment.fee)} fee</span> : null}
+            <small>Amount</small><b>{money(payment.total)}</b>
+            {payment.fee ? <span className="transfer-breakdown">+ {money(payment.fee)} fee</span> : null}
           </div>
           <CopyButton value={String(payment.total)} label="amount" />
         </div>
         <p className="transfer-exact" role="note">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3 2 21h20L12 3z" /><path d="M12 10v5M12 18h.01" /></svg>
-          <span><b>Ensure you transfer the exact amount: {naira(payment.total)}.</b> Not more, not less.</span>
+          <span><b>Ensure you transfer the exact amount: {money(payment.total)}.</b> Not more, not less.</span>
         </p>
         <div className="transfer-row">
           <div><small>Bank · Account name</small><b>{[transfer.bankName, transfer.accountName].filter(Boolean).join(' · ')}</b></div>
@@ -939,7 +939,7 @@ export function PaySim() {
   return (
     <div className="wrap page narrow">
       <p className="eyebrow">Simulated checkout</p>
-      <h1>{data ? naira(data.total) : "…"}</h1>
+      <h1>{data ? money(data.total) : "…"}</h1>
       <p className="muted">This stands in for Paystack’s checkout while no key is configured. No real money moves.</p>
       <ErrorNote error={error ?? payError} />
       {data ? <p>{plural(data.votes, 'vote')} for {data.contestant.name}</p> : null}
@@ -967,7 +967,7 @@ export function Receipt() {
     <div className="wrap page narrow">
       <article className="receipt">
         <header>
-          <span className="logo">MBGN</span>
+          <span className="logo">{getSite().short}</span>
           <span>{data.kind === 'vote' ? 'Vote receipt' : 'Payment receipt'}</span>
         </header>
         <p className="receipt-number">{data.number}</p>

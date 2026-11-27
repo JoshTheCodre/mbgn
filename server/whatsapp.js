@@ -3,6 +3,7 @@ import { HttpError, asyncRouter, rateLimit } from './auth.js';
 import { DEFAULT_MESSAGES, MESSAGE_KINDS, renderMessage } from '../shared/whatsapp-messages.js';
 import { getSetting, nowIso, setSetting } from './db.js';
 import { groupById } from './groups.js';
+import { internationalPhone } from '../shared/countries.js';
 
 // WhatsApp messages to contestants, from the contest's own number. They're written down here
 // first, then sent one of two ways:
@@ -17,13 +18,13 @@ import { groupById } from './groups.js';
 const MAX_ATTEMPTS = 3;
 const STALE_MS = 10 * 60000;
 
-// As WhatsApp wants it: country code and digits. 0803..., 803... and +234803... are one number.
-export function waNumber(raw) {
-  const digits = String(raw ?? '').replace(/\D/g, '');
-  if (digits.length === 13 && digits.startsWith('234')) return digits;
-  if (digits.length === 11 && digits.startsWith('0')) return `234${digits.slice(1)}`;
-  if (digits.length === 10 && !digits.startsWith('0')) return `234${digits}`;
+// As WhatsApp wants it: country code and digits. In Nigeria 0803..., 803... and +234803... are one
+// number; in Ghana 024..., 24... and +23324....
+export function waNumber(raw, country = 'ng') {
+  const local = internationalPhone(raw, country);
+  if (local) return local;
   // Numbers from elsewhere, already with their country code.
+  const digits = String(raw ?? '').replace(/\D/g, '');
   if (digits.length >= 11 && digits.length <= 15 && !digits.startsWith('0')) return digits;
   return null;
 }
@@ -31,17 +32,22 @@ export function waNumber(raw) {
 export const whatsappEnabled = (ctx) => Boolean(ctx.config.whatsappSenderToken || ctx.config.evolution);
 const enabled = whatsappEnabled;
 
-function lagosDate(iso) {
-  return new Date(iso).toLocaleDateString('en-NG', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Africa/Lagos' });
+function localDate(ctx, iso) {
+  const { locale, timeZone } = ctx.config.country;
+  return new Date(iso).toLocaleDateString(locale, { weekday: 'long', day: 'numeric', month: 'long', timeZone });
 }
 
-async function votingNote(db) {
+// The contest's own names, in every message.
+const contestFills = (ctx) => ({ contest: ctx.config.country.siteName, short: ctx.config.country.short });
+
+async function votingNote(ctx) {
+  const { db } = ctx;
   if (await getSetting(db, 'competition_phase') === 'voting') {
     return 'Voting is open now! Send your link to your friends, family and followers and ask them to vote for you. They can also search your code on the site.';
   }
   const endsAt = await getSetting(db, 'registration_ends_at');
   const when = await getSetting(db, 'auto_start_voting') === '1' && endsAt && new Date(endsAt) > new Date()
-    ? `on ${lagosDate(endsAt)}` : 'soon';
+    ? `on ${localDate(ctx, endsAt)}` : 'soon';
   return `Voting opens ${when}, and we'll message you when it does. Then send your link to your friends, family and followers and ask them to vote for you. They can also search your code on the site.`;
 }
 
@@ -52,13 +58,13 @@ const template = async (db, kind) => (await getSetting(db, messageKey(kind))) ||
 const groupLine = (url) => `Join the contestants' WhatsApp group for updates:\n${url}`;
 
 function fills(ctx, c) {
-  return { name: c.stage_name, code: c.code, link: `${ctx.config.publicUrl}/c/${c.code}`, dashboard: `${ctx.config.publicUrl}/dashboard` };
+  return { ...contestFills(ctx), name: c.stage_name, code: c.code, link: `${ctx.config.publicUrl}/c/${c.code}`, dashboard: `${ctx.config.publicUrl}/dashboard` };
 }
 
 export async function acceptedText(ctx, c) {
   const group = await groupById(ctx.db, c.whatsapp_group_id);
   return renderMessage(await template(ctx.db, 'accepted'), {
-    ...fills(ctx, c), group: group ? groupLine(group.invite_url) : '', voting: await votingNote(ctx.db),
+    ...fills(ctx, c), group: group ? groupLine(group.invite_url) : '', voting: await votingNote(ctx),
   });
 }
 
@@ -71,7 +77,7 @@ export async function messageSettings(ctx) {
   }
   const example = fills(ctx, { stage_name: 'Ada Queen', code: `${ctx.config.codePrefix}0001` });
   const groupUrl = 'https://chat.whatsapp.com/ExampleInvite';
-  return { messages, example: { ...example, group: groupLine(groupUrl), group_link: groupUrl, voting: await votingNote(ctx.db) } };
+  return { messages, example: { ...example, group: groupLine(groupUrl), group_link: groupUrl, voting: await votingNote(ctx) } };
 }
 
 // Empty (or the default again) goes back to the default.
@@ -96,7 +102,7 @@ export async function queue(db, rows) {
 async function acceptedRows(ctx, contestants) {
   const rows = [];
   for (const c of contestants) {
-    const to = waNumber(c.whatsapp);
+    const to = waNumber(c.whatsapp, ctx.config.countryId);
     if (to && c.code) rows.push({ contestantId: c.id, kind: 'accepted', to, body: await acceptedText(ctx, c) });
   }
   return rows;
@@ -122,10 +128,10 @@ export async function queueMissingAccepted(ctx) {
 
 // Right after applying (once past the follower check). False if it can't go on WhatsApp.
 export async function queueRegistered(ctx, c, group) {
-  const to = waNumber(c.whatsapp);
+  const to = waNumber(c.whatsapp, ctx.config.countryId);
   if (!enabled(ctx) || !to) return false;
   const body = renderMessage(await template(ctx.db, 'registered'), {
-    name: c.stage_name, group: group ? groupLine(group.invite_url) : '', dashboard: `${ctx.config.publicUrl}/dashboard`,
+    ...contestFills(ctx), name: c.stage_name, group: group ? groupLine(group.invite_url) : '', dashboard: `${ctx.config.publicUrl}/dashboard`,
   });
   await queue(ctx.db, [{ contestantId: c.id, kind: 'registered', to, body }]);
   return true;
@@ -133,10 +139,10 @@ export async function queueRegistered(ctx, c, group) {
 
 // For someone who waited for a group with room. False if it can't go on WhatsApp.
 export async function queueGroupLink(ctx, c, group) {
-  const to = waNumber(c.whatsapp);
+  const to = waNumber(c.whatsapp, ctx.config.countryId);
   if (!enabled(ctx) || !to) return false;
   // She may not have a code yet, so only her name and the link.
-  const body = renderMessage(await template(ctx.db, 'group_link'), { name: c.stage_name, group_link: group.invite_url });
+  const body = renderMessage(await template(ctx.db, 'group_link'), { ...contestFills(ctx), name: c.stage_name, group_link: group.invite_url });
   await queue(ctx.db, [{ contestantId: c.id, kind: 'group_link', to, body }]);
   return true;
 }
@@ -145,7 +151,7 @@ export async function queueVotingOpen(ctx) {
   if (!enabled(ctx)) return 0;
   const wording = await template(ctx.db, 'voting_open');
   const recipients = await ctx.db.prepare("SELECT id, stage_name, code, whatsapp FROM contestants WHERE status = 'approved'").all();
-  const rows = recipients.map((c) => ({ contestantId: c.id, kind: 'voting_open', to: waNumber(c.whatsapp), body: renderMessage(wording, fills(ctx, c)) }))
+  const rows = recipients.map((c) => ({ contestantId: c.id, kind: 'voting_open', to: waNumber(c.whatsapp, ctx.config.countryId), body: renderMessage(wording, fills(ctx, c)) }))
     .filter((r) => r.to);
   await queue(ctx.db, rows);
   return rows.length;

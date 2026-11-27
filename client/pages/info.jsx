@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { naira, num, useApp } from '../lib.jsx';
+import { getSite, money, num, useApp } from '../lib.jsx';
 
 // Plain pages about how the contest works. Figures come from the live settings, so they stay right
 // when an admin changes them.
@@ -20,12 +20,12 @@ function InfoPage({ eyebrow, title, intro, children }) {
 export function Rules() {
   const { competition } = useApp();
   const minFollowers = num(competition?.minFollowers ?? 500);
-  const votePrice = naira(competition?.votePrice ?? 200);
+  const votePrice = money(competition?.votePrice ?? 200);
   const deals = [...(competition?.packages ?? [])].sort((a, b) => a.votes - b.votes);
 
   return (
     <InfoPage
-      eyebrow="Most Beautiful Girl Online Nigeria"
+      eyebrow={getSite().siteName}
       title="Contest rules"
       intro="By entering or voting, you agree to these rules. The organisers may update them, and the latest version is always on this page."
     >
@@ -59,7 +59,7 @@ export function Rules() {
           <li>Anyone can vote, as many times as they like. Each vote costs <b>{votePrice}</b>.</li>
           {deals.length ? (
             <li>
-              Bulk deals: {deals.map((d) => `${num(d.votes)} votes for ${naira(d.price)}`).join(', ')}.
+              Bulk deals: {deals.map((d) => `${num(d.votes)} votes for ${money(d.price)}`).join(', ')}.
               From each deal’s number of votes upwards, every vote costs that deal’s rate.
             </li>
           ) : null}
@@ -88,7 +88,7 @@ export function Rules() {
 
       <section className="info-section">
         <h2>7. Prizes</h2>
-        <p>Over ₦10 million in cash prizes is to be won. The organisers announce how it is shared out and how winners are paid.</p>
+        <p>{getSite().prize ? `Over ${getSite().prize} in cash prizes is to be won.` : 'Cash prizes are to be won.'} The organisers announce how it is shared out and how winners are paid.</p>
       </section>
 
       <p className="muted form-foot">Questions? <Link to="/enquiry">Contact the organisers</Link>. See also our <Link to="/privacy">privacy notice</Link>.</p>
@@ -100,12 +100,12 @@ export function Privacy() {
   const { competition } = useApp();
   const email = competition?.contact?.email;
   return (
-    <InfoPage eyebrow="Most Beautiful Girl Online Nigeria" title="Privacy notice" intro="What we collect, why, and who sees it.">
+    <InfoPage eyebrow={getSite().siteName} title="Privacy notice" intro="What we collect, why, and who sees it.">
       <section className="info-section">
         <h2>Contestants</h2>
         <ul>
-          <li><b>What we collect:</b> your full name, stage name, email, phone and WhatsApp numbers, state, town, biography, photo, the social media account you enter, and its follower count.</li>
-          <li><b>What the public sees, once you are approved:</b> your stage name, photo, state and town, biography, social media link, code, votes and position.</li>
+          <li><b>What we collect:</b> your full name, stage name, email, phone and WhatsApp numbers, {getSite().regionLabel.toLowerCase()}, town, biography, photo, the social media account you enter, and its follower count.</li>
+          <li><b>What the public sees, once you are approved:</b> your stage name, photo, {getSite().regionLabel.toLowerCase()} and town, biography, social media link, code, votes and position.</li>
           <li><b>What stays private:</b> your full name, email, phone and WhatsApp numbers. Only the organisers see them, to run the contest and contact you.</li>
           <li>To read your follower count, we send your username or page link to a data service that reads public profiles. Nothing else about you is sent.</li>
         </ul>

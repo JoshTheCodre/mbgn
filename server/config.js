@@ -1,9 +1,19 @@
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { countryOf } from '../shared/countries.js';
 
 // Everything environment-specific lives here. Tests pass overrides directly.
+//
+// One set of settings per country (overrides.country, Nigeria by default). Nigeria reads the
+// plain names (PAYSTACK_SECRET_KEY, PUBLIC_URL...); another country reads the same names with its
+// code on the end (PAYSTACK_SECRET_KEY_GH, PUBLIC_URL_GH...), and shares the rest: the database,
+// photos, WhatsApp, the admin login and the app secret.
 export function loadConfig(overrides = {}) {
   const env = process.env;
+  const countryId = overrides.country ?? 'ng';
+  const country = countryOf(countryId);
+  const primary = countryId === 'ng';
+  const own = (name) => env[primary ? name : `${name}_${countryId.toUpperCase()}`];
   // Set in .env to try the site out with invented contestants. Never on the live site.
   const demo = process.env.DEMO_MODE === '1';
   const production = !demo && (overrides.nodeEnv ?? env.NODE_ENV) === 'production';
@@ -12,30 +22,36 @@ export function loadConfig(overrides = {}) {
   const vercelUrl = env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${env.VERCEL_PROJECT_PRODUCTION_URL}` : null;
 
   // Trimmed, since a key pasted into a dashboard or terminal often brings a line break with it.
-  const paystackKey = env.PAYSTACK_SECRET_KEY?.trim();
+  const paystackKey = own('PAYSTACK_SECRET_KEY')?.trim();
   const paystack = overrides.paystack ?? (paystackKey
     ? { secretKey: paystackKey, baseUrl: 'https://api.paystack.co' }
     : null);
 
   if (paystack && !/^sk_(test|live)_/.test(paystack.secretKey)) {
-    throw new Error('PAYSTACK_SECRET_KEY must be a secret key, starting sk_test_ or sk_live_.');
+    throw new Error(`PAYSTACK_SECRET_KEY${primary ? '' : `_${countryId.toUpperCase()}`} must be a secret key, starting sk_test_ or sk_live_.`);
   }
   // The simulator and Paystack's test mode both count votes without real money,
-  // so neither may run in production.
+  // so neither may run in production. Nigeria refuses to start; a newer country's site runs, so it
+  // can be set up, but takes no payments until its live key is in.
+  let paymentsOff = null;
   if (production && !paystack) {
-    throw new Error('Refusing to start in production without a Paystack key: the payment simulator is dev-only.');
-  }
-  if (production && !paystack.secretKey.startsWith('sk_live_')) {
-    throw new Error('Refusing to start in production with a Paystack test key: votes would be free.');
+    if (primary) throw new Error('Refusing to start in production without a Paystack key: the payment simulator is dev-only.');
+    paymentsOff = 'Voting payments open soon.';
+  } else if (production && !paystack.secretKey.startsWith('sk_live_')) {
+    if (primary) throw new Error('Refusing to start in production with a Paystack test key: votes would be free.');
+    paymentsOff = 'Voting payments open soon.';
   }
 
   const appSecret = overrides.appSecret ?? env.APP_SECRET;
   if (production && !appSecret) throw new Error('APP_SECRET is required in production.');
 
-  const paymentEmail = overrides.paymentEmail ?? env.PAYMENT_EMAIL?.trim();
+  const paymentEmail = overrides.paymentEmail ?? (own('PAYMENT_EMAIL') ?? env.PAYMENT_EMAIL)?.trim();
   if (production && !paymentEmail) throw new Error('PAYMENT_EMAIL is required in production: Paystack needs a customer email on every payment.');
 
-  const databaseUrl = overrides.databaseUrl ?? (env.DATABASE_URL?.trim() || undefined);
+  // The same database for every country. Another country's tables sit in their own schema, chosen
+  // when each connection opens, so its connection must go straight to Postgres, not through a
+  // transaction pooler; DATABASE_URL_GH can give such an address for the same database.
+  const databaseUrl = overrides.databaseUrl ?? ((own('DATABASE_URL') ?? env.DATABASE_URL)?.trim() || undefined);
   if (!databaseUrl && !overrides.dbDriver) throw new Error('DATABASE_URL is required. See the README.');
   // For a database with its own certificate authority, like the one Coolify runs on the VPS: that
   // authority's certificate, so the connection is encrypted and the server checked. Neon needs none.
@@ -50,7 +66,7 @@ export function loadConfig(overrides = {}) {
   if (!evolution && (evo.url || evo.apiKey || evo.instance)) throw new Error('EVOLUTION_URL, EVOLUTION_API_KEY and EVOLUTION_INSTANCE are needed together.');
   if (production && evolution && !evolution.url.startsWith('https://')) throw new Error('EVOLUTION_URL must start with https://');
   // Connections each server keeps to the database. Every Vercel instance has its own set.
-  const dbPoolMax = Number(overrides.dbPoolMax ?? env.DB_POOL_MAX ?? 5);
+  const dbPoolMax = Number(overrides.dbPoolMax ?? own('DB_POOL_MAX') ?? (primary ? 5 : 3));
   if (!Number.isInteger(dbPoolMax) || dbPoolMax < 1) throw new Error('DB_POOL_MAX must be a whole number of 1 or more.');
 
   const r2 = overrides.r2 ?? (env.R2_ACCOUNT_ID
@@ -80,12 +96,30 @@ export function loadConfig(overrides = {}) {
     apify: keysFor('APIFY_TOKEN'),
   };
 
+  const port = Number(overrides.port ?? env.PORT ?? 3000);
+  // Where this country's site is. On this computer, Ghana is gh.localhost.
+  const publicUrl = (overrides.publicUrl ?? own('PUBLIC_URL') ?? (primary ? vercelUrl : null)
+    ?? `http://${primary ? '' : `${countryId}.`}localhost:${env.PORT ?? 3000}`).replace(/\/$/, '');
+  // The domains that show this country: its address, any listed in SITE_HOSTS(_GH), and on this
+  // computer <country>.localhost.
+  const hosts = [new URL(publicUrl).host, ...(own('SITE_HOSTS') ?? '').split(',')]
+    .map((h) => h.trim().toLowerCase()).filter(Boolean);
+  if (!primary) hosts.push(`${countryId}.localhost`, `${countryId}.localhost:${port}`);
+
   return {
     production,
+    countryId,
+    country,
+    hosts: [...new Set(hosts)],
+    // This country's tables: Nigeria's in Postgres's default schema, the others' in their own.
+    dbSchema: overrides.dbSchema ?? country.schema,
+    sessionCookie: country.sessionCookie,
+    // Why payments are refused, when this country's site runs without a live key in production.
+    paymentsOff,
     followerKeys,
     followerBaseUrls: overrides.followerBaseUrls ?? null,
-    port: Number(overrides.port ?? env.PORT ?? 3000),
-    publicUrl: (overrides.publicUrl ?? env.PUBLIC_URL ?? vercelUrl ?? `http://localhost:${env.PORT ?? 3000}`).replace(/\/$/, ''),
+    port,
+    publicUrl,
     dataDir,
     databaseUrl,
     databaseCa,
@@ -96,7 +130,7 @@ export function loadConfig(overrides = {}) {
     appSecret: appSecret ?? crypto.randomBytes(32).toString('hex'),
     // Vercel always sits behind its own proxy, which reports the visitor's real address.
     trustProxy: env.TRUST_PROXY === '1' || Boolean(env.VERCEL),
-    codePrefix: overrides.codePrefix ?? env.CODE_PREFIX ?? 'MBG',
+    codePrefix: overrides.codePrefix ?? own('CODE_PREFIX') ?? country.codePrefix,
     paystack,
     // A reserved domain that Paystack accepts, for testing only.
     paymentEmail: paymentEmail ?? 'votes@example.com',

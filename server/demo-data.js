@@ -13,6 +13,7 @@ export const DEMO_ADMIN = {
   adminPassword: process.env.ADMIN_PASSWORD ?? DEMO_PASSWORD,
 };
 
+// Invented contestants for each country's site. The photos are shared, by position.
 const PEOPLE = [
   ['Stella Okafor', 'Stella', 'Anambra', 'Awka', 'Pageant', 1860],
   ['Jennifer Adeyemi', 'Jennifer', 'Lagos', 'Lekki', 'Pageant', 1725],
@@ -27,6 +28,34 @@ const PEOPLE = [
   ['Tamuno Briggs', 'Tamuno', 'Rivers', 'Port Harcourt', 'Runway', 275],
   ['Halima Yusuf', 'Halima', 'FCT Abuja', 'Gwarinpa', 'Influencer', 130],
 ];
+
+const GHANA_PEOPLE = [
+  ['Akosua Mensah', 'Akosua', 'Greater Accra', 'East Legon', 'Pageant', 1860],
+  ['Ama Owusu', 'Ama', 'Ashanti', 'Kumasi', 'Pageant', 1725],
+  ['Efua Asante', 'Efua', 'Central', 'Cape Coast', 'Pageant', 1490],
+  ['Abena Boateng', 'Abena', 'Eastern', 'Koforidua', 'Runway', 1215],
+  ['Adwoa Agyeman', 'Adwoa', 'Western', 'Takoradi', 'Runway', 1100],
+  ['Esi Quaye', 'Esi', 'Volta', 'Ho', 'Runway', 960],
+  ['Afia Darko', 'Afia', 'Bono', 'Sunyani', 'Pageant', 845],
+  ['Yaa Amponsah', 'Yaa', 'Northern', 'Tamale', 'Influencer', 720],
+  ['Akua Sarpong', 'Akua', 'Ashanti', 'Obuasi', 'Influencer', 605],
+  ['Nana Ama Ofori', 'Nana', 'Greater Accra', 'Tema', 'Influencer', 410],
+  ['Dzifa Kpodo', 'Dzifa', 'Volta', 'Hohoe', 'Runway', 275],
+  ['Mansa Antwi', 'Mansa', 'Upper East', 'Bolgatanga', 'Influencer', 130],
+];
+
+const DEMO = {
+  ng: {
+    people: PEOPLE,
+    waiting: [['Ngozi Umeh', 'Ngozi', 'Abia', 'Umuahia'], ['Rukayat Salami', 'Rukky', 'Kwara', 'Ilorin']],
+    phone: '0803000', waitingPhone: '0803100', domain: 'mbgn.local',
+  },
+  gh: {
+    people: GHANA_PEOPLE,
+    waiting: [['Adjoa Frimpong', 'Adjoa', 'Oti', 'Dambai'], ['Serwaa Bediako', 'Serwaa', 'Ahafo', 'Goaso']],
+    phone: '024400', waitingPhone: '024410', domain: 'mbgg.local',
+  },
+};
 
 // Optional AI-generated portraits of fictional people, named after the stage name (stella.webp).
 const DEMO_PHOTOS = path.resolve(process.cwd(), 'demo-photos');
@@ -44,6 +73,10 @@ const at = (hoursAgo) => new Date(Date.now() - hoursAgo * 3600000).toISOString()
 // Fills an empty database. Returns false if there are already contestants.
 export async function seedDemoData(ctx) {
   const { db } = ctx;
+  const demo = DEMO[ctx.config.countryId] ?? DEMO.ng;
+  const country = ctx.config.country;
+  // "Anambra State", "Ashanti Region".
+  const area = (name) => `${name} ${country?.regionLabel ?? 'State'}`;
   if ((await db.prepare('SELECT COUNT(*) AS n FROM contestants').get()).n > 0) return false;
 
   return tx(db, async () => {
@@ -57,16 +90,16 @@ export async function seedDemoData(ctx) {
 
     const votes = [];
     const ids = new Map();
-    for (const [index, [full, stage, state, city, category, total]] of PEOPLE.entries()) {
-      const slug = stage.toLowerCase();
-      const phone = `0803000${String(index + 1).padStart(4, '0')}`;
-      const { lastInsertRowid: uid } = await addUser.run(`${slug}@mbgn.local`, full, phone, at(400));
+    for (const [index, [full, stage, state, city, category, total]] of demo.people.entries()) {
+      const slug = stage.toLowerCase().replace(/\s+/g, '');
+      const phone = `${demo.phone}${String(index + 1).padStart(4, '0')}`;
+      const { lastInsertRowid: uid } = await addUser.run(`${slug}@${demo.domain}`, full, phone, at(400));
       const { seq, code } = await allocateCode(ctx);
       const { lastInsertRowid: cid } = await addContestant.run(
-        uid, full, stage, `${slug}@mbgn.local`, phone, phone, state, city,
-        `${stage} is a ${state} State model and content creator. Demo profile: replace with a real biography.`,
+        uid, full, stage, `${slug}@${demo.domain}`, phone, phone, state, city,
+        `${stage} is a ${area(state)} model and content creator. Demo profile: replace with a real biography.`,
         `https://www.tiktok.com/@${slug}`, `https://www.instagram.com/${slug}`, null,
-        category, await copyDemoPhoto(ctx, stage), code, seq, at(380), total, at(1 + index), at(390),
+        category, await copyDemoPhoto(ctx, PEOPLE[index][1]), code, seq, at(380), total, at(1 + index), at(390),
       );
       ids.set(stage, cid);
       // Spread the demo total across 14 days, in several votes per day, right up to the last few hours.
@@ -98,20 +131,21 @@ export async function seedDemoData(ctx) {
     }
 
     // Two applications waiting in the admin queue.
-    for (const [i, [full, stage, state, city]] of [['Ngozi Umeh', 'Ngozi', 'Abia', 'Umuahia'], ['Rukayat Salami', 'Rukky', 'Kwara', 'Ilorin']].entries()) {
+    for (const [i, [full, stage, state, city]] of demo.waiting.entries()) {
       const slug = stage.toLowerCase();
-      const phone = `0803100${String(i + 1).padStart(4, '0')}`;
-      const { lastInsertRowid: uid } = await addUser.run(`${slug}@mbgn.local`, full, phone, at(8));
+      const phone = `${demo.waitingPhone}${String(i + 1).padStart(4, '0')}`;
+      const { lastInsertRowid: uid } = await addUser.run(`${slug}@${demo.domain}`, full, phone, at(8));
       await db.prepare(`INSERT INTO contestants (user_id, full_name, stage_name, email, phone, whatsapp, state, location, bio, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(uid, full, stage, `${slug}@mbgn.local`, phone, phone, state, city,
-        `${stage} is applying from ${state} State. Demo application: replace with a real biography.`, at(8 - i));
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(uid, full, stage, `${slug}@${demo.domain}`, phone, phone, state, city,
+        `${stage} is applying from ${area(state)}. Demo application: replace with a real biography.`, at(8 - i));
     }
 
     const addActivity = db.prepare('INSERT INTO activity (kind, contestant_id, message, amount, created_at) VALUES (?, ?, ?, ?, ?)');
-    await addActivity.run('votes', ids.get('Deborah'), 'Deborah received 20 new votes.', 20, at(0.9));
-    await addActivity.run('climb', ids.get('Deborah'), 'Deborah just moved up 1 position.', 1, at(0.89));
-    await addActivity.run('votes', ids.get('Jennifer'), 'Jennifer received 10 new votes.', 10, at(0.5));
-    await addActivity.run('votes', ids.get('Stella'), 'Stella received 5 new votes.', 5, at(0.2));
+    const [first, second, , fourth, fifth] = demo.people.map((p) => p[1]);
+    await addActivity.run('votes', ids.get(fourth), `${fourth} received 20 new votes.`, 20, at(0.9));
+    await addActivity.run('climb', ids.get(fourth), `${fourth} just moved up 1 position.`, 1, at(0.89));
+    await addActivity.run('votes', ids.get(second), `${second} received 10 new votes.`, 10, at(0.5));
+    await addActivity.run('votes', ids.get(first), `${first} received 5 new votes.`, 5, at(0.2));
 
     // Always 14 to 21 days away.
     const week = 7 * 864e5;
@@ -120,9 +154,9 @@ export async function seedDemoData(ctx) {
       'Sample edition',
       at(24 * 200),
       JSON.stringify([
-        { position: 1, code: 'MBG004', name: 'Deborah', votes: 12840 },
-        { position: 2, code: 'MBG005', name: 'Amanda', votes: 11095 },
-        { position: 3, code: 'MBG001', name: 'Stella', votes: 9720 },
+        { position: 1, code: `${ctx.config.codePrefix}004`, name: fourth, votes: 12840 },
+        { position: 2, code: `${ctx.config.codePrefix}005`, name: fifth, votes: 11095 },
+        { position: 3, code: `${ctx.config.codePrefix}001`, name: first, votes: 9720 },
       ]),
     );
     return true;

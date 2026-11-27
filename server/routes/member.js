@@ -1,3 +1,4 @@
+import { formatMoney } from '../../shared/countries.js';
 import crypto from 'node:crypto';
 import multer from 'multer';
 import {
@@ -11,7 +12,7 @@ import {
 } from '../payments.js';
 import { currentRound, roundStanding, roundView } from '../rounds.js';
 import {
-  IMAGE_TYPES, NIGERIAN_STATES, checkPin, clean, normalizeCode, validEmail, validPhone, whatsappTaken,
+  IMAGE_TYPES, chooseRegion, checkPin, regionsOf, clean, normalizeCode, validEmail, validPhone, whatsappTaken,
 } from './public.js';
 
 function maskEmail(email) {
@@ -36,7 +37,7 @@ export function votingRouter(ctx) {
   router.post('/votes/pay', rateLimit({ windowMs: 60000, max: scaled(60) }), async (req, res) => {
     const { code, quantity, voterName, method, viaLink } = req.body ?? {};
     res.status(201).json(await startPayment(ctx, {
-      code: normalizeCode(code), quantity, voterName, method: method ?? 'transfer', email: req.user?.email, viaLink: Boolean(viaLink), ip: req.ip,
+      code: normalizeCode(code), quantity, voterName, method: method ?? null, email: req.user?.email, viaLink: Boolean(viaLink), ip: req.ip,
     }));
   });
 
@@ -75,7 +76,7 @@ export function votingRouter(ctx) {
         ['Contestant', `${contestant.stage_name} (${contestant.code})`],
         ['Votes', String(payment.vote_quantity)],
         ['Status', outcomes[payment.votes_status] ?? 'Pending'],
-        ['Amount paid', `NGN ${(payment.amount + (payment.fee ?? 0)).toLocaleString('en-NG')}`],
+        ['Amount paid', formatMoney(Number(payment.amount) + Number(payment.fee ?? 0), config.countryId, { code: true })],
         ['Paid with', payment.payment_method ?? payment.provider],
       ],
     });
@@ -237,7 +238,7 @@ export function contestantRouter(ctx) {
     if (!validEmail(email)) throw new HttpError(400, 'Please enter a valid email address.');
     if (!validPhone(phone)) throw new HttpError(400, 'Please enter a valid phone number.');
     if (!validPhone(whatsapp)) throw new HttpError(400, 'Please enter a valid WhatsApp number.');
-    if (!NIGERIAN_STATES.includes(state)) throw new HttpError(400, 'Please choose your state.');
+    if (!regionsOf(ctx).includes(state)) throw new HttpError(400, chooseRegion(ctx));
     if (location.length < 2) throw new HttpError(400, 'Please enter your town or city.');
     if (bio.length < 20) throw new HttpError(400, 'Please write a short biography of at least 20 characters.');
     if (bio.length > 150) throw new HttpError(400, 'Please keep your biography to 150 characters or fewer.');
@@ -278,7 +279,7 @@ export function contestantRouter(ctx) {
     checkPin(req.body?.pin);
     await db.prepare('UPDATE contestants SET pin_hash = ?, pin_failures = 0, pin_locked_until = NULL WHERE id = ?').run(hashPassword(req.body.pin), c.id);
     // A new PIN signs out every other device, in case the old one was shared.
-    await db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').run(c.user_id, sessionHash(req));
+    await db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').run(c.user_id, sessionHash(ctx, req));
     res.json({ ok: true });
   });
 
