@@ -7,6 +7,9 @@ import { DEMO_ADMIN, seedDemoData } from './demo-data.js';
 const JOB_CHECK_MS = 60000;
 
 // One site per country (Nigeria on mbgn.com.ng, Ghana on its own domain), from this one codebase.
+// A deployment shows its home country (SITE_COUNTRY, Nigeria by default) on any address not listed
+// for another, so a Vercel project of Ghana's own (SITE_COUNTRY=gh) shows Ghana on its .vercel.app
+// address and its domain.
 // Each has its own settings, its own tables in the shared database, and its own Express app. Each
 // request goes to the country of the domain it came to; the admin's country switch can ask for the
 // other one (the X-Country header, or ?_country= for the live updates stream).
@@ -39,12 +42,14 @@ function getSite(country) {
   return sites.get(country);
 }
 
-// Which country each domain shows. Anything not listed is Nigeria.
+const HOME = COUNTRY_IDS.includes(process.env.SITE_COUNTRY) ? process.env.SITE_COUNTRY : DEFAULT_COUNTRY;
+
+// Which country each domain shows. Anything not listed is this deployment's home country.
 let hostMap = null;
 function countryOfHost(host = '') {
   if (!hostMap) {
     hostMap = new Map();
-    for (const country of COUNTRY_IDS.filter((id) => id !== DEFAULT_COUNTRY)) {
+    for (const country of COUNTRY_IDS.filter((id) => id !== HOME)) {
       try {
         for (const h of configFor(country).hosts) hostMap.set(h, country);
       } catch (err) {
@@ -53,7 +58,7 @@ function countryOfHost(host = '') {
     }
   }
   const name = String(host).toLowerCase();
-  return hostMap.get(name) ?? hostMap.get(name.replace(/:\d+$/, '')) ?? DEFAULT_COUNTRY;
+  return hostMap.get(name) ?? hostMap.get(name.replace(/:\d+$/, '')) ?? HOME;
 }
 
 export function countryForRequest(req) {
@@ -63,7 +68,7 @@ export function countryForRequest(req) {
 
 // For pages rendered on the server (link previews): the database and settings of the domain asked.
 export async function getContext(req = null) {
-  const country = req ? countryOfHost(req.headers?.host) : DEFAULT_COUNTRY;
+  const country = req ? countryOfHost(req.headers?.host) : HOME;
   return (await getSite(country)).ctx;
 }
 
@@ -85,7 +90,7 @@ export async function handleRequest(req, res) {
   try {
     site = await getSite(country);
   } catch (err) {
-    if (country === DEFAULT_COUNTRY) throw err;
+    if (country === HOME) throw err;
     console.error(`The ${country.toUpperCase()} site could not start:`, err.message);
     res.statusCode = 503;
     res.setHeader('Content-Type', 'application/json');

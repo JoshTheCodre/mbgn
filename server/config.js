@@ -98,7 +98,9 @@ export function loadConfig(overrides = {}) {
 
   const port = Number(overrides.port ?? env.PORT ?? 3000);
   // Where this country's site is. On this computer, Ghana is gh.localhost.
-  const publicUrl = (overrides.publicUrl ?? own('PUBLIC_URL') ?? (primary ? vercelUrl : null)
+  // A country that is its own Vercel project's home (SITE_COUNTRY) takes that project's address.
+  const home = (env.SITE_COUNTRY ?? 'ng') === countryId;
+  const publicUrl = (overrides.publicUrl ?? own('PUBLIC_URL') ?? (home ? vercelUrl : null)
     ?? `http://${primary ? '' : `${countryId}.`}localhost:${env.PORT ?? 3000}`).replace(/\/$/, '');
   // The domains that show this country: its address, any listed in SITE_HOSTS(_GH), and on this
   // computer <country>.localhost.

@@ -6,16 +6,21 @@ import { COUNTRY_IDS, DEFAULT_COUNTRY } from './shared/countries.js';
 // copy of the page shell (pages/site-<country>/), with its own head tags, and the app manifest from
 // manifest-<country>.webmanifest. The address in the browser doesn't change.
 
+// This deployment's own country (SITE_COUNTRY, Nigeria by default), shown on any address not listed
+// for another.
+const HOME = COUNTRY_IDS.includes(process.env.SITE_COUNTRY) ? process.env.SITE_COUNTRY : DEFAULT_COUNTRY;
+
 function countryOfHost(host) {
-  for (const id of COUNTRY_IDS.filter((c) => c !== DEFAULT_COUNTRY)) {
+  for (const id of COUNTRY_IDS.filter((c) => c !== HOME)) {
     const own = (name) => process.env[`${name}_${id.toUpperCase()}`];
     const hosts = [`${id}.localhost`, ...(own('SITE_HOSTS') ?? '').split(',')];
     try {
-      if (own('PUBLIC_URL')) hosts.push(new URL(own('PUBLIC_URL')).host);
+      const address = id === DEFAULT_COUNTRY ? process.env.PUBLIC_URL : own('PUBLIC_URL');
+      if (address) hosts.push(new URL(address).host);
     } catch { /* a malformed address is reported by the server */ }
     if (hosts.map((h) => h.trim().toLowerCase()).filter(Boolean).some((h) => h === host || h === host.replace(/:\d+$/, ''))) return id;
   }
-  return DEFAULT_COUNTRY;
+  return HOME;
 }
 
 export function middleware(req) {

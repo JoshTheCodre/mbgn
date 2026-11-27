@@ -1,4 +1,4 @@
-import { COUNTRIES, siteInfo } from '../../shared/countries.js';
+import { COUNTRIES, COUNTRY_IDS, siteInfo } from '../../shared/countries.js';
 import crypto from 'node:crypto';
 import multer from 'multer';
 import {
@@ -44,7 +44,13 @@ export const IMAGE_TYPES = [
 // Vercel's edge answers repeat requests for up to 5 seconds, worldwide and without touching the
 // database, and keeps answering while it fetches a fresh copy. None of these vary by visitor.
 // Browsers must not join in, or they would show a stale answer right after a change.
-const shortCache = (_req, res, next) => {
+const shortCache = (req, res, next) => {
+  // The admin's country switch asks for another country's answer on the same address; the shared
+  // cache only tells addresses apart, so those answers are never kept there.
+  if (req.headers['x-country'] || req.query._country) {
+    res.set('Cache-Control', 'private, no-store');
+    return next();
+  }
   res.set({
     'Cache-Control': 'public, max-age=0, must-revalidate',
     'Vercel-CDN-Cache-Control': 's-maxage=5, stale-while-revalidate=10',
@@ -521,11 +527,23 @@ export function photoHandler(ctx) {
   return async (req, res) => {
     const file = req.params.file;
     if (!/^[a-f0-9]{32}\.(jpg|png|webp)$/.test(file)) throw new HttpError(404, 'Not found.');
-    const row = await ctx.db.prepare('SELECT status, user_id, photo_file FROM contestants WHERE photo_file = ? OR pending_photo_file = ?').get(file, file);
+    const find = (site) => site.db.prepare('SELECT status, user_id, photo_file FROM contestants WHERE photo_file = ? OR pending_photo_file = ?').get(file, file);
+    // Every country's photos share one store, under names that never repeat. A photo from another
+    // country's contestant (the admin's country switch can't reach an <img>) is found there.
+    let owner = ctx;
+    let row = await find(ctx);
+    for (const other of COUNTRY_IDS.filter((id) => id !== ctx.config.countryId)) {
+      if (row || !ctx.siteFor) break;
+      try {
+        const site = await ctx.siteFor(other);
+        row = await find(site);
+        if (row) owner = site;
+      } catch { /* that country's site isn't running */ }
+    }
     if (!row) throw new HttpError(404, 'Not found.');
     // A new photo waiting for an admin is private, even for an approved contestant.
     const isPublic = row.status === 'approved' && row.photo_file === file;
-    const viewer = await sessionUser(ctx, req);
+    const viewer = await sessionUser(owner, req);
     const allowed = isPublic || viewer?.role === 'admin' || viewer?.id === row.user_id;
     if (!allowed) throw new HttpError(404, 'Not found.');
     const photo = await ctx.photos.get(file);
