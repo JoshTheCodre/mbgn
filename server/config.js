@@ -46,7 +46,8 @@ export function loadConfig(overrides = {}) {
   if (production && !appSecret) throw new Error('APP_SECRET is required in production.');
 
   const paymentEmail = overrides.paymentEmail ?? (own('PAYMENT_EMAIL') ?? env.PAYMENT_EMAIL)?.trim();
-  if (production && !paymentEmail) throw new Error('PAYMENT_EMAIL is required in production: Paystack needs a customer email on every payment.');
+  // Not needed by a site that takes no payments yet (a newer country without its live key).
+  if (production && !paymentsOff && !paymentEmail) throw new Error('PAYMENT_EMAIL is required in production: Paystack needs a customer email on every payment.');
 
   // The same database for every country. Another country's tables sit in their own schema, chosen
   // when each connection opens, so its connection must go straight to Postgres, not through a

@@ -70,6 +70,12 @@ export async function applyAdminLogin(ctx) {
   const fingerprint = crypto.createHmac('sha256', config.appSecret).update(`${config.adminEmail.toLowerCase()}\n${config.adminPassword}`).digest('hex');
   if (await getSetting(db, 'admin_login_applied') === fingerprint) return false;
   const email = config.adminEmail.toLowerCase();
+  // Already this login: nothing to change, and nobody is signed out. (Two Vercel projects with
+  // different app secrets each see their own fingerprint, so the fingerprint alone isn't enough.)
+  if (admin.email === email && verifyPassword(config.adminPassword, admin.password_hash)) {
+    await setSetting(db, 'admin_login_applied', fingerprint);
+    return false;
+  }
   if (await db.prepare('SELECT 1 FROM users WHERE email = ? AND id <> ?').get(email, admin.id)) {
     console.error(`ADMIN_EMAIL ${email} already belongs to another account, so the admin login was not changed.`);
     return false;
