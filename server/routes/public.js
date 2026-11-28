@@ -194,7 +194,13 @@ export function publicRouter(ctx) {
       hasResults: Boolean(await db.prepare('SELECT 1 FROM results LIMIT 1').get()),
       states: regionsOf(ctx),
       // What the browser needs for this country: currency, regions, wording.
-      site: siteInfo(config.countryId),
+      site: {
+        ...siteInfo(config.countryId),
+        // Ghana before its own Paystack account pays by card through Nigeria's, in naira.
+        payMethod: config.payMethod,
+        payLabel: config.payMethod === 'card' ? 'by card' : siteInfo(config.countryId).payLabel,
+        ...(config.payMethod === 'card' ? { cardRate: Number(await getSetting(db, 'ngn_per_ghs')) || null } : {}),
+      },
       themes: await themeSettings(db),
     });
   });

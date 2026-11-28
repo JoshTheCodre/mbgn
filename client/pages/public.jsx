@@ -3,11 +3,18 @@ import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-r
 import {
   ApiError, ago, api, getSite, money, num, plural, registrationOpen, useApp, useFetch, useLive,
 } from '../lib.jsx';
-import { bulkPrice, paymentCharges, upsellOffers } from '../../shared/pricing.js';
+import { bulkPrice, cardChargeNgn, paymentCharges, upsellOffers } from '../../shared/pricing.js';
 import { roundMoney } from '../../shared/countries.js';
 
+// Ghana before its own Paystack account: cards through Nigeria's, charged in naira at the rate the
+// admin sets. Prices still show in cedis; the button says what the card is charged.
+const cardRate = () => (getSite().payMethod === 'card' && getSite().cardRate > 0 ? getSite().cardRate : null);
+const cardCharge = (price) => cardChargeNgn(price, cardRate());
+
 // The charges on a payment, and the total, in the site's currency (to the pesewa in Ghana).
-const chargesOn = (price) => paymentCharges(price, getSite().country);
+const chargesOn = (price) => (cardRate()
+  ? roundMoney(cardCharge(price).feeNgn / cardRate(), getSite().decimals)
+  : paymentCharges(price, getSite().country));
 const withCharges = (price) => roundMoney(price + chargesOn(price), getSite().decimals);
 import {
   ActivityFeed, BrandLogo, CardsSkeleton, CodeTag, CoverSkeleton, Crown, Countdown, Dialog, ErrorNote, Field, LoadFailed,
@@ -765,11 +772,15 @@ function VotePanel({ contestant, viaLink }) {
 
       {/* Nigeria: by bank transfer, the next page shows the account number and the exact amount.
           Ghana: Mobile Money, on Paystack's page, which sends the approval prompt to the phone. */}
-      <button className="btn btn-vote btn-wide" disabled={busy || !valid}>
+      <button className="btn btn-vote btn-wide" disabled={busy || !valid || (getSite().payMethod === 'card' && !cardRate())}>
         {busy
-          ? (getSite().payMethod === 'transfer' ? 'Getting your account number…' : 'Opening Mobile Money…')
-          : valid ? `Pay ${money(withCharges(price))} ${getSite().payLabel}` : 'Pay'}
+          ? ({ transfer: 'Getting your account number…', card: 'Opening card payment…' }[getSite().payMethod] ?? 'Opening Mobile Money…')
+          : !valid ? 'Pay'
+            : cardRate() ? `Pay ₦${num(cardCharge(price).totalNgn)} by card`
+              : `Pay ${money(withCharges(price))} ${getSite().payLabel}`}
       </button>
+      {getSite().payMethod === 'card' && !cardRate() ? <p className="note">Card payments open soon.</p> : null}
+      {cardRate() && valid ? <p className="vote-card-note">About {money(withCharges(price))}. Your card is charged in naira.</p> : null}
       <p className="vote-secure">
         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></svg>
         Secure payment by Paystack

@@ -61,6 +61,7 @@ async function boot(overrides = {}, { freshContest = false } = {}) {
     paystack: null,
     followerKeys: {},
     rateLimitScale: 1000,
+    cardViaNigeria: null,
     ...overrides,
   });
   const ctx = await createContext(config);
@@ -2636,6 +2637,103 @@ describe('Ghana', () => {
     } finally {
       if (saved.url === undefined) delete process.env.PUBLIC_URL_GH; else process.env.PUBLIC_URL_GH = saved.url;
       if (saved.db === undefined) delete process.env.DATABASE_URL;
+    }
+  });
+});
+
+describe('Ghana cards through Nigeria’s Paystack account', () => {
+  const SECRET = 'sk_test_nigeria';
+  let fake;
+  let paystackUrl;
+  let sent;
+  let verifyAs = { status: 'success', amount: 0, currency: 'NGN' };
+
+  before(async () => {
+    fake = http.createServer((req, res) => {
+      let raw = '';
+      req.on('data', (d) => { raw += d; });
+      req.on('end', () => {
+        res.setHeader('Content-Type', 'application/json');
+        const url = new URL(req.url, 'http://x');
+        if (url.pathname === '/transaction/initialize') {
+          sent = JSON.parse(raw);
+          return res.end(JSON.stringify({ status: true, data: { authorization_url: 'https://checkout.paystack.com/card', access_code: 'card', reference: sent.reference } }));
+        }
+        if (url.pathname.startsWith('/transaction/verify/')) {
+          return res.end(JSON.stringify({ status: true, data: { id: 9, reference: decodeURIComponent(url.pathname.split('/').pop()), status: verifyAs.status, amount: verifyAs.amount * 100, currency: verifyAs.currency, channel: 'card' } }));
+        }
+        res.statusCode = 404;
+        return res.end(JSON.stringify({ status: false, message: 'Not found' }));
+      });
+    }).listen(0);
+    await new Promise((resolve) => fake.once('listening', resolve));
+    paystackUrl = `http://127.0.0.1:${fake.address().port}`;
+  });
+  after(() => fake.close());
+
+  test('a Ghana price is charged in naira, by card, at the admin’s rate, and counts once Paystack confirms', async () => {
+    const gh = await boot({ country: 'gh', publicUrl: 'http://gh.localhost', cardViaNigeria: { secretKey: SECRET, baseUrl: paystackUrl } });
+    try {
+      const boss = client(gh.base);
+      await boss.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      const { code } = await makeContestant(gh, boss, 'Adwoa', { state: 'Western', location: 'Takoradi' });
+      const anon = client(gh.base);
+
+      // No rate yet: the site says so, and takes no card payment.
+      const { data: before } = await anon.get('/competition');
+      assert.equal(before.site.payMethod, 'card');
+      assert.equal(before.site.cardRate, null);
+      assert.equal((await anon.post('/votes/pay', { voterName: 'Kwame', code, quantity: 5 })).status, 409);
+
+      const { data: settings } = await boss.get('/admin/settings');
+      assert.equal(settings.cardViaNigeria, true);
+      assert.equal((await boss.req('PUT', '/admin/settings', { body: { ...settings, startsAt: '', endsAt: '', ngnPerGhs: '110' } })).status, 200);
+      assert.equal((await anon.get('/competition?fresh=1')).data.site.cardRate, 110);
+
+      // GH₵5 is ₦550; with Paystack's 3.9% + ₦100 on a foreign card, ₦677.
+      const { status, data } = await anon.post('/votes/pay', { voterName: 'Kwame', code, quantity: 5 });
+      assert.equal(status, 201);
+      assert.equal(data.checkoutUrl, 'https://checkout.paystack.com/card');
+      assert.deepEqual(data.charge, { currency: 'NGN', total: 677 });
+      assert.deepEqual([data.amount, data.fee, data.total], [5, 1.15, 6.15]);
+      assert.equal(sent.currency, 'NGN');
+      assert.equal(sent.amount, 67700);
+      assert.deepEqual(sent.channels, ['card']);
+      assert.match(data.reference, /^MBGG-/);
+
+      // Paystack confirms the naira: the votes count.
+      verifyAs = { status: 'success', amount: 677, currency: 'NGN' };
+      const { data: paid } = await anon.post(`/payments/${data.reference}/verify`);
+      assert.equal(paid.votesStatus, 'counted');
+      assert.deepEqual(paid.charge, { currency: 'NGN', total: 677 });
+      assert.equal((await anon.get(`/contestants/${code}`)).data.totalVotes, 5);
+
+      // Mobile Money isn't what this site takes until it has its own Paystack account.
+      assert.equal((await anon.post('/votes/pay', { voterName: 'Kwame', code, quantity: 1, method: 'momo' })).status, 400);
+    } finally {
+      await gh.close();
+    }
+  });
+
+  test('Nigeria’s webhook settles a Ghana card payment', async () => {
+    const gh = await boot({ country: 'gh', publicUrl: 'http://gh.localhost', cardViaNigeria: { secretKey: SECRET, baseUrl: paystackUrl } });
+    const ng = await boot({ paystack: { secretKey: SECRET, baseUrl: paystackUrl } });
+    try {
+      ng.ctx.siteFor = async (country) => (country === 'gh' ? gh.ctx : ng.ctx);
+      const boss = client(gh.base);
+      await boss.post('/auth/login', { email: 'admin@test.local', password: 'admin-password' });
+      await setSetting(gh.ctx.db, 'ngn_per_ghs', '110');
+      const { code } = await makeContestant(gh, boss, 'Esi', { state: 'Volta', location: 'Ho' });
+      const { data } = await client(gh.base).post('/votes/pay', { voterName: 'Yaw', code, quantity: 5 });
+      verifyAs = { status: 'success', amount: data.charge.total, currency: 'NGN' };
+      const body = JSON.stringify({ event: 'charge.success', data: { reference: data.reference } });
+      const signature = crypto.createHmac('sha512', SECRET).update(body).digest('hex');
+      const res = await fetch(`${ng.base}/api/webhooks/paystack`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-paystack-signature': signature }, body });
+      assert.equal(res.status, 200);
+      assert.equal((await client(gh.base).get(`/contestants/${code}`)).data.totalVotes, 5);
+    } finally {
+      await ng.close();
+      await gh.close();
     }
   });
 });

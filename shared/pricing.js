@@ -28,6 +28,15 @@ export function upsellOffers(votes, votePrice, packages) {
 // fee from the total, the whole vote amount is left.
 // - Nigeria: 1.5% + NGN 100, the NGN 100 waived under NGN 2,500, never more than NGN 2,000. Whole naira.
 // - Ghana: 1.95% on local payments (Mobile Money included). To the pesewa.
+// Ghana before its own Paystack account: a card payment through Nigeria's account, charged in
+// naira at the rate the admin sets (naira per cedi). Paystack Nigeria's fee on a card from outside
+// Nigeria is 3.9% + NGN 100, paid by the voter. Whole naira.
+export function cardChargeNgn(amount, rate) {
+  const amountNgn = Math.ceil(amount * rate);
+  const totalNgn = Math.ceil((amountNgn + 100) / 0.961);
+  return { amountNgn, feeNgn: totalNgn - amountNgn, totalNgn };
+}
+
 export function paymentCharges(amount, country = 'ng') {
   if (country === 'gh') {
     const pesewas = Math.round(amount * 100);

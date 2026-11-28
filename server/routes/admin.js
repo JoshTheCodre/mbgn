@@ -632,6 +632,9 @@ export function adminRouter(ctx) {
       largeVoteThreshold: Number(setting.large_vote_threshold),
       resultsPublishedAt: setting.results_published_at,
       packages: packages.map((p) => ({ ...p, active: Boolean(p.active) })),
+      // Cards through Nigeria's Paystack account are charged in naira at this rate.
+      cardViaNigeria: config.payMethod === 'card',
+      ngnPerGhs: Number(setting.ngn_per_ghs) || null,
     });
   });
 
@@ -648,6 +651,8 @@ export function adminRouter(ctx) {
     const name = clean(b.name, 120);
     const votePrice = Number(b.votePrice);
     const threshold = Number(b.largeVoteThreshold);
+    const rate = b.ngnPerGhs === undefined || b.ngnPerGhs === '' || b.ngnPerGhs === null ? null : Number(b.ngnPerGhs);
+    if (rate !== null && !(rate > 0 && rate < 100000)) throw new HttpError(400, 'Enter how many naira one cedi is worth.');
     const startsAt = isoOrEmpty(b.startsAt, 'Start date');
     const endsAt = isoOrEmpty(b.endsAt, 'End date');
     if (name.length < 3) throw new HttpError(400, 'Please enter the competition name.');
@@ -660,6 +665,7 @@ export function adminRouter(ctx) {
       await setSetting(db, 'voting_starts_at', startsAt);
       await setSetting(db, 'voting_ends_at', endsAt);
       await setSetting(db, 'large_vote_threshold', threshold);
+      if (rate !== null) await setSetting(db, 'ngn_per_ghs', rate);
       await audit(ctx, req.user.id, 'settings.update', `price=${votePrice} starts=${startsAt} ends=${endsAt}`);
     });
     ctx.bus.publish('competition', {});

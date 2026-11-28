@@ -3,8 +3,8 @@ import { HttpError, hashIp } from './auth.js';
 import { photoUrl, raiseFlag, votingState } from './competition.js';
 import { getSetting, nowIso, tx } from './db.js';
 import { recordPaidVotes } from './votes.js';
-import { bulkPrice, paymentCharges } from '../shared/pricing.js';
-import { formatCount, formatMoney, roundMoney } from '../shared/countries.js';
+import { bulkPrice, cardChargeNgn, paymentCharges } from '../shared/pricing.js';
+import { COUNTRY_IDS, formatCount, formatMoney, roundMoney } from '../shared/countries.js';
 
 // Paystack takes amounts in kobo (Nigeria) or pesewas (Ghana): a hundredth of the currency.
 const minorUnits = (amount) => Math.round(Number(amount) * 100);
@@ -36,6 +36,7 @@ export function createPaystack(config) {
     name: 'paystack',
     // Paystack's checkout page. `channels` limits it to the way the supporter chose to pay.
     async init({ reference, amount, description, customerEmail, redirectUrl, channels }) {
+      // Amounts are in this account's currency (naira for Ghana's cards through Nigeria's).
       const data = await call('/transaction/initialize', {
         method: 'POST',
         body: JSON.stringify({
@@ -152,41 +153,56 @@ function checkoutEmail(config, reference) {
 //   one, its checkout is the fallback, limited to bank transfer, never card.
 // - Ghana: Mobile Money (MTN MoMo, Telecel Cash, AirtelTigo Money) on Paystack Ghana's checkout,
 //   which asks for the network and number and sends the approval prompt to the phone.
-export const PAY_METHODS = { transfer: ['bank_transfer'], momo: ['mobile_money'] };
+// - Ghana before its own Paystack account: card, through Nigeria's account, charged in naira.
+export const PAY_METHODS = { transfer: ['bank_transfer'], momo: ['mobile_money'], card: ['card'] };
 // Ways that were offered before (card, OPay, "any"). A page still open from then asks for these;
 // it pays the country's own way instead of failing.
 const RETIRED_METHODS = new Set(['any', 'card', 'opay']);
 const TRANSFER_MINUTES = 60;
 
 // Long and random: holding this reference is what lets someone see the payment and its receipt.
-const newReference = () => `MBG-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(12).toString('hex').toUpperCase()}`;
+// Starts with the country's code prefix (MBG-, MBGG-), so a payment can be told apart by country
+// when one Paystack account serves two sites.
+const newReference = (config) => `${config.codePrefix ?? 'MBG'}-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(12).toString('hex').toUpperCase()}`;
 
 // The votes count as soon as the provider confirms the payment.
 export async function startPayment(ctx, { code, quantity, voterName, method: asked, email = null, viaLink, ip }) {
   const { db, config, provider } = ctx;
-  const own = config.country?.payMethod ?? 'transfer';
+  const own = config.payMethod ?? config.country?.payMethod ?? 'transfer';
   const name = typeof voterName === 'string' ? voterName.trim().replace(/\s+/g, ' ').slice(0, 60) : '';
   if (name.length < 2) throw new HttpError(400, 'Please enter your name. It goes on your proof of vote.');
   // Before its live Paystack key is in, a newer country's site takes no payments at all.
   if (config.paymentsOff) throw new HttpError(409, config.paymentsOff);
   const method = asked == null || RETIRED_METHODS.has(asked) ? own : asked;
-  if (method !== own) throw new HttpError(400, `Votes are paid ${config.country?.payLabel ?? 'by transfer'}.`);
+  if (method !== own) throw new HttpError(400, `Votes are paid ${own === 'card' ? 'by card' : config.country?.payLabel ?? 'by transfer'}.`);
   const state = await votingState(db);
   if (!state.open) throw new HttpError(409, state.message);
   const contestant = await db.prepare("SELECT id, code FROM contestants WHERE code = ? AND status = 'approved'").get(code);
   if (!contestant) throw new HttpError(404, 'No active contestant has that code.');
   const amount = await priceFor(db, quantity);
   // The voter pays the charges, so the votes' whole amount arrives.
-  const fee = paymentCharges(amount, config.countryId);
+  let fee = paymentCharges(amount, config.countryId);
+  // Cards through Nigeria's account: charged in naira at the admin's rate. The fee is kept in the
+  // site's own currency too, for its records.
+  let charge = null;
+  if (method === 'card' && config.cardViaNigeria) {
+    const rate = Number(await getSetting(db, 'ngn_per_ghs'));
+    if (!(rate > 0)) throw new HttpError(409, 'Card payments open soon.');
+    const ngn = cardChargeNgn(amount, rate);
+    charge = { currency: 'NGN', total: ngn.totalNgn };
+    fee = roundMoney(ngn.feeNgn / rate, config.country?.decimals ?? 0);
+  }
   const total = roundMoney(amount + fee, config.country?.decimals ?? 0);
 
-  let reference = newReference();
+  let reference = newReference(config);
 
   const ipHash = hashIp(config, ip);
   const { lastInsertRowid: paymentId } = await db.prepare(`
-    INSERT INTO payments (reference, email, voter_name, vote_contestant_id, vote_quantity, via_link, ip_hash, amount, fee, provider, return_to, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
-    .run(reference, email, name, contestant.id, quantity, viaLink ? 1 : 0, ipHash, amount, fee, provider.name, `/c/${contestant.code}`, nowIso());
+    INSERT INTO payments (reference, email, voter_name, vote_contestant_id, vote_quantity, via_link, ip_hash, amount, fee,
+      charge_currency, charge_total, provider, return_to, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
+    .run(reference, email, name, contestant.id, quantity, viaLink ? 1 : 0, ipHash, amount, fee,
+      charge?.currency ?? null, charge?.total ?? null, provider.name, `/c/${contestant.code}`, nowIso());
 
   const tenMinutesAgo = new Date(Date.now() - 600000).toISOString();
   const attempts = (await db.prepare(`SELECT COUNT(*) AS n FROM payments
@@ -206,7 +222,7 @@ export async function startPayment(ctx, { code, quantity, voterName, method: ask
       // Pay with Transfer is switched off on the Paystack account, or Paystack had a moment. Its own
       // checkout can still take the transfer. Paystack keeps the failed attempt's reference, so a new one.
       console.error('Could not open a transfer account, sending to checkout instead:', err.message);
-      reference = newReference();
+      reference = newReference(config);
       await db.prepare('UPDATE payments SET reference = ? WHERE id = ?').run(reference, paymentId);
     }
   }
@@ -214,14 +230,14 @@ export async function startPayment(ctx, { code, quantity, voterName, method: ask
   try {
     const { checkoutUrl, providerRef } = await provider.init({
       reference,
-      amount: total,
+      amount: charge ? charge.total : total,
       description,
       customerEmail: checkoutEmail(config, reference),
       redirectUrl: `${config.publicUrl}/pay/return/${reference}`,
       channels: PAY_METHODS[method],
     });
     await db.prepare('UPDATE payments SET provider_ref = ? WHERE id = ?').run(providerRef ?? null, paymentId);
-    return { reference, checkoutUrl, votes: quantity, amount, fee, total };
+    return { reference, checkoutUrl, votes: quantity, amount, fee, total, ...(charge ? { charge } : {}) };
   } catch (err) {
     console.error('Could not start payment:', err.message);
     await db.prepare("UPDATE payments SET status = 'failed' WHERE id = ?").run(paymentId);
@@ -243,6 +259,8 @@ export async function paymentView(db, payment) {
     fee: payment.fee ?? 0,
     // Rounded to the pesewa, so cedis add up without floating-point leftovers.
     total: roundMoney(Number(payment.amount) + Number(payment.fee ?? 0), 2),
+    // What the card was actually charged, when it isn't the site's own currency.
+    charge: payment.charge_total != null ? { currency: payment.charge_currency, total: Number(payment.charge_total) } : null,
     status: payment.status,
     votes: payment.vote_quantity,
     votesStatus: payment.votes_status,
@@ -280,8 +298,10 @@ export async function settlePayment(ctx, reference) {
 
   if (result.status === 'PAID') {
     // The votes and the charges on them, all of it.
-    const expected = Number(payment.amount) + Number(payment.fee ?? 0);
-    const currency = ctx.config.country?.currency ?? 'NGN';
+    // What Paystack was asked for: the site's own amount, or for a card through Nigeria's account,
+    // the naira charge.
+    const expected = payment.charge_total != null ? Number(payment.charge_total) : Number(payment.amount) + Number(payment.fee ?? 0);
+    const currency = payment.charge_currency ?? ctx.config.country?.currency ?? 'NGN';
     if (result.currency !== currency || !(minorUnits(result.amountPaid) >= minorUnits(expected))) {
       await tx(db, async () => {
         await db.prepare("UPDATE payments SET status = 'review', paid_amount = ? WHERE id = ?").run(result.amountPaid, payment.id);
@@ -382,6 +402,19 @@ export async function reconcilePending(ctx) {
   }
 }
 
+// This site, or another of our countries' sites, whichever has the payment.
+async function siteWithPayment(ctx, reference) {
+  if (await ctx.db.prepare('SELECT 1 FROM payments WHERE reference = ?').get(reference)) return ctx;
+  if (!ctx.siteFor) return null;
+  for (const country of COUNTRY_IDS.filter((id) => id !== ctx.config.countryId)) {
+    try {
+      const site = await ctx.siteFor(country);
+      if (await site.db.prepare('SELECT 1 FROM payments WHERE reference = ?').get(reference)) return site;
+    } catch { /* that country's site isn't running */ }
+  }
+  return null;
+}
+
 export async function handleWebhook(ctx, rawBody, signature) {
   if (!ctx.provider.signatureValid(rawBody, signature)) {
     await raiseFlag(ctx, { kind: 'bad_webhook_signature', severity: 'high', details: 'A payment webhook arrived with an invalid signature and was ignored.' });
@@ -394,13 +427,13 @@ export async function handleWebhook(ctx, rawBody, signature) {
     return { accepted: true };
   }
   const reference = event?.data?.reference;
-  // A Paystack account has one webhook address, so another site's payments may land here too.
-  const known = typeof reference === 'string'
-    && await ctx.db.prepare('SELECT 1 FROM payments WHERE reference = ?').get(reference);
-  if (event?.event === 'charge.success' && known) {
+  // A Paystack account has one webhook address, so another site's payments may land here too:
+  // another of our countries' (Ghana's cards through Nigeria's account) is settled by that site.
+  const owner = typeof reference === 'string' ? await siteWithPayment(ctx, reference) : null;
+  if (event?.event === 'charge.success' && owner) {
     // Settled before answering, because a serverless function can freeze once it has responded.
     // If this fails, the regular recheck of pending payments still catches it.
-    await settlePayment(ctx, reference).catch((err) => console.error(`Webhook ${reference}:`, err.message));
+    await settlePayment(owner, reference).catch((err) => console.error(`Webhook ${reference}:`, err.message));
   }
   return { accepted: true };
 }

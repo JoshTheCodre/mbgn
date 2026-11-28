@@ -76,7 +76,8 @@ export function votingRouter(ctx) {
         ['Contestant', `${contestant.stage_name} (${contestant.code})`],
         ['Votes', String(payment.vote_quantity)],
         ['Status', outcomes[payment.votes_status] ?? 'Pending'],
-        ['Amount paid', formatMoney(Number(payment.amount) + Number(payment.fee ?? 0), config.countryId, { code: true })],
+        // A card through Nigeria's account was charged in naira.
+        ['Amount paid', payment.charge_total != null ? `${payment.charge_currency} ${Number(payment.charge_total).toLocaleString('en-NG')}` : formatMoney(Number(payment.amount) + Number(payment.fee ?? 0), config.countryId, { code: true })],
         ['Paid with', payment.payment_method ?? payment.provider],
       ],
     });

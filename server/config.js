@@ -33,14 +33,22 @@ export function loadConfig(overrides = {}) {
   // The simulator and Paystack's test mode both count votes without real money,
   // so neither may run in production. Nigeria refuses to start; a newer country's site runs, so it
   // can be set up, but takes no payments until its live key is in.
+  // Until a newer country has its own Paystack account, voters pay by card through Nigeria's,
+  // charged in naira (PAYSTACK_SECRET_KEY). Its own key, once in, takes over.
+  const ngKey = env.PAYSTACK_SECRET_KEY?.trim();
+  const cardViaNigeria = overrides.cardViaNigeria !== undefined ? overrides.cardViaNigeria
+    : (!primary && !paystack && ngKey && /^sk_(test|live)_/.test(ngKey) ? { secretKey: ngKey, baseUrl: 'https://api.paystack.co' } : null);
+  const payKey = paystack ?? cardViaNigeria;
   let paymentsOff = null;
-  if (production && !paystack) {
+  if (production && !payKey) {
     if (primary) throw new Error('Refusing to start in production without a Paystack key: the payment simulator is dev-only.');
     paymentsOff = 'Voting payments open soon.';
-  } else if (production && !paystack.secretKey.startsWith('sk_live_')) {
+  } else if (production && !payKey.secretKey.startsWith('sk_live_')) {
     if (primary) throw new Error('Refusing to start in production with a Paystack test key: votes would be free.');
     paymentsOff = 'Voting payments open soon.';
   }
+  // How this site's voters pay: the country's own way, or by card through Nigeria's account.
+  const payMethod = !paystack && cardViaNigeria ? 'card' : country.payMethod;
 
   const appSecret = overrides.appSecret ?? env.APP_SECRET;
   if (production && !appSecret) throw new Error('APP_SECRET is required in production.');
@@ -119,6 +127,8 @@ export function loadConfig(overrides = {}) {
     sessionCookie: country.sessionCookie,
     // Why payments are refused, when this country's site runs without a live key in production.
     paymentsOff,
+    cardViaNigeria,
+    payMethod,
     followerKeys,
     followerBaseUrls: overrides.followerBaseUrls ?? null,
     port,

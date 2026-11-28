@@ -27,7 +27,11 @@ export async function createContext(config) {
     bus: createBus(),
     mailer: createMailer(config, db),
     photos: createPhotoStore(config),
-    provider: config.paystack ? createPaystack(config) : createSimulator(db, config.country?.currency),
+    // Its own Paystack account; or, for cards through Nigeria's account, that one, in naira; or the
+    // simulator while there's no key at all.
+    provider: config.paystack ? createPaystack(config)
+      : config.cardViaNigeria ? createPaystack({ ...config, paystack: config.cardViaNigeria, country: { ...config.country, currency: 'NGN' } })
+        : createSimulator(db, config.country?.currency),
     followers: createFollowerChecker(config, db),
     // Work that can finish after the response. The Vercel runtime swaps in waitUntil, so the
     // function stays alive for it.

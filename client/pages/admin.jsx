@@ -1034,6 +1034,7 @@ function CompetitionTab({ onChange }) {
         body: {
           name: f.get('name'),
           votePrice: Number(f.get('votePrice')),
+          ...(f.has('ngnPerGhs') ? { ngnPerGhs: f.get('ngnPerGhs') } : {}),
           largeVoteThreshold: Number(f.get('largeVoteThreshold')),
           startsAt: f.get('startsAt') ? new Date(f.get('startsAt')).toISOString() : '',
           endsAt: f.get('endsAt') ? new Date(f.get('endsAt')).toISOString() : '',
@@ -1250,6 +1251,11 @@ function CompetitionTab({ onChange }) {
             <Field label="Voting closes" hint="Drives the voting countdown. Voting stops by itself at this time."><input name="endsAt" type="datetime-local" defaultValue={toLocalInput(data.endsAt)} /></Field>
             <Field label={`Price per vote (${getSite().symbol})`} hint="The normal price, below the first bulk deal."><input name="votePrice" type="number" min="1" defaultValue={data.votePrice} required /></Field>
             <Field label="Flag single votes of at least" hint="0 turns this off."><input name="largeVoteThreshold" type="number" min="0" defaultValue={data.largeVoteThreshold} required /></Field>
+            {data.cardViaNigeria ? (
+              <Field label="Naira per cedi, for card payments" hint="Until this site has its own Paystack Ghana account, cards are charged in naira through Nigeria’s. Card payments open once this is set.">
+                <input name="ngnPerGhs" type="number" min="1" step="0.01" defaultValue={data.ngnPerGhs ?? ''} placeholder="e.g. 110" required />
+              </Field>
+            ) : null}
           </div>
           {saved ? <p className="note note-good">Saved.</p> : null}
           <button className="btn btn-primary">Save details</button>

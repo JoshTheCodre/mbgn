@@ -194,6 +194,10 @@ ALTER TABLE payments ADD COLUMN IF NOT EXISTS recorded_by INTEGER REFERENCES use
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS transfer_details TEXT;
 -- Paystack's charges, paid by the voter on top of amount (the votes): they pay amount + fee.
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS fee INTEGER NOT NULL DEFAULT 0;
+-- What Paystack was asked for when it isn't the site's own currency: Ghana's cards through
+-- Nigeria's account, in naira. Empty otherwise.
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS charge_currency TEXT;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS charge_total NUMERIC(12,2);
 CREATE INDEX IF NOT EXISTS payments_pending ON payments(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS payments_network ON payments(ip_hash, created_at DESC);
 
